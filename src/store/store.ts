@@ -23,26 +23,25 @@ import {
 } from "@/integrations/lab-whl";
 import { extractPoTestRequirements } from "@/integrations/doc-extract";
 import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx } from "@/data/enums";
-import {
-  escrowAgentFetchInvoice, escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure,
-  escrowAgentFetchHkinConfirmation, escrowAgentFetchWhlVerdict,
-  DEMO_ESCROW_BANK_ACCOUNT,
-} from "@/integrations/escrow-agent";
+import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure } from "@/integrations/escrow-agent";
 import { bankInitiateTransfer, bankGetTransferStatus } from "@/integrations/banking";
 import { generateIrn } from "@/integrations/einvoice-irp";
 import { sendPartyNotification } from "@/integrations/notify";
-import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose, EscrowReceivePurpose } from "@/types";
+import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose } from "@/types";
+// Real escrow-agents backend (Python/FastAPI/Postgres/Ollama) — see src/lib/escrow-api.ts.
+// Everything escrow-related below calls this instead of simulating state locally; the PO/PI
+// fetch, payment-closure fetch, and payment-closure upload below stay on the old in-memory mock
+// (escrow-agent.ts) since escrow-agents doesn't have an agent for those yet.
+import {
+  createEscrowOrder, tickEscrowOrder, listEscrowDrafts, sendEscrowDraft,
+  cancelEscrowOrder as cancelEscrowOrderApi, uploadEscrowInvoiceManually as uploadEscrowInvoiceManuallyApi,
+  simulateNextInbound, createOnHkin,
+  markApplicationRejected, recordRma, acceptGoods as acceptGoodsApi, rejectGoods as rejectGoodsApi, requestExtension,
+} from "@/lib/escrow-api";
 import { sendRfqInvite } from "@/integrations/rfq-send";
 import { BUYERS, SUPPLIERS } from "@/data/directory";
 
-export interface EscrowEmailDraft { to: string; subject: string; body: string; }
-
-const WHL_PROGRESS_SNIPPETS = [
-  "Sample received and logged — inspection queued.",
-  "Visual / dimensional inspection in progress.",
-  "Electrical testing underway.",
-  "Preliminary results under internal review before the formal report.",
-];
+export interface EscrowEmailDraft { to: string; cc?: string; subject: string; body: string; }
 
 const SHARPBUY_GSTIN = "27AASCS1234A1Z5"; // masking entity's GSTIN - the only seller GSTIN sent to the IRP
 
@@ -278,17 +277,27 @@ export interface SupplierPoInput {
   lines: { mpn: string; make?: string; dateCode?: string; testing?: TestingMode; clientPoNo?: string; clientLineMpn?: string; qty: number; buyUnitPrice: number; marginPct: number }[];
 }
 
+/** Fallback contact email for a party this app never actually collects an email for
+ * (Party/SupplierPO carry no email field) — must never be the literal placeholder
+ * strings ("—"/"-"/"") escrow-agents' create-on-hkin guard rejects before opening
+ * a browser (see escrow-agents/api.py's _is_placeholder_email). */
+function fallbackContactEmail(company: string): string {
+  const slug = company.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24);
+  return `contact@${slug || "party"}.example`;
+}
+
 /** Standard bundle scaffold used by both create paths. */
 function scaffoldBundle(order: Order, lines: OrderLine[], createdEvent: string): OrderBundle {
+  const labCompany = order.terms?.labLocation ?? "Independent Test Laboratory";
   return {
     ...order, lines, journey: buildJourney(order), lots: [], mpnTests: [], labEmails: [],
     escrow: order.paymentMode === "ESCROW"
-      ? { id: uid("esc"), status: "DRAFT",
+      ? { id: uid("esc"), status: "DRAFT", hkinAccountStatus: "NOT_ASKED",
           buyerContact: { company: order.maskingEntity, registeredAddress: "New Delhi, India (on file)", country: "India", contactPerson: "SC Ops Desk", email: "scops@sharpbuy.demo", phone: "—", im: "—" },
-          sellerContact: { company: order.supplier.name, registeredAddress: "Address on file", country: order.supplier.country, contactPerson: "Sales (TBD)", email: "—", phone: "—", im: "—" },
+          sellerContact: { company: order.supplier.name, registeredAddress: "Address on file", country: order.supplier.country, contactPerson: "Sales Team", email: fallbackContactEmail(order.supplier.name), phone: "—", im: "—" },
           poAmount: order.buyTotal, currency: order.currency,
           useInspectionService: (order.testingMode ?? "NONE") === "WHL",
-          recipient: { company: order.terms?.labLocation ?? "Independent test lab (TBD)", registeredAddress: "Address on file", country: "—", contactPerson: "Lab Coordinator (TBD)", email: "—", phone: "—", im: "—" },
+          recipient: { company: labCompany, registeredAddress: "Address on file", country: order.supplier.country, contactPerson: "Lab Coordinator", email: fallbackContactEmail(labCompany), phone: "—", im: "—" },
           agreedFeeToBuyer: Math.round(order.buyTotal * 0.00856), // matches escrow-agent's base fee rate — a first (non-revised) fetch reconciles cleanly
           milestoneReleases: [], agentEmails: [] }
       : undefined,
@@ -314,6 +323,12 @@ interface Store {
   createClientPo: (input: ClientPoInput) => string;
   createSupplierPo: (input: SupplierPoInput) => string | null;
   createOrderFromSupplierPo: (supplierPoId: string) => string | null;
+  // Escrow tab, step before "Step 0": confirm the supplier has (or has opened) an HKin
+  // account before running the real "Create HKin order" RPA. askSupplierHkinAccount
+  // composes/sends the ask; confirmSupplierHkinAccount simulates the supplier's reply
+  // landing (mirrors checkEscrowInbox's manual-trigger pattern).
+  askSupplierHkinAccount: (orderId: string) => void;
+  confirmSupplierHkinAccount: (orderId: string) => void;
 
   advanceStep: (orderId: string) => void;
   addStep: (orderId: string, step: { phase: string; name: string; owner: string; isGate: boolean }) => void;
@@ -352,7 +367,18 @@ interface Store {
 
   simulateEscrowInvoiceEmail: (orderId: string) => void; // Escrow Agent adapter — poll the provider inbox
   uploadEscrowInvoiceManually: (orderId: string, input: { invoiceNo: string; fees: EscrowFeeBreakdown; conditions: EscrowConditions }) => void;
-  cancelEscrowOrder: (orderId: string) => void; // only allowed before T/T payment is received
+  cancelEscrowOrder: (orderId: string) => void; // allowed any time before RELEASED_TO_SELLER (real HKin evidence)
+  // Launches the hkin-rpa RPA (escrow-agents' /create-on-hkin) to fill HKin's real order-creation
+  // form from this order's existing buyer/seller/recipient/lines — the very first Escrow-tab action,
+  // before any of the email-action-library steps below. Stops at HKin's own Confirmation screen for
+  // a human to review + submit; this only starts it, never waits for that human step.
+  createHkinOrder: (orderId: string) => void;
+  // Real HKin portal evidence (2026-08-12 session) — see Escrow's fields in @/types for the write-up.
+  markEscrowApplicationRejected: (orderId: string) => void;
+  recordEscrowRma: (orderId: string, input: { rmaDetails?: string; goodsReturnTracking?: string; markReturned?: boolean }) => void;
+  acceptEscrowGoods: (orderId: string, input: { partial?: boolean; note?: string }) => void;
+  rejectEscrowGoods: (orderId: string, reason: string) => void;
+  requestEscrowExtension: (orderId: string, reason: string) => void;
 
   simulateEscrowPoPiFetch: (orderId: string) => void;
   simulatePaymentClosureFetch: (orderId: string) => void;
@@ -360,14 +386,16 @@ interface Store {
 
   // Email action library — every SENT email goes through a compose/review step in the UI first
   // (see EscrowEmailDraft); nothing here fires from a single click without a human seeing the draft.
-  // Inbound mail is read by the (simulated) Escrow Agent, not chosen purpose-by-purpose from the
-  // UI — checkEscrowInbox is the one "check inbox" action the UI calls; receiveHkinConfirmationEmail
-  // / receiveEscrowEmail are its internal implementations, still exposed for other store code to call.
+  // Inbound mail is handled by escrow-agents' orchestrator, not chosen purpose-by-purpose from the
+  // UI — checkEscrowInbox is the one "check inbox" action the UI calls (see src/lib/escrow-api.ts).
   checkEscrowInbox: (orderId: string) => void;
-  receiveHkinConfirmationEmail: (orderId: string) => void;
+  // Real-mailbox sync — for use after scripts/poll_gmail_inbox.py has already ingested a genuine
+  // inbound email (invoice/WHL-report/finance-confirmation) into escrow-agents. Unlike
+  // checkEscrowInbox, this never fabricates anything — it only ticks the real backend so the
+  // orchestrator can react to what's already on file.
+  syncRealInbox: (orderId: string) => void;
   recordWhlVerdict: (orderId: string, verdict: WhlVerdict) => void; // real-world lab outcome — the one thing a human still has to report, not "receive"
   sendEscrowEmail: (orderId: string, purpose: EscrowSendPurpose, draft: EscrowEmailDraft, milestoneIndex?: number) => void;
-  receiveEscrowEmail: (orderId: string, purpose: EscrowReceivePurpose) => void;
 
   addPayment: (orderId: string, p: { direction: PaymentDirection; mode: PaymentMode; amount: number; triggerDoc: string; dueDate?: string }) => void;
   setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus) => void;
@@ -621,6 +649,19 @@ export const useStore = create<Store>()(
           if (target) { target.status = "ORDERED"; target.orderId = id; }
         });
         toast.success(`Order ${order.orderNo} created from ${spo.poNo} - ready for fulfilment`);
+        // Register the matching escrow order with escrow-agents in the background — the local
+        // `bundle.escrow` above is still what renders immediately; this just gives the real
+        // backend a row to track state in from here on. Failure (e.g. backend not running) is
+        // swallowed, not surfaced — escrow just won't be backend-driven for this order yet, and
+        // every escrow action already handles that gracefully via its own try/catch.
+        if (bundle.escrow) {
+          const esc = bundle.escrow;
+          void createEscrowOrder({
+            orderId: id, poAmount: esc.poAmount, currency: esc.currency, useInspectionService: esc.useInspectionService,
+            agreedFeeToBuyer: esc.agreedFeeToBuyer,
+            buyerContact: esc.buyerContact, sellerContact: esc.sellerContact, recipient: esc.recipient,
+          }).catch(() => {});
+        }
         return id;
       },
 
@@ -1365,206 +1406,225 @@ export const useStore = create<Store>()(
         return true;
       },
 
-      // Escrow Agent adapter — the seller's acceptance reply, relayed by HKin.
-      receiveHkinConfirmationEmail: (orderId) => {
-        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
-        if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
-        toast.message("Checking inbox for the seller's acceptance…");
-        void (async () => {
-          try {
-            const res = await escrowAgentFetchHkinConfirmation({
-              orderRef: b.orderNo, orderId: b.id, poAmount: e.poAmount, currency: e.currency,
-              inspectionPeriod: e.invoice?.conditions.inspectionPeriod ?? "5 business days",
-              feeSharingLabel: e.invoice?.conditions.feeSharingLabel ?? "TBD",
-              whlShipTo: e.recipient.company,
-            });
-            set((s) => {
-              const bb = s.orders[orderId]; const ee = bb?.escrow; if (!bb || !ee) return;
-              ee.agentEmails.push(res.email);
-              if (ee.status === "SENT_FOR_SELLER_CONFIRMATION") ee.status = "SELLER_CONFIRMED";
-            });
-            toast.success("Seller accepted the order");
-          } catch (e) { toast.error(`Escrow Agent: ${errMsg(e)}`); }
-        })();
-      },
-      // The one WHL signal escrow actually needs — booking + test execution live on the Testing tab.
-      // The physical branch point: PASS → goods continue to the buyer; FAIL → goods go back to the
-      // seller for retest or return. WHL always sends a detailed report alongside the verdict.
+      // The real WHL verdict is a genuine real-world outcome someone has to report — same real
+      // backend call as the other purposes below, but with the verdict picked by a human, not
+      // synthesized. escrow-agents runs the actual extraction-shaped path for it (see
+      // agents/whl_report_extractor.py); here we just choose PASS or FAIL and let it happen.
       recordWhlVerdict: (orderId, verdict) => {
         const b = get().orders[orderId]; if (!b?.escrow) return;
         if (b.escrow.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
         toast.message("Checking inbox for WHL's test report…");
         void (async () => {
           try {
-            const res = await escrowAgentFetchWhlVerdict({ orderRef: b.orderNo, verdict });
-            set((s) => {
-              const bb = s.orders[orderId]; const e = bb?.escrow; if (!bb || !e) return;
-              e.whlVerdict = verdict; e.whlVerdictAt = today(); e.whlReportRef = res.reportRef;
-              // A fresh verdict (e.g. after a retest run on the Testing tab) supersedes whatever
-              // refund conversation happened around the previous round.
-              e.refundRequestedAt = undefined; e.refundInstructedAt = undefined;
-              e.agentEmails.push(res.email);
-              bb.documents.push({ id: uid("doc"), subjectType: "LOT", docType: "WHL_REPORT", fileName: `${res.reportRef}.pdf`, uploadedBy: "WHL", uploadedAt: today() });
-            });
-            toast[verdict === "PASS" ? "success" : "error"](`WHL verdict received: ${verdict} (report ${res.reportRef})`);
-          } catch (e) { toast.error(`Escrow Agent: ${errMsg(e)}`); }
+            const res = await simulateNextInbound(orderId, verdict);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            toast[verdict === "PASS" ? "success" : "error"](`WHL verdict received: ${verdict}`);
+          } catch (e) { toast.error(errMsg(e)); }
         })();
       },
       // Only allowed pre T/T-received — once funds are moving, cancellation is out of scope for this POC.
       cancelEscrowOrder: (orderId) => {
         const e = get().orders[orderId]?.escrow; if (!e) return;
         if (e.cancelledAt) { toast("Already cancelled."); return; }
-        if (ESCROW_STATUS_ORDER.indexOf(e.status) >= ESCROW_STATUS_ORDER.indexOf("TT_PAYMENT_RECEIVED")) {
-          toast.error("Can't cancel once T/T payment has been received."); return;
+        // Real HKin evidence: a real order was cancelled with the fund-transfer step already
+        // marked complete — cancellation isn't actually gated on T/T payment, only on the
+        // order not already being fully released.
+        if (e.status === "RELEASED_TO_SELLER") {
+          toast.error("Can't cancel — funds have already been released to the seller."); return;
         }
-        set((s) => {
-          const ee = s.orders[orderId]?.escrow; if (!ee) return;
-          ee.cancelledAt = today();
-          s.orders[orderId]!.events.unshift({ id: uid("ev"), eventType: "GENERAL", message: "Escrow order cancelled.", source: "SC_MANUAL", occurredAt: today(), recordedBy: "You (demo)" });
-        });
-        toast.success("Escrow order cancelled");
+        void (async () => {
+          try {
+            const escrow = await cancelEscrowOrderApi(orderId);
+            set((s) => {
+              const bb = s.orders[orderId]; if (!bb) return;
+              bb.escrow = escrow;
+              bb.events.unshift({ id: uid("ev"), eventType: "GENERAL", message: "Escrow order cancelled.", source: "SC_MANUAL", occurredAt: today(), recordedBy: "You (demo)" });
+            });
+            toast.success("Escrow order cancelled");
+          } catch (e) { toast.error(errMsg(e)); }
+        })();
+      },
+
+      markEscrowApplicationRejected: (orderId) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const escrow = await markApplicationRejected(orderId);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            toast.error("HKin rejected the escrow application.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      recordEscrowRma: (orderId, input) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const escrow = await recordRma(orderId, input);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            toast.success(input.markReturned ? "Goods return confirmed." : "RMA details recorded.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      // Real portal: buyer clicks Accept All / Accept Partially — doesn't have to wait for an
+      // explicit WHL verdict. Backend reuses the existing whl_verdict=PASS release path; "partial"
+      // is recorded as a note only (real partial-release mechanics aren't evidenced yet).
+      acceptEscrowGoods: (orderId, input) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const escrow = await acceptGoodsApi(orderId, input);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            toast.success(`Goods accepted${input.partial ? " (partially)" : ""} — release will proceed.`);
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      // Real portal: buyer clicks Reject All, citing the WHL report — kicks off the same
+      // refund -> RMA -> goods-return -> refund-instruction sequence as a WHL FAIL would.
+      rejectEscrowGoods: (orderId, reason) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const escrow = await rejectGoodsApi(orderId, { reason });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            toast.message("Goods rejected — refund/return sequence started.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      // Real correspondence: the buyer (not HKin) is the one who asks for more inspection time,
+      // almost always citing a WHL delay. The reason text IS the review step (the UI shows/edits
+      // it before calling this) — so this creates the draft on the backend and sends it in the
+      // same action, rather than requiring a second separate send click on an auto-generated draft.
+      requestEscrowExtension: (orderId, reason) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const res = await requestExtension(orderId, { reason });
+            const sent = await sendEscrowDraft(res.draftId, { reviewedBy: "You (demo)" });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = sent.escrow; });
+            toast.success("Extension request sent to HKin.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      // The very first Escrow-tab action — launches the hkin-rpa RPA to fill HKin's real
+      // order-creation form from data already on this order (contacts + lines). It stops at HKin's
+      // own Confirmation screen for a human (SC) to review + submit on the real site; this call
+      // only starts it and returns immediately — it never waits for that human step, and never
+      // records a real HKin escrow number itself (there's no way to observe that from here yet).
+      askSupplierHkinAccount: (orderId) => {
+        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
+        set((s) => { const bb = s.orders[orderId]; if (bb?.escrow) bb.escrow.hkinAccountStatus = "ASKED"; });
+        toast.message(`Email sent to ${e.sellerContact.company} — asking if they have an HKin account (or need to open one).`);
+      },
+
+      confirmSupplierHkinAccount: (orderId) => {
+        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
+        set((s) => { const bb = s.orders[orderId]; if (bb?.escrow) bb.escrow.hkinAccountStatus = "CONFIRMED"; });
+        toast.success(`${e.sellerContact.company} confirmed they have an HKin account — you can create the HKin order now.`);
+      },
+
+      createHkinOrder: (orderId) => {
+        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
+        if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
+        if (e.hkinAccountStatus !== "CONFIRMED") {
+          toast.error("Confirm the supplier has an HKin account before creating the order there.");
+          return;
+        }
+        if (!e.buyerContact?.email || !e.sellerContact?.email) {
+          toast.error("Buyer and seller contacts (with email) are required before creating the HKin order.");
+          return;
+        }
+        if (!b.lines.length) { toast.error("Add at least one line item before creating the HKin order."); return; }
+        toast.message("Starting HKin order creation — a browser window will open for review.");
+        void (async () => {
+          try {
+            const res = await createOnHkin(orderId, {
+              forwarder: e.agreedConditions?.forwarder || "Fedex",
+              lines: b.lines.map((l) => ({
+                partNumber: l.mpn, brand: l.make, quantity: l.quantity, unitPrice: l.unitPrice,
+                remarks: `${l.make ?? ""} ${l.mpn}${l.dateCode ? `, date code ${l.dateCode}` : ""}`.trim(),
+              })),
+            });
+            set((s) => { const bb = s.orders[orderId]; if (bb?.escrow) bb.escrow.hkinRpaStartedAt = res.startedAt; });
+            toast.success("HKin order creation started — review the opened browser window before submitting on the real site.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
       },
       // Every SENT email in the action library routes through here — the UI always shows a
-      // reviewable/editable draft first (ComposeEmailModal); this just applies the real-world
-      // side-effect of that email actually going out, using whatever the draft ended up saying.
+      // reviewable/editable draft first (ComposeEmailModal). The actual draft (and its send-time
+      // side effects — advancing status, stamping timestamps, instructing a milestone) live in
+      // escrow-agents now; this finds the matching backend draft (the orchestrator creates it
+      // automatically once the order reaches the right state) and sends it with whatever the
+      // human ended up editing.
       sendEscrowEmail: (orderId, purpose, draft, milestoneIndex) => {
         const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
         if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
-        set((s) => {
-          const bb = s.orders[orderId]; const ee = bb?.escrow; if (!bb || !ee) return;
-          ee.agentEmails.push({ id: uid("ea"), direction: "SENT", subject: draft.subject, from: "you@1buy.ai", to: draft.to, snippet: draft.body.slice(0, 200), receivedAt: today() });
-          switch (purpose) {
-            case "ORDER_TO_SELLER": if (ee.status === "DRAFT") ee.status = "SENT_FOR_SELLER_CONFIRMATION"; break;
-            case "PAYMENT_INSTRUCTION_TO_FINANCE": ee.paymentInstructedAt = today(); break;
-            case "PAYMENT_CONFIRMATION_TO_HKIN": ee.paymentSentToHkinAt = today(); break;
-            case "REFUND_INSTRUCTION": ee.refundInstructedAt = today(); break;
-            case "RELEASE_FUNDS_INSTRUCTION":
-              if (milestoneIndex !== undefined) ee.milestoneReleases.push({ index: milestoneIndex, instructedAt: today() });
-              break;
-          }
-        });
-        toast.message(`Sent: ${draft.subject}`);
+        void (async () => {
+          try {
+            await tickEscrowOrder(orderId); // best-effort — ensures the backend draft exists
+            const drafts = await listEscrowDrafts(orderId);
+            const match = drafts.find((d) => d.purpose === purpose && d.status !== "SENT"
+              && (milestoneIndex === undefined ? d.milestoneIndex == null : d.milestoneIndex === milestoneIndex));
+            if (!match) { toast.error("escrow-agents hasn't generated this draft yet — try Check inbox first."); return; }
+            const res = await sendEscrowDraft(match.id, { reviewedBy: "You (demo)", to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            toast.message(`Sent: ${draft.subject}`);
+          } catch (e) { toast.error(errMsg(e)); }
+        })();
       },
-      // Internal — dispatched by checkEscrowInbox below, never called with a purpose picked
-      // straight off the UI. Applies the effect of whichever inbound email the agent surfaced.
-      receiveEscrowEmail: (orderId, purpose) => {
-        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
-        if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
-        const progressCount = e.agentEmails.filter((m) => m.subject.startsWith("Testing progress")).length;
-        const utr = `UTR${today().replace(/-/g, "")}${shortRef()}`;
-        const templates: Record<EscrowReceivePurpose, { from: string; subject: string; snippet: string }> = {
-          FINANCE_PAYMENT_CONFIRMATION: { from: "finance@1buy.ai", subject: `Payment made — ${b.orderNo}`, snippet: `Finance confirms the T/T has been sent per your instruction. UTR: ${utr}.` },
-          HKIN_PAYMENT_CONFIRMATION: { from: "billing@hkin-escrow.example", subject: `Payment received — ${b.orderNo}`, snippet: "HKin confirms the T/T payment has been received into escrow." },
-          SUPPLIER_SHIPMENT_NOTICE: { from: e.sellerContact.email || "seller@example.com", subject: `Shipment dispatched — ${b.orderNo}`, snippet: "Supplier confirms goods have been dispatched; AWB attached." },
-          WHL_GOODS_RECEIVED: { from: "labs@whl-labs.example", subject: `Goods received — ${b.orderNo}`, snippet: "WHL confirms receipt of the shipment for testing." },
-          HUB_GOODS_RECEIVED: { from: "warehouse@1buy.ai", subject: `Goods received at hub — ${b.orderNo}`, snippet: "1Buy hub confirms receipt of the shipment (no testing was agreed on this PO)." },
-          WHL_PROGRESS_UPDATE: { from: "labs@whl-labs.example", subject: `Testing progress — ${b.orderNo}`, snippet: WHL_PROGRESS_SNIPPETS[Math.min(progressCount, WHL_PROGRESS_SNIPPETS.length - 1)] },
-          CLIENT_REFUND_REQUEST: { from: "client@buyer.example", subject: `Refund requested — ${b.orderNo}`, snippet: `Following the FAIL result (report ${e.whlReportRef ?? "attached"}), the client is asking for a refund instead of a retest.` },
-        };
-        const t = templates[purpose];
-        set((s) => {
-          const bb = s.orders[orderId]; const ee = bb?.escrow; if (!bb || !ee) return;
-          ee.agentEmails.push({ id: uid("ea"), direction: "RECEIVED", subject: t.subject, from: t.from, snippet: t.snippet, receivedAt: today() });
-          switch (purpose) {
-            case "FINANCE_PAYMENT_CONFIRMATION": ee.financeConfirmedAt = today(); ee.financeUtr = utr; break;
-            case "HKIN_PAYMENT_CONFIRMATION": if (ee.status === "ESCROW_FEE_INVOICED") ee.status = "TT_PAYMENT_RECEIVED"; break;
-            case "SUPPLIER_SHIPMENT_NOTICE": if (ee.status === "TT_PAYMENT_RECEIVED") ee.status = "GOODS_SHIPPED"; break;
-            case "WHL_GOODS_RECEIVED": case "HUB_GOODS_RECEIVED":
-              ee.whlGoodsReceivedAt = today();
-              if (ee.status === "GOODS_SHIPPED") ee.status = "RECIPIENT_INSPECTION";
-              break;
-            case "CLIENT_REFUND_REQUEST": ee.refundRequestedAt = today(); break;
-            case "WHL_PROGRESS_UPDATE": break; // informational only
-          }
-        });
-        toast.success(`Received: ${t.subject}`);
-      },
-      // The single "Check inbox" action the UI calls — the (simulated) Escrow Agent reads the inbox
-      // and applies whatever the one next expected item is, rather than the human picking a specific
-      // email purpose off a menu of buttons. Priority: an already-instructed release tranche's
-      // confirmation always comes first (it can land at any status), then the status-driven next step.
+      // The single "Check inbox" action the UI calls. escrow-agents' orchestrator decides what
+      // it's waiting on; if that's an inbound message (not a draft awaiting a human to send it),
+      // the backend synthesizes a realistic one for that exact purpose and applies it for real
+      // (classifier + extractor, same as a genuine email) — see simulate-next-inbound in api.py.
       checkEscrowInbox: (orderId) => {
         const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
         if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
-
-        const milestones = e.invoice?.conditions.releaseMilestones ?? [];
-        const pending = e.milestoneReleases.find((r) => !r.confirmedAt);
-        if (pending) {
-          const m = milestones[pending.index];
-          toast.message("Checking inbox for HKin's release confirmation…");
-          set((s) => {
-            const bb = s.orders[orderId]; const ee = bb?.escrow; if (!bb || !ee) return;
-            const rec = ee.milestoneReleases.find((r) => r.index === pending.index);
-            if (rec) rec.confirmedAt = today();
-            ee.agentEmails.push({
-              id: uid("ea"), direction: "RECEIVED", subject: `Funds released${m ? ` — ${m.percent}%` : ""} — ${bb.orderNo}`,
-              from: "billing@hkin-escrow.example",
-              snippet: `HKin confirms ${m ? `${m.percent}% (${m.trigger})` : "this tranche"} has been released to the seller.`,
-              receivedAt: today(),
-            });
-            const invoiceMilestones = ee.invoice?.conditions.releaseMilestones ?? [];
-            const allConfirmed = invoiceMilestones.length > 0
-              && invoiceMilestones.every((_, i) => ee.milestoneReleases.find((r) => r.index === i)?.confirmedAt);
-            if (allConfirmed) ee.status = "RELEASED_TO_SELLER";
-          });
-          toast.success(`Received: funds released${m ? ` — ${m.percent}%` : ""}`);
-          return;
-        }
-
-        switch (e.status) {
-          case "DRAFT": toast("Nothing new yet — send the order to the seller first."); return;
-          case "SENT_FOR_SELLER_CONFIRMATION": get().receiveHkinConfirmationEmail(orderId); return;
-          case "SELLER_CONFIRMED": toast("Nothing new yet — fetch the escrow invoice below."); return;
-          case "ESCROW_FEE_INVOICED":
-            if (!e.paymentInstructedAt) { toast("Nothing new yet — send the payment instruction to Finance first."); return; }
-            if (!e.financeConfirmedAt) { get().receiveEscrowEmail(orderId, "FINANCE_PAYMENT_CONFIRMATION"); return; }
-            if (!e.paymentSentToHkinAt) { toast("Nothing new yet — send the payment confirmation (with the UTR) to HKin first."); return; }
-            get().receiveEscrowEmail(orderId, "HKIN_PAYMENT_CONFIRMATION"); return;
-          case "TT_PAYMENT_RECEIVED": get().receiveEscrowEmail(orderId, "SUPPLIER_SHIPMENT_NOTICE"); return;
-          case "GOODS_SHIPPED": {
-            const needsTesting = b.lines.some((l) => l.testingMode !== "NONE");
-            get().receiveEscrowEmail(orderId, needsTesting ? "WHL_GOODS_RECEIVED" : "HUB_GOODS_RECEIVED");
-            return;
-          }
-          case "RECIPIENT_INSPECTION": {
-            if (e.whlVerdict === "FAIL") {
-              // Retest/return itself is decided on the Testing tab — escrow only needs to know if the
-              // client asks for a refund instead of waiting on a retest.
-              if (e.refundInstructedAt) { toast("Nothing new right now."); return; }
-              if (!e.refundRequestedAt) { get().receiveEscrowEmail(orderId, "CLIENT_REFUND_REQUEST"); return; }
-              toast("Nothing new yet — send the refund instruction to HKin and the supplier."); return;
-            }
-            if (!e.whlVerdict) { get().receiveEscrowEmail(orderId, "WHL_PROGRESS_UPDATE"); return; }
-            toast("Nothing new right now."); return; // PASS — handled by milestone releases below
-          }
-          default: toast("No new mail right now."); return;
-        }
+        toast.message("Checking inbox…");
+        void (async () => {
+          try {
+            const res = await simulateNextInbound(orderId);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            if (res.action === "waiting" || res.action === "nothing") toast(res.detail);
+            else toast.success(res.detail);
+          } catch (e) { toast.error(errMsg(e)); }
+        })();
       },
-      // Escrow Agent adapter — simulates the inbox watcher (real gap: IMAP/webhook + PDF template-parse, see spec §8).
+      // Unlike checkEscrowInbox, never calls simulate-next-inbound — only ticks the real backend,
+      // so a genuine email already ingested by scripts/poll_gmail_inbox.py gets reacted to without
+      // fabricating a synthetic one alongside it.
+      syncRealInbox: (orderId) => {
+        const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
+        if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
+        toast.message("Syncing with escrow-agents…");
+        void (async () => {
+          try {
+            const res = await tickEscrowOrder(orderId);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            if (res.action === "waiting" || res.action === "nothing") toast(res.detail);
+            else toast.success(res.detail);
+          } catch (e) { toast.error(errMsg(e)); }
+        })();
+      },
+      // First-ever invoice fetch — once an invoice already exists, escrow-agents has moved past
+      // this check entirely (its state machine is one-shot per step, see orchestrator.py), so this
+      // only does anything useful while status === SELLER_CONFIRMED and no invoice exists yet.
       simulateEscrowInvoiceEmail: (orderId) => {
         const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
         if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
         if (ESCROW_STATUS_ORDER.indexOf(e.status) < ESCROW_STATUS_ORDER.indexOf("SELLER_CONFIRMED")) {
           toast.error("The invoice only arrives once the seller has accepted the order."); return;
         }
-        // Sequence must track how many times THIS invoice was fetched, not the whole inbox (which
-        // also holds unrelated PO/PI emails) — else a first-ever fetch could wrongly land on the
-        // "revised" (+25% fee) variant just because other mail arrived first.
-        const sequence = e.invoice ? 1 : 0;
-        const invoiceNo = e.invoice?.invoiceNo ?? `AE${today().replace(/-/g, "").slice(2, 6)}-${shortRef()}`;
         toast.message("Escrow Agent checking inbox…");
         void (async () => {
           try {
-            const res = await escrowAgentFetchInvoice({ orderRef: b.orderNo, invoiceNo, sequence, poAmount: e.poAmount, agreedConditions: e.agreedConditions });
-            set((s) => {
-              const bb = s.orders[orderId]; const ee = bb?.escrow; if (!bb || !ee) return;
-              ee.agentEmails.push(res.email);
-              ee.invoice = res.invoice;
-              if (ee.status === "SELLER_CONFIRMED") ee.status = "ESCROW_FEE_INVOICED";
-              bb.documents.push({ id: uid("doc"), subjectType: "ESCROW", docType: "ESCROW_INVOICE", fileName: res.email.attachmentFileName ?? `${invoiceNo}.pdf`, uploadedBy: "Escrow Agent", uploadedAt: today() });
-            });
-            toast.success(`Escrow Agent: fetched invoice ${res.invoice.invoiceNo}`);
-          } catch (e) { toast.error(`Escrow Agent: ${errMsg(e)}`); }
+            const res = await simulateNextInbound(orderId);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            toast[res.action === "advanced" ? "success" : "message"](res.detail);
+          } catch (e) { toast.error(errMsg(e)); }
         })();
       },
       uploadEscrowInvoiceManually: (orderId, input) => {
@@ -1573,15 +1633,13 @@ export const useStore = create<Store>()(
         if (!cur || ESCROW_STATUS_ORDER.indexOf(cur.status) < ESCROW_STATUS_ORDER.indexOf("SELLER_CONFIRMED")) {
           toast.error("The invoice only arrives once the seller has accepted the order."); return;
         }
-        const receivedAt = today();
-        set((s) => {
-          const b = s.orders[orderId]; const e = b?.escrow; if (!b || !e) return;
-          e.invoice = { invoiceNo: input.invoiceNo, fees: input.fees, conditions: input.conditions, bankAccount: DEMO_ESCROW_BANK_ACCOUNT, receivedAt };
-          e.agentEmails.push({ id: uid("ea"), direction: "RECEIVED", subject: `Escrow invoice ${input.invoiceNo} (manual upload)`, from: "you@1buy.ai", snippet: "Uploaded manually — the agent didn't catch this one.", receivedAt, attachmentFileName: `${input.invoiceNo}.pdf` });
-          if (e.status === "SELLER_CONFIRMED") e.status = "ESCROW_FEE_INVOICED";
-          b.documents.push({ id: uid("doc"), subjectType: "ESCROW", docType: "ESCROW_INVOICE", fileName: `${input.invoiceNo}.pdf`, uploadedBy: "You (demo)", uploadedAt: receivedAt });
-        });
-        toast.success(`Invoice ${input.invoiceNo} attached`);
+        void (async () => {
+          try {
+            const escrow = await uploadEscrowInvoiceManuallyApi(orderId, input);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            toast.success(`Invoice ${input.invoiceNo} attached`);
+          } catch (e) { toast.error(errMsg(e)); }
+        })();
       },
 
       // Fetches the buyer PO + supplier PI as evidence documents for the escrow order.
@@ -2424,8 +2482,9 @@ export const useStore = create<Store>()(
       name: "poc-sourceops",
       // 2 = 3-entity model · 3 = WHL testing · 4 = full hardcoded seed on every order ·
       // 5-11 = escrow rebuild (8-state machine, milestones, checkEscrowInbox) · 12 = merged with the WHL testing module ·
-      // 13 = merged with the RFQ module (client intake → PO, PI-gated approvals)
-      version: 13,
+      // 13 = merged with the RFQ module (client intake → PO, PI-gated approvals) ·
+      // 14 = added ord-201/202 demo orders + Escrow.hkinRpaStartedAt
+      version: 17,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

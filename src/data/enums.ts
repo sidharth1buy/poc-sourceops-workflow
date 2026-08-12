@@ -51,14 +51,6 @@ export const NAV_GROUPS = [
   { group: null, items: [
     { href: "/fulfilment", label: "Dashboard", icon: "LayoutDashboard" },
   ] },
-  { group: "RFQ Management", items: [
-    { href: "/fulfilment/client-rfq", label: "Client RFQs", icon: "Mail" },
-    { href: "/fulfilment/rfq-aggregation", label: "RFQ Flow", icon: "SendHorizontal" },
-    { href: "/fulfilment/rfq-bundles", label: "Supplier RFQs", icon: "FileText" },
-    { href: "/fulfilment/quote-matching-inbox", label: "Quote Inbox", icon: "PlusCircle" },
-    { href: "/fulfilment/quote-approvals", label: "Quote Approvals", icon: "CheckCircle2" },
-    { href: "/fulfilment/client-quotes", label: "Client Quotes", icon: "DollarSign" },
-  ] },
   { group: "Create", items: [
     { href: "/fulfilment/client-pos", label: "Client POs", icon: "FileText" },
     { href: "/fulfilment/supplier-pos", label: "Supplier POs", icon: "ClipboardList" },

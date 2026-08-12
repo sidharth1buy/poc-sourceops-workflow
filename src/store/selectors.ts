@@ -78,7 +78,7 @@ export function escrowMilestoneTriggerMet(b: OrderBundle, trigger: string): bool
   const t = trigger.toLowerCase();
   if (t.includes("ship")) return escrowStatusIndex(e.status) >= escrowStatusIndex("GOODS_SHIPPED");
   if (t.includes("pass") || t.includes("report")) return escrowReleaseReadiness(b).ready;
-  if (t.includes("receiv")) return !!e.whlGoodsReceivedAt;
+  if (t.includes("receiv")) return !!e.goodsReceivedAt;
   return escrowReleaseReadiness(b).ready;
 }
 
