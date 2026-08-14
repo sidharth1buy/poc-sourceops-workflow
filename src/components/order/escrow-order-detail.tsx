@@ -5,9 +5,10 @@ import { useState } from "react";
 import { ArrowLeft, Lock } from "lucide-react";
 import { EscrowTab } from "@/components/order/escrow-tab";
 import { UploadEscrowInvoiceModal, UploadPaymentClosureModal, UploadDocModal, UploadPIModal } from "@/components/order/modals";
-import { Panel, StatusPill } from "@/components/ui/primitives";
+import { Panel, Pill, StatusPill } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
+import { useEscrowMockMode } from "@/lib/escrow-mode";
 
 type ModalKey = null | "escrowInvoice" | "paymentClosure" | "doc" | "pi";
 
@@ -16,6 +17,7 @@ type ModalKey = null | "escrowInvoice" | "paymentClosure" | "doc" | "pi";
 export function EscrowOrderDetail({ id }: { id: string }) {
   const b = useStore((s) => s.orders[id]);
   const { canAccessEscrow } = useRole();
+  const escrowMock = useEscrowMockMode();
   const [modal, setModal] = useState<ModalKey>(null);
   const close = () => setModal(null);
 
@@ -51,6 +53,7 @@ export function EscrowOrderDetail({ id }: { id: string }) {
           <h1 className="font-mono text-lg font-semibold">{b.orderNo}</h1>
           <p className="text-sm text-muted-foreground">{b.buyer.name} · {b.supplier.name}</p>
         </div>
+        {escrowMock && <Pill tone="warn">Mock mode</Pill>}
         {b.escrow && <StatusPill status={b.escrow.status} />}
         <Link href={`/fulfilment/orders/${id}`} className="text-xs font-medium text-primary hover:underline">Open full order workspace →</Link>
       </div>

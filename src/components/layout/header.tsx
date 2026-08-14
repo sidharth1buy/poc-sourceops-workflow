@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { Search, Plus, RotateCcw, Menu } from "lucide-react";
 import { ROLES, type Role } from "@/data/enums";
 import { setActiveRole, ROLE_STORAGE_KEY } from "@/lib/role";
+import { useEscrowMockMode, setEscrowMockMode } from "@/lib/escrow-mode";
 import { Button } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ export function Header({ onMenu }: { onMenu: () => void }) {
   const [role, setRole] = useState<Role>("SC");
   const resetDemo = useStore((s) => s.resetDemo);
   const [createOpen, setCreateOpen] = useState(false);
+  const escrowMock = useEscrowMockMode();
 
   useEffect(() => {
     document.documentElement.classList.remove("dark"); // POC is light-theme only
@@ -46,6 +48,16 @@ export function Header({ onMenu }: { onMenu: () => void }) {
         <input placeholder="Search orders, AWB, BOE…" className="w-full rounded-lg border bg-background py-1.5 pl-9 pr-3 text-sm outline-none focus:border-primary" />
       </div>
       <div className="ml-auto flex items-center gap-2">
+        <button
+          onClick={() => setEscrowMockMode(!escrowMock)}
+          title="Escrow backend — Live hits the real escrow-agents server; Mock simulates it locally for demos when that server isn't reachable"
+          className={cn(
+            "hidden rounded-lg border px-2.5 py-1 text-xs font-medium transition md:block",
+            escrowMock ? "border-warn bg-warn-bg text-warn" : "bg-background text-muted-foreground hover:text-foreground",
+          )}
+        >
+          Escrow: {escrowMock ? "Mock" : "Live"}
+        </button>
         <div className="hidden items-center gap-1 rounded-lg border bg-background p-0.5 text-xs md:flex" title="Persona — jumps to that role's work queue">
           {ROLES.map((r) => (
             <button key={r} onClick={() => pickRole(r)}

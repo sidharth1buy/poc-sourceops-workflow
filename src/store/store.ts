@@ -40,6 +40,7 @@ import {
   simulateDeadlineReminder,
 } from "@/lib/escrow-api";
 import { sendRfqInvite } from "@/integrations/rfq-send";
+import { isEscrowMockMode } from "@/lib/escrow-mode";
 import { BUYERS, SUPPLIERS } from "@/data/directory";
 
 export interface EscrowEmailDraft { to: string; cc?: string; subject: string; body: string; }
@@ -694,7 +695,7 @@ export const useStore = create<Store>()(
         // backend a row to track state in from here on. Failure (e.g. backend not running) is
         // swallowed, not surfaced — escrow just won't be backend-driven for this order yet, and
         // every escrow action already handles that gracefully via its own try/catch.
-        if (bundle.escrow) {
+        if (bundle.escrow && !isEscrowMockMode()) {
           const esc = bundle.escrow;
           void createEscrowOrder({
             orderId: id, poAmount: esc.poAmount, currency: esc.currency, useInspectionService: esc.useInspectionService,

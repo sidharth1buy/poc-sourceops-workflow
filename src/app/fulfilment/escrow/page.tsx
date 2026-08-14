@@ -7,11 +7,14 @@ import { allEscrow } from "@/store/selectors";
 import { Panel, Pill, StatusPill, DataTable, PageHeader, type Col } from "@/components/ui/primitives";
 import { money } from "@/lib/utils";
 import { useRole } from "@/lib/role";
+import { useEscrowMockMode } from "@/lib/escrow-mode";
 
 export default function EscrowBoardPage() {
   const orders = useStore((s) => s.orders);
   const { canAccessEscrow } = useRole();
+  const escrowMock = useEscrowMockMode();
   const rows = allEscrow(orders);
+  const title = <span className="inline-flex items-center gap-2">Escrow board{escrowMock && <Pill tone="warn">Mock mode</Pill>}</span>;
 
   const cols: Col<(typeof rows)[number]>[] = [
     { key: "no", header: "Order", render: (r) => <Link href={`/fulfilment/escrow/${r.orderId}`} className="font-mono text-xs text-primary hover:underline">{r.orderNo}</Link> },
@@ -39,7 +42,7 @@ export default function EscrowBoardPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Escrow board" description="Every order's escrow order across the 8-state HKin-modelled flow (Draft → Released to Seller). All actions — advance, invoice, accept/reject, release, refund — live here on each order's detail page." />
+      <PageHeader title={title} description="Every order's escrow order across the 8-state HKin-modelled flow (Draft → Released to Seller). All actions — advance, invoice, accept/reject, release, refund — live here on each order's detail page." />
       <Panel><DataTable columns={cols} rows={rows} empty="No escrow orders." /></Panel>
     </div>
   );

@@ -6,6 +6,12 @@
 // interface field-for-field (the backend was built to mirror it), so callers
 // can drop the response straight into `orders[orderId].escrow` with no mapping.
 import type { Escrow, EscrowConditions, EscrowFeeBreakdown } from "@/types";
+import { isEscrowMockMode } from "@/lib/escrow-mode";
+import {
+  mockSimulateNextInbound, mockTickEscrowOrder, mockListEscrowDrafts, mockSendEscrowDraft,
+  mockCreateOnHkin, mockUploadEscrowInvoiceManually, mockCancelEscrowOrder, mockMarkApplicationRejected,
+  mockRecordRma, mockAcceptGoods, mockRejectGoods, mockRequestExtension, mockSimulateDeadlineReminder,
+} from "@/integrations/escrow-mock";
 
 export const ESCROW_API_BASE = process.env.NEXT_PUBLIC_ESCROW_API_URL ?? "http://localhost:8000";
 const BASE = ESCROW_API_BASE;
@@ -57,10 +63,12 @@ export function createEscrowOrder(input: {
 interface EscrowContactIn { company: string; registeredAddress?: string; country?: string; contactPerson?: string; email?: string; phone?: string; im?: string; }
 
 export function tickEscrowOrder(orderId: string): Promise<TickResponse> {
+  if (isEscrowMockMode()) return mockTickEscrowOrder(orderId);
   return call<TickResponse>(`/escrow/orders/${orderId}/tick`, { method: "POST" });
 }
 
 export function listEscrowDrafts(orderId: string): Promise<DraftResponse[]> {
+  if (isEscrowMockMode()) return mockListEscrowDrafts(orderId);
   return call<DraftResponse[]>(`/escrow/orders/${orderId}/drafts`);
 }
 
@@ -68,10 +76,12 @@ export function sendEscrowDraft(
   draftId: string,
   input: { reviewedBy: string; to?: string; cc?: string; subject?: string; body?: string },
 ): Promise<{ draft: DraftResponse; escrow: Escrow }> {
+  if (isEscrowMockMode()) return mockSendEscrowDraft(draftId, input);
   return call(`/escrow/drafts/${draftId}/send`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function cancelEscrowOrder(orderId: string): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockCancelEscrowOrder(orderId);
   return call<Escrow>(`/escrow/orders/${orderId}/cancel`, { method: "POST" });
 }
 
@@ -81,6 +91,7 @@ export function createOnHkin(
   orderId: string,
   input: { forwarder: string; lines: { partNumber: string; brand?: string; quantity: number; unitPrice: number; remarks?: string }[] },
 ): Promise<CreateOnHkinResponse> {
+  if (isEscrowMockMode()) return mockCreateOnHkin();
   return call<CreateOnHkinResponse>(`/escrow/orders/${orderId}/create-on-hkin`, { method: "POST", body: JSON.stringify(input) });
 }
 
@@ -88,6 +99,7 @@ export function uploadEscrowInvoiceManually(
   orderId: string,
   input: { invoiceNo: string; fees: EscrowFeeBreakdown; conditions: EscrowConditions },
 ): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockUploadEscrowInvoiceManually(orderId, input);
   return call<Escrow>(`/escrow/orders/${orderId}/invoice/manual`, { method: "POST", body: JSON.stringify(input) });
 }
 
@@ -96,6 +108,7 @@ export interface SimulateInboundResponse extends TickResponse {
 }
 
 export function simulateNextInbound(orderId: string, verdict?: "PASS" | "FAIL"): Promise<SimulateInboundResponse> {
+  if (isEscrowMockMode()) return mockSimulateNextInbound(orderId, verdict);
   return call<SimulateInboundResponse>(`/escrow/orders/${orderId}/simulate-next-inbound`, {
     method: "POST",
     body: JSON.stringify(verdict ? { verdict } : {}),
@@ -105,12 +118,14 @@ export function simulateNextInbound(orderId: string, verdict?: "PASS" | "FAIL"):
 // ---- real HKin portal evidence (2026-08-12 session) — see Escrow's fields in @/types ----
 
 export function markApplicationRejected(orderId: string): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockMarkApplicationRejected(orderId);
   return call<Escrow>(`/escrow/orders/${orderId}/application-rejected`, { method: "POST" });
 }
 
 // Demo/dev button — HKin's real deadline-reminder email is an independent signal, not
 // something simulate-next-inbound's awaiting-purpose mechanism can produce (see api.py).
 export function simulateDeadlineReminder(orderId: string): Promise<{ escrow: Escrow }> {
+  if (isEscrowMockMode()) return mockSimulateDeadlineReminder(orderId);
   return call(`/escrow/orders/${orderId}/simulate-deadline-reminder`, { method: "POST" });
 }
 
@@ -118,17 +133,21 @@ export function recordRma(
   orderId: string,
   input: { rmaDetails?: string; goodsReturnTracking?: string; markReturned?: boolean },
 ): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockRecordRma(orderId, input);
   return call<Escrow>(`/escrow/orders/${orderId}/rma`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function acceptGoods(orderId: string, input: { partial?: boolean; note?: string }): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockAcceptGoods(orderId);
   return call<Escrow>(`/escrow/orders/${orderId}/accept-goods`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function rejectGoods(orderId: string, input: { reason: string }): Promise<Escrow> {
+  if (isEscrowMockMode()) return mockRejectGoods(orderId, input);
   return call<Escrow>(`/escrow/orders/${orderId}/reject-goods`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export function requestExtension(orderId: string, input: { reason: string }): Promise<{ draftId: string; escrow: Escrow }> {
+  if (isEscrowMockMode()) return mockRequestExtension(orderId);
   return call(`/escrow/orders/${orderId}/request-extension`, { method: "POST", body: JSON.stringify(input) });
 }
