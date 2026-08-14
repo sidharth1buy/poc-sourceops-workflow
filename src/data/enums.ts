@@ -51,14 +51,6 @@ export const NAV_GROUPS = [
   { group: null, items: [
     { href: "/fulfilment", label: "Dashboard", icon: "LayoutDashboard" },
   ] },
-  { group: "RFQ Management", items: [
-    { href: "/fulfilment/client-rfq", label: "Client RFQs", icon: "Mail" },
-    { href: "/fulfilment/rfq-aggregation", label: "RFQ Flow", icon: "SendHorizontal" },
-    { href: "/fulfilment/rfq-bundles", label: "Supplier RFQs", icon: "FileText" },
-    { href: "/fulfilment/quote-matching-inbox", label: "Quote Inbox", icon: "PlusCircle" },
-    { href: "/fulfilment/quote-approvals", label: "Quote Approvals", icon: "CheckCircle2" },
-    { href: "/fulfilment/client-quotes", label: "Client Quotes", icon: "DollarSign" },
-  ] },
   { group: "Create", items: [
     { href: "/fulfilment/client-pos", label: "Client POs", icon: "FileText" },
     { href: "/fulfilment/supplier-pos", label: "Supplier POs", icon: "ClipboardList" },
@@ -677,9 +669,12 @@ export function notifyDigest(party: NotifyParty, c: NotifyDigestCtx): { subject:
 // Access control - only these personas may override auto-filled tests or email WHL on our behalf.
 export const TEST_EDIT_ROLES: Role[] = ["SC", "Mgmt"];
 export const LAB_EMAIL_ROLES: Role[] = ["SC", "Mgmt"];
+// Escrow/payments are money-movement actions — restricted to Finance. Escrow now lives
+// only under the Escrow board (/fulfilment/escrow/[id]), not as an order-workspace tab.
+export const ESCROW_ACCESS_ROLES: Role[] = ["Finance"];
 
 export const WORKSPACE_TABS = [
-  "Overview", "Lines", "Allocations", "Journey", "Testing", "Escrow", "Payments",
+  "Overview", "Lines", "Allocations", "Journey", "Testing", "Payments",
   "Shipments", "Customs", "Delivery", "Documents", "Events", "Approvals",
 ] as const;
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number];

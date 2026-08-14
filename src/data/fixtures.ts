@@ -1,5 +1,5 @@
 import type {
-  Order, OrderBundle, JourneyStep, JourneyPhase, Lot, Escrow, EscrowOrderStatus, EscrowFeeBreakdown, EscrowConditions, MilestoneRelease, WhlVerdict, Payment,
+  Order, OrderBundle, JourneyStep, JourneyPhase, Lot, Escrow, EscrowContact, EscrowOrderStatus, EscrowFeeBreakdown, EscrowConditions, MilestoneRelease, WhlVerdict, Payment,
   Shipment, CustomsEntry, DeliveryAllocation, SourcingAllocation, DocumentRef, Approval, OrderEvent, OrderLine, ClientPO, SupplierPO, TestingMode, Address,
   MpnTestSpec, LabEmail, LotTest, WhlReport, TestProcessStatus, TestAuditEntry, LotNotification,
   TestingStage, TestingStageEvent,
@@ -326,6 +326,29 @@ export const ORDERS: Order[] = [
     leadTimeDays: 15, testingTimeDays: 3, deliveryTimeDays: 6,
     expectedDispatchDate: "2026-08-18", expectedDeliveryDate: "2026-08-24", requiredBy: "2026-08-29",
     buyTotal: 20500, sellTotal: 23200, createdBy: "A. Sharma", createdAt: "2026-07-30",
+  },
+
+  // ---- Manager-demo orders (ord-201, ord-202) — fresh at DRAFT with real, complete contact data
+  // (via contactsOverride below), unlike ord-180/196 above which carry placeholder "—" seller/
+  // recipient emails by design (generic E2E scaffold). These two are meant to be clicked through
+  // live, starting with the "Create HKin order" RPA step, without hitting the placeholder-email guard.
+  {
+    id: "ord-201", orderNo: "ORD-2026-000201", operatingMode: "MOR", tradeType: "INTERNATIONAL",
+    status: "ACTIVE", approvalStatus: "APPROVED",
+    buyer: { name: "Orion Aerospace Systems", country: "US" }, supplier: { name: "Kyoto Precision Components", country: "JP" },
+    maskingEntity: "Sharpbuy Global Solutions", currency: "USD", incoterm: "FOB", paymentMode: "ESCROW", testingMode: "WHL",
+    leadTimeDays: 20, testingTimeDays: 6, deliveryTimeDays: 8,
+    expectedDispatchDate: "2026-08-28", expectedDeliveryDate: "2026-09-05", requiredBy: "2026-09-10",
+    buyTotal: 11800, sellTotal: 13400, createdBy: "A. Sharma", createdAt: "2026-08-08",
+  },
+  {
+    id: "ord-202", orderNo: "ORD-2026-000202", operatingMode: "MOR", tradeType: "INTERNATIONAL",
+    status: "ACTIVE", approvalStatus: "APPROVED",
+    buyer: { name: "Nordic Robotics AB", country: "SE" }, supplier: { name: "Guangzhou Digital Semiconductor", country: "CN" },
+    maskingEntity: "Sharpbuy Global Solutions", currency: "USD", incoterm: "FOB", paymentMode: "ESCROW", testingMode: "SUPPLIER_SELF",
+    leadTimeDays: 16, testingTimeDays: 4, deliveryTimeDays: 7,
+    expectedDispatchDate: "2026-08-24", expectedDeliveryDate: "2026-08-31", requiredBy: "2026-09-05",
+    buyTotal: 15200, sellTotal: 17300, createdBy: "P. Nair", createdAt: "2026-08-07",
   },
 ];
 
@@ -784,9 +807,9 @@ const HERO_ESCROW: Escrow = {
     },
     bankAccount: DEMO_ESCROW_BANK_ACCOUNT,
   },
-  paymentInstructedAt: "2026-07-19", financeConfirmedAt: "2026-07-19", financeUtr: "UTR20260719A912",
+  paymentInstructedAt: "2026-07-19", financeConfirmedAt: "2026-07-19", financeSwiftReference: "SWIFT20260719A912",
   paymentSentToHkinAt: "2026-07-20",
-  whlGoodsReceivedAt: "2026-07-24",
+  goodsReceivedAt: "2026-07-24",
   whlVerdict: "PASS", whlVerdictAt: "2026-07-25", whlReportRef: "352146.2", // LOT-A's current WHL report on the Testing tab
   // First tranche (30% on shipment) already settled; second (70% on PASS) is the one action away
   // from release the hero order is meant to demo — whlVerdict is already PASS, ready to send.
@@ -871,6 +894,11 @@ interface EscrowSeedScenario {
   feeMismatch?: boolean;    // invoice fee ≠ agreedFeeToBuyer, to demo the red §7 reconciliation banner
   seedInboundAwb?: boolean; // seed a real inbound AWB, for the "no testing agreed → release on AWB" path
   conditionsOverride?: Partial<EscrowConditions>; // different real-world invoices quote different terms — override the default per order
+  // The generic escrow scaffold below fills seller/recipient contacts with placeholder "—"
+  // email/phone (real business data isn't known generically) — fine for E2E-test orders that never
+  // leave this app, but the "Create HKin order" RPA needs real, submittable values. Override per
+  // order when it needs to actually go through that flow live (see ord-201/202).
+  contactsOverride?: { buyerContact?: Partial<EscrowContact>; sellerContact?: Partial<EscrowContact>; recipient?: Partial<EscrowContact> };
 }
 
 // One order per stage of the 8-state flow, plus every edge case and a spread of genuinely
@@ -974,6 +1002,39 @@ const ESCROW_SEED_SCENARIOS: Record<string, EscrowSeedScenario> = {
       releaseMilestones: [{ percent: 50, trigger: "On shipment to WHL for testing" }, { percent: 50, trigger: "On WHL PASS report" }],
     },
   },
+
+  // ---- Manager-demo orders — see the comment on ord-201/202 in ORDERS above. Real contacts (not
+  // the generic "—" placeholders) so "Create HKin order" actually goes through live.
+  "ord-201": {
+    status: "DRAFT",
+    contactsOverride: {
+      buyerContact: { phone: "+1 415 555 0142" },
+      sellerContact: {
+        registeredAddress: "2-14 Higashiyama, Yamashina-ku, Kyoto 607-8471, Japan", country: "Japan", contactPerson: "Kenji Watanabe (Sales Director)",
+        email: "k.watanabe@kyotoprecision.example", phone: "+81 75 555 0198",
+      },
+      recipient: {
+        company: "WHL Testing Laboratories — Shenzhen", registeredAddress: "Gang Zhi Long Science Park, Qinglong Road, Shenzhen, China",
+        country: "China", contactPerson: "Ms. Fang Li, Lab Coordinator", email: "fang.li@whltest.example", phone: "+86 755 8600 1122", im: "WeChat: whl_fangli",
+      },
+    },
+  },
+  "ord-202": {
+    status: "DRAFT",
+    conditionsOverride: { forwarder: "FedEx", forwarderAccountNo: "FDX-ACC-77410 (demo)" },
+    contactsOverride: {
+      buyerContact: { phone: "+46 8 555 0177" },
+      sellerContact: {
+        registeredAddress: "18 Tianhe Digital Park, Tianhe District, Guangzhou, China", country: "China", contactPerson: "Zhou Yifan (Export Sales)",
+        email: "zhou.yifan@gzdigitalsemi.example", phone: "+86 20 555 0163", im: "WeChat: gzds_zhou",
+      },
+      // No external test lab in this order (SUPPLIER_SELF testing) — goods go straight to the hub.
+      recipient: {
+        company: "1Buy Hub — New Delhi", registeredAddress: "Plot 7, Sector 18, Udyog Vihar, New Delhi, Delhi 110037, India",
+        country: "India", contactPerson: "Warehouse Ops Desk", email: "hub-ops@sharpbuy.demo", phone: "+91 11 4555 0199",
+      },
+    },
+  },
 };
 
 export function getOrderBundle(id: string): OrderBundle | undefined {
@@ -1051,11 +1112,11 @@ export function getOrderBundle(id: string): OrderBundle | undefined {
   const escrow: Escrow | undefined = o.paymentMode === "ESCROW"
     ? {
         id: `${o.id}-esc`, status: escrowStatus,
-        buyerContact: { company: o.maskingEntity, registeredAddress: "New Delhi, Delhi, India (masking entity — on file)", country: "India", contactPerson: "SC Ops Desk", email: "scops@sharpbuy.demo", phone: "—", im: "—" },
-        sellerContact: { company: o.supplier.name, registeredAddress: "Address on file", country: o.supplier.country, contactPerson: "Sales (TBD)", email: "—", phone: "—", im: "—" },
+        buyerContact: { company: o.maskingEntity, registeredAddress: "New Delhi, Delhi, India (masking entity — on file)", country: "India", contactPerson: "SC Ops Desk", email: "scops@sharpbuy.demo", phone: "—", im: "—", ...scenario?.contactsOverride?.buyerContact },
+        sellerContact: { company: o.supplier.name, registeredAddress: "Address on file", country: o.supplier.country, contactPerson: "Sales (TBD)", email: "—", phone: "—", im: "—", ...scenario?.contactsOverride?.sellerContact },
         poAmount: o.buyTotal, currency: o.currency,
         useInspectionService: testingModeOf(o) === "WHL",
-        recipient: { company: o.terms?.labLocation ?? "Independent test lab (TBD)", registeredAddress: "Address on file", country: "—", contactPerson: "Lab Coordinator (TBD)", email: "—", phone: "—", im: "—" },
+        recipient: { company: o.terms?.labLocation ?? "Independent test lab (TBD)", registeredAddress: "Address on file", country: "—", contactPerson: "Lab Coordinator (TBD)", email: "—", phone: "—", im: "—", ...scenario?.contactsOverride?.recipient },
         agreedFeeToBuyer: baseFeeToBuyer,
         agreedConditions: mergedConditions,
         invoice: hasInvoice ? {
@@ -1069,9 +1130,9 @@ export function getOrderBundle(id: string): OrderBundle | undefined {
         } : undefined,
         paymentInstructedAt: paymentDone ? addDays(o.createdAt, 4) : undefined,
         financeConfirmedAt: paymentDone ? addDays(o.createdAt, 4) : undefined,
-        financeUtr: paymentDone ? `UTR${o.createdAt.replace(/-/g, "")}${o.id.toUpperCase()}` : undefined,
+        financeSwiftReference: paymentDone ? `SWIFT${o.createdAt.replace(/-/g, "")}${o.id.toUpperCase()}` : undefined,
         paymentSentToHkinAt: paymentDone ? addDays(o.createdAt, 5) : undefined,
-        whlGoodsReceivedAt: idx >= ESCROW_STATUS_ORDER.indexOf("RECIPIENT_INSPECTION") ? addDays(o.createdAt, 8) : undefined,
+        goodsReceivedAt: idx >= ESCROW_STATUS_ORDER.indexOf("RECIPIENT_INSPECTION") ? addDays(o.createdAt, 8) : undefined,
         whlVerdict: finalVerdict,
         whlVerdictAt: finalVerdict ? addDays(o.createdAt, 9) : undefined,
         whlReportRef: finalVerdict ? `WHL-RPT-${o.id.toUpperCase()}-SEED` : undefined,

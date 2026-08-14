@@ -432,7 +432,8 @@ export interface JourneyStep {
   isGate: boolean;
 }
 
-// Recipient — the independent test lab goods ship to; a distinct party from Buyer/Seller.
+// Recipient — 1Buy's OWN hub the goods ship to for receipt (and relabelling) — NOT WHL, the
+// independent test lab, which is a separate party/signal entirely (see Escrow.whlVerdict etc.).
 // Shared contact-card shape — used for Buyer, Seller, AND Recipient (each a distinct party on the escrow order).
 export interface EscrowContact {
   company: string;
@@ -501,9 +502,11 @@ export interface EscrowAgentEmail {
   subject: string;
   from: string;
   to?: string; // mainly for SENT emails
+  cc?: string; // mainly for SENT emails
   snippet: string;
   receivedAt: string; // "occurred at" — applies to both directions
   attachmentFileName?: string;
+  attachmentUrl?: string; // relative path on the escrow-agents API — real PDF, only set for backend-driven RECEIVED emails
 }
 
 // Final settlement receipt once funds reach the seller.
@@ -522,6 +525,10 @@ export interface MilestoneRelease {
   confirmedAt?: string; // HKin confirms this tranche was released
 }
 
+// Step before "Step 0" in the Escrow tab: confirm the supplier has (or has opened) an HKin
+// account before we bother running the "Create HKin order" RPA against their real site.
+export type HkinAccountStatus = "NOT_ASKED" | "ASKED" | "CONFIRMED";
+
 export interface Escrow {
   id: string;
   status: EscrowOrderStatus;
@@ -531,6 +538,7 @@ export interface Escrow {
   currency: string;
   useInspectionService: boolean; // "Escrow/i" — HKin's enhanced-inspection tier
   recipient: EscrowContact;
+  hkinAccountStatus?: HkinAccountStatus; // see HkinAccountStatus — gates the "Create HKin order" step
   agreedFeeToBuyer: number; // fee agreed with the provider when the supplier PO was drafted (§7 reconciliation baseline)
   // Full payment-condition profile agreed at PO-drafting time — exists from Draft onward, same as
   // agreedFeeToBuyer above. When the invoice actually arrives, its conditions should match this
@@ -542,24 +550,41 @@ export interface Escrow {
 
   // Payment communications — SC reviews the invoice, instructs Finance, Finance pays, HKin confirms.
   paymentInstructedAt?: string; // SC → Finance: "pay it like this"
-  financeConfirmedAt?: string;  // Finance → SC: payment made, with a UTR to quote to HKin
-  financeUtr?: string;
-  paymentSentToHkinAt?: string; // SC → HKin: "we've made the payment, here's the UTR"
+  financeConfirmedAt?: string;  // Finance → SC: payment made, with a SWIFT reference to quote to HKin
+  financeSwiftReference?: string; // international wire to HKin (HK) — SWIFT reference, not a UTR (that's for domestic NEFT/RTGS)
+  paymentSentToHkinAt?: string; // SC → HKin: "we've made the payment, here's the SWIFT reference"
 
   // WHL booking, test execution, and the retest/return decision all live on the Testing tab, not
   // here — escrow only needs the one verdict signal (since that's what governs the release
   // milestone) and, on FAIL, whether the client asks for a refund instead of waiting on a retest.
-  whlGoodsReceivedAt?: string; // WHL confirms physical receipt (or the hub, if no testing was agreed)
+  goodsReceivedAt?: string; // 1Buy's own hub confirms physical receipt — NOT WHL, a separate signal
   whlVerdict?: WhlVerdict;
   whlVerdictAt?: string;
   whlReportRef?: string;       // the detailed test report WHL sends alongside the verdict
+  whlWorkOrder?: string;       // the parent work order no. — distinct from whlReportRef
+  whlRawConclusion?: string;   // WHL's/the buyer's own terse wording, e.g. "Acceptable" or "Buyer rejected goods — ..."
   refundRequestedAt?: string;  // client → SC: asked for a refund instead of a retest
   refundInstructedAt?: string; // SC → HKin & supplier: initiate the refund
 
   milestoneReleases: MilestoneRelease[]; // one entry per instructed tranche — see MilestoneRelease
 
   agentEmails: EscrowAgentEmail[];
-  cancelledAt?: string; // buyer/seller can cancel before funds move (real product has this; only allowed pre T/T-received)
+  cancelledAt?: string; // buyer/seller can cancel any time before RELEASED_TO_SELLER (real HKin allows this even after T/T — confirmed against a real cancelled order)
+  // Set when the HKin order-creation RPA (hkin-rpa, via escrow-agents'
+  // /create-on-hkin) was launched — it fills HKin's real form and stops for
+  // a human to review + submit, so this only means the attempt was kicked
+  // off, not that a real HKin escrow number exists yet.
+  hkinRpaStartedAt?: string;
+
+  // Real HKin portal evidence (2026-08-12 session) — see escrow-agents/ARCHITECTURE.md's
+  // "Known gaps" for the full write-up of what each of these models.
+  applicationRejectedAt?: string; // HKin rejected the whole application before a seller was ever assigned — the earliest possible terminal state
+  inspectionDeadline?: string;    // HKin's real "Escrow Reminder of Inspection Period" deadline — silence past it is an implicit accept
+  rmaDetails?: string;            // return-address details, once HKin asks for them on a reject
+  goodsReturnTracking?: string;   // tracking number for goods shipped back to the seller on a reject
+  goodsReturnedAt?: string;       // real gate before HKin will process the refund
+  hkinCsContactName?: string;     // real correspondence always comes from a named HKin CS officer, e.g. "Miffy Chen"
+  hkinCsContactEmail?: string;
 }
 
 // Every outbound email goes through ComposeEmailModal — SC can edit the draft before it's sent.

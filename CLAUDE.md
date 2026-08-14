@@ -139,6 +139,27 @@ TT_PAYMENT_RECEIVED → GOODS_SHIPPED → RECIPIENT_INSPECTION → RELEASED_TO_S
 - **Every outbound email** goes through `sendEscrowEmail(orderId, purpose, draft, milestoneIndex?)` — always via a reviewable/editable compose modal first, never silent. **Every inbound email** goes through `receiveEscrowEmail(orderId, purpose)`, dispatched by the single `checkEscrowInbox(orderId)` action (a state machine over `status` that always applies exactly the one next expected item).
 - `releaseEscrow`/`refundEscrow` as standalone functions **no longer exist** — release/refund are both two-step instruct-then-confirm flows through `sendEscrowEmail` + `checkEscrowInbox`.
 - Release is still lab-anchored: `escrowReleaseReadiness()` requires every testing-required line to have a `Lot.testStatus === "PASS"` **or** the escrow's own parallel `whlVerdict === "PASS"` (WHL can be commissioned directly on the escrow side, bypassing the Testing tab).
+- **"Create HKin order" is step 0, before `DRAFT`'s other actions.** Only
+  shown while `status === "DRAFT"`, it calls `createHkinOrder(orderId)` →
+  `POST escrow-agents:8000/escrow/orders/{orderId}/create-on-hkin` — this
+  launches a **real Playwright RPA** (`hkin-rpa`, a separate project nested
+  inside the backend repo, not part of this app) that fills HKin's actual
+  live order-creation form with this order's buyer/seller/recipient
+  contacts + `b.lines`, then stops at HKin's own Confirmation screen for a
+  human to review and submit. It never auto-submits anything. See
+  `../pushkar-poc-backend/hkin-rpa/CLAUDE.md` for how that automation
+  actually works, and `../pushkar-poc-backend/CLAUDE.md`'s note on
+  `create-on-hkin` for the backend side. `Escrow.hkinRpaStartedAt` records
+  when it was last launched; it does **not** mean a real HKin order exists
+  yet — only that a human was asked to go create one.
+- **`ord-201`/`ord-202` in fixtures.ts are demo-ready orders** for this
+  flow specifically — unlike most seed orders (`ord-180`..`ord-200`),
+  which carry placeholder `"—"` seller/recipient contact data by design
+  (they never leave this app), these two have real, complete contact data
+  via a new `EscrowSeedScenario.contactsOverride` field, so "Create HKin
+  order" actually goes through live without hitting the placeholder-email
+  guard on the backend. Use this pattern (`contactsOverride`) for any
+  future seed order that needs to exercise this specific flow.
 
 ### Testing Lifecycle (separate from testing verdict — two axes, never conflate)
 - **`TestingStage`** (where a lot physically is, forward-only, 7 stages): `TEST_REQUESTED → WHL_PAYMENT → SUPPLIER_DISPATCHING → COMPONENTS_RECEIVED → TESTING_IN_PROGRESS → TESTING_COMPLETED → REPORT_SHARED`. **Every stage is established by an inbound mail**, all of it through `syncWhlInbox()` (`moveStage()` is forward-only): the lab's invoice/receipt/progress/report mails, the *supplier's* dispatch advice relayed onto the same thread, and WHL's payment acknowledgement. `recordSupplierDispatch` / `markLabFeePaid` / `setLotStage` remain as labelled by-hand fallbacks. `TESTING_STARTED` and `REPORT_PREPARATION` were removed deliberately — "in progress" already says the lot is on the bench and "report shared" already says the write-up finished; don't reintroduce them.
@@ -224,7 +245,15 @@ const useStore = create<Store>()(
 
 ## GitHub
 
-- **Repo:** https://github.com/pushkar-lead/poc-sourceops-workflow
+- **Repo:** https://github.com/pushkar-lead/poc-sourceops-workflow (remote name unchanged by the local folder rename below)
 - **Branch:** main
 - **Visibility:** private
 - **Status:** POC (no deployment pipeline)
+
+## Note on this folder's name
+
+Renamed 2026-08-12: local folder `poc-sourceops-workflow` → `pushkar-poc-ui`
+(sibling `escrow-agents` → `pushkar-poc-backend`, with `hkin-rpa` moved
+inside it). This is a local rename only — the git remote/repo name above is
+untouched. Prose elsewhere in this file may still say
+"poc-sourceops-workflow"/"escrow-agents" — same projects.

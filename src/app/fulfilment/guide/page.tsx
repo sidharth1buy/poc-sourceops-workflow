@@ -46,7 +46,7 @@ const BRANCHES = [
 ];
 
 const OUTCOMES = [
-  { r: "PASS", tone: "ok" as const, icon: Check, text: "Quality proven → ship in (escrow release runs on its own state machine — see the Escrow tab)." },
+  { r: "PASS", tone: "ok" as const, icon: Check, text: "Quality proven → ship in (escrow release runs on its own state machine — see the Escrow board, Finance persona)." },
   { r: "FAIL", tone: "bad" as const, icon: X, text: "Material reject → supplier takes it back." },
   { r: "MAYBE", tone: "warn" as const, icon: HelpCircle, text: "Edge case → reported to the client; client approves (continue) or rejects (return)." },
 ];

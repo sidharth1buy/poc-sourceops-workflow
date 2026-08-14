@@ -13,14 +13,13 @@ import { money, qtyfmt, cn, fmtAddress } from "@/lib/utils";
 import { usd, toUSD } from "@/lib/fx";
 import { useStore } from "@/store/store";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
-import { EscrowTab } from "@/components/order/escrow-tab";
 import {
-  AddStepModal, AddLotModal, UploadEscrowInvoiceModal, UploadPaymentClosureModal, AddPaymentModal, CreateShipmentModal,
+  AddStepModal, AddLotModal, AddPaymentModal, CreateShipmentModal,
   FileBOEModal, AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
 } from "@/components/order/modals";
 import { TestingTab } from "@/components/order/testing-tab";
 
-type ModalKey = null | "addStep" | "addLot" | "escrowInvoice" | "paymentClosure" | "addPayment" | "shipment" | "boe" | "allocate" | "event" | "doc" | "pi";
+type ModalKey = null | "addStep" | "addLot" | "addPayment" | "shipment" | "boe" | "allocate" | "event" | "doc" | "pi";
 
 export function OrderWorkspace({ id }: { id: string }) {
   const b = useStore((s) => s.orders[id]);
@@ -106,15 +105,6 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Allocations" && <AllocationsTab b={b} onMap={setMapLine} />}
       {tab === "Journey" && <JourneyTab b={b} id={id} onAdd={() => setModal("addStep")} />}
       {tab === "Testing" && <TestingTab b={b} id={id} onAdd={() => setModal("addLot")} />}
-      {tab === "Escrow" && (
-        <EscrowTab
-          b={b} id={id}
-          onUploadInvoice={() => setModal("escrowInvoice")}
-          onUploadPaymentClosure={() => setModal("paymentClosure")}
-          onUploadPI={() => setModal("pi")}
-          onUploadDoc={() => setModal("doc")}
-        />
-      )}
       {tab === "Payments" && <PaymentsTab b={b} id={id} onAdd={() => setModal("addPayment")} />}
       {tab === "Shipments" && <ShipmentsTab b={b} id={id} onAdd={() => setModal("shipment")} />}
       {tab === "Customs" && <CustomsTab b={b} onFile={() => setModal("boe")} />}
@@ -125,8 +115,6 @@ export function OrderWorkspace({ id }: { id: string }) {
 
       {modal === "addStep" && <AddStepModal orderId={id} onClose={close} />}
       {modal === "addLot" && <AddLotModal orderId={id} onClose={close} />}
-      {modal === "escrowInvoice" && <UploadEscrowInvoiceModal orderId={id} onClose={close} />}
-      {modal === "paymentClosure" && <UploadPaymentClosureModal orderId={id} onClose={close} />}
       {modal === "addPayment" && <AddPaymentModal orderId={id} onClose={close} />}
       {modal === "shipment" && <CreateShipmentModal orderId={id} onClose={close} />}
       {modal === "boe" && <FileBOEModal orderId={id} onClose={close} />}

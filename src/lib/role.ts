@@ -1,7 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { ROLES, TEST_EDIT_ROLES, LAB_EMAIL_ROLES, type Role } from "@/data/enums";
+import { ROLES, TEST_EDIT_ROLES, LAB_EMAIL_ROLES, ESCROW_ACCESS_ROLES, type Role } from "@/data/enums";
 
 export const ROLE_STORAGE_KEY = "poc-role";
 export const ROLE_CHANGE_EVENT = "poc-role-change";
@@ -35,5 +35,6 @@ export function useRole() {
     role,
     canEditTests: TEST_EDIT_ROLES.includes(role),
     canEmailLab: LAB_EMAIL_ROLES.includes(role),
+    canAccessEscrow: ESCROW_ACCESS_ROLES.includes(role),
   };
 }

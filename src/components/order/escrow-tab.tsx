@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { Upload, Check, Lock, Ban, Send, Inbox } from "lucide-react";
+import { Upload, Check, Lock, Ban, Send, Inbox, PlayCircle, Mail } from "lucide-react";
 import type { OrderBundle, EscrowOrderStatus, EscrowAgentEmail, EscrowContact, EscrowSendPurpose } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus } from "@/data/enums";
 import { Panel, Field, DataTable, StatusPill, Pill, Button, type Col } from "@/components/ui/primitives";
@@ -10,6 +10,7 @@ import { Labeled, Input, Textarea } from "@/components/ui/form";
 import { money, qtyfmt, cn } from "@/lib/utils";
 import { useStore, type EscrowEmailDraft } from "@/store/store";
 import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet } from "@/store/selectors";
+import { ESCROW_API_BASE } from "@/lib/escrow-api";
 
 type Compose = (purpose: EscrowSendPurpose, milestoneIndex?: number) => void;
 
@@ -205,16 +206,16 @@ function InvoicePanel({
       )}
 
       <div className="mt-3 flex flex-wrap gap-2">
-        <Button variant="ghost" onClick={() => simulateEscrowInvoiceEmail(id)}>Simulate revised invoice email</Button>
         <Button variant="ghost" onClick={onUploadInvoice}><Upload className="h-4 w-4" /> Upload manually</Button>
       </div>
     </Panel>
   );
 }
 
-// Payment communications — SC reviews the invoice, instructs Finance, Finance pays (with a UTR SC
-// then quotes to HKin), HKin confirms (that last step, like Finance's own confirmation, arrives via
-// the single "Check inbox" action above, not a dedicated button here).
+// Payment communications — SC reviews the invoice, instructs Finance, Finance pays (with a SWIFT
+// reference SC then quotes to HKin — this is an international wire, not a domestic NEFT/RTGS
+// transfer, so it's never a UTR), HKin confirms (that last step, like Finance's own confirmation,
+// arrives via the single "Check inbox" action above, not a dedicated button here).
 function PaymentFlowPanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose }) {
   const e = b.escrow!;
   if (!e.invoice) return null;
@@ -222,15 +223,15 @@ function PaymentFlowPanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose
     <Panel title="Payment — SC → Finance → HKin">
       <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
         <Field label="Instructed Finance">{e.paymentInstructedAt ?? "—"}</Field>
-        <Field label="Finance confirmed (UTR)">{e.financeUtr ? `${e.financeConfirmedAt} — ${e.financeUtr}` : "—"}</Field>
+        <Field label="Finance confirmed (SWIFT ref)">{e.financeSwiftReference ? `${e.financeConfirmedAt} — ${e.financeSwiftReference}` : "—"}</Field>
         <Field label="Sent to HKin">{e.paymentSentToHkinAt ?? "—"}</Field>
         <Field label="HKin confirmed">{e.status !== "ESCROW_FEE_INVOICED" ? "✓" : "—"}</Field>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {!e.paymentInstructedAt && <Button onClick={() => onCompose("PAYMENT_INSTRUCTION_TO_FINANCE")}><Send className="h-4 w-4" /> Send: payment instruction to Finance</Button>}
-        {e.paymentInstructedAt && e.financeUtr && !e.paymentSentToHkinAt && <Button onClick={() => onCompose("PAYMENT_CONFIRMATION_TO_HKIN")}><Send className="h-4 w-4" /> Send: payment confirmation to HKin</Button>}
+        {e.paymentInstructedAt && e.financeSwiftReference && !e.paymentSentToHkinAt && <Button onClick={() => onCompose("PAYMENT_CONFIRMATION_TO_HKIN")}><Send className="h-4 w-4" /> Send: payment confirmation to HKin</Button>}
       </div>
-      {e.paymentInstructedAt && !e.financeUtr && <p className="mt-2 text-xs text-muted-foreground">Awaiting Finance&apos;s confirmation (with the UTR) — check inbox above.</p>}
+      {e.paymentInstructedAt && !e.financeSwiftReference && <p className="mt-2 text-xs text-muted-foreground">Awaiting Finance&apos;s confirmation (with the SWIFT reference) — check inbox above.</p>}
       {e.paymentSentToHkinAt && e.status === "ESCROW_FEE_INVOICED" && <p className="mt-2 text-xs text-muted-foreground">Awaiting HKin&apos;s confirmation — check inbox above.</p>}
     </Panel>
   );
@@ -244,6 +245,11 @@ function PaymentFlowPanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose
 // it's a real-world outcome someone has to report, not an email to fake-receive.
 function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onCompose: Compose }) {
   const recordWhlVerdict = useStore((s) => s.recordWhlVerdict);
+  const acceptEscrowGoods = useStore((s) => s.acceptEscrowGoods);
+  const rejectEscrowGoods = useStore((s) => s.rejectEscrowGoods);
+  const requestEscrowExtension = useStore((s) => s.requestEscrowExtension);
+  const simulateEscrowDeadlineReminder = useStore((s) => s.simulateEscrowDeadlineReminder);
+  const recordEscrowRma = useStore((s) => s.recordEscrowRma);
   const e = b.escrow!;
   const idx = escrowStatusIndex(e.status);
   const needsTesting = b.lines.some((l) => l.testingMode !== "NONE");
@@ -251,40 +257,116 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
   // A fresh verdict can always be logged again once WHL/Testing-tab reports one (e.g. after a
   // retest run there) — unless a refund's already been instructed, at which point this order's done.
   const awaitingVerdict = (!e.whlVerdict || e.whlVerdict === "FAIL") && !e.refundInstructedAt;
+  const [prompt, setPrompt] = useState<null | "reject" | "extension" | "acceptPartial" | "rma">(null);
 
   return (
     <Panel title={needsTesting ? "WHL testing — shipment & verdict" : "Shipment & receipt (no testing agreed on this PO)"}>
-      {needsTesting && <div className="mb-3"><Field label="Goods received">{e.whlGoodsReceivedAt ?? "—"}</Field></div>}
+      {needsTesting && <div className="mb-3"><Field label="Goods received (at 1Buy's hub)">{e.goodsReceivedAt ?? "—"}</Field></div>}
 
       {idx === escrowStatusIndex("TT_PAYMENT_RECEIVED") && <p className="text-xs text-muted-foreground">Waiting on the supplier&apos;s shipment notice — check inbox above.</p>}
-      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on the {needsTesting ? "WHL" : "hub"} goods-received confirmation — check inbox above.</p>}
+      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on 1Buy&apos;s hub to confirm goods received — check inbox above.</p>}
 
       {needsTesting && idx === escrowStatusIndex("RECIPIENT_INSPECTION") && (
         <div className="mt-4 border-t pt-3">
+          {/* Real HKin evidence: HKin's own "Escrow Reminder of Inspection Period" email carries a
+              hard deadline — silence past it is treated as an implicit accept. */}
+          {awaitingVerdict && e.inspectionDeadline && (
+            <div className="mb-3 rounded-lg border border-dashed p-2.5 text-xs">
+              <span className="font-medium">Inspection deadline: {new Date(e.inspectionDeadline).toLocaleDateString()}</span>
+              <span className="text-muted-foreground"> — accept/reject by then, or it&apos;s deemed accepted automatically.</span>
+            </div>
+          )}
           {awaitingVerdict && (
             <>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => recordWhlVerdict(id, "PASS")}>WHL reported: PASS</Button>
-                <Button variant="outline" onClick={() => recordWhlVerdict(id, "FAIL")}>WHL reported: FAIL</Button>
+              {/* Demo/simulate tools — stand in for a real WHL/HKin email arriving, never a real
+                  decision themselves. Kept visually separate (muted, labelled) from the buyer's
+                  own real decision buttons below, so the two are never confused on screen. */}
+              <div className="rounded-lg bg-muted/50 p-2.5">
+                <p className="text-xs font-medium text-muted-foreground">Demo tools — simulate an inbound email</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  {!e.inspectionDeadline && (
+                    <Button variant="ghost" onClick={() => simulateEscrowDeadlineReminder(id)}>
+                      <Inbox className="h-4 w-4" /> Simulate: HKin deadline reminder
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => recordWhlVerdict(id, "PASS")}>Simulate: WHL reported PASS</Button>
+                  <Button variant="ghost" onClick={() => recordWhlVerdict(id, "FAIL")}>Simulate: WHL reported FAIL</Button>
+                </div>
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                {isWhl ? "Independent lab test — full detail lives on the Testing tab." : "Supplier self-test, reviewed on receipt."} Check inbox above for progress pings while you wait.
-              </p>
+
+              <div className="mt-3">
+                <p className="text-xs font-medium">Buyer&apos;s decision (real portal: Accept All / Accept Partially / Reject All)</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  <Button onClick={() => acceptEscrowGoods(id, {})}><Check className="h-4 w-4" /> Accept All</Button>
+                  <Button variant="outline" onClick={() => setPrompt("acceptPartial")}>Accept Partially</Button>
+                  <Button variant="ghost" onClick={() => setPrompt("reject")}>Reject All</Button>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {isWhl ? "Independent lab test — full detail lives on the Testing tab." : "Supplier self-test, reviewed on receipt."} Check inbox above for progress pings while you wait.
+                </p>
+                <Button className="mt-2" variant="ghost" onClick={() => setPrompt("extension")}>Request extension</Button>
+              </div>
             </>
           )}
           {e.whlVerdict === "FAIL" && (
             <div className="mt-3 space-y-2">
-              <p className="inline-flex items-center gap-1 text-xs text-bad"><Ban className="h-3.5 w-3.5" /> FAIL — report {e.whlReportRef}. Retest/return itself is decided on the Testing tab.</p>
+              <p className="inline-flex items-center gap-1 text-xs text-bad"><Ban className="h-3.5 w-3.5" /> FAIL — {e.whlReportRef ? `report ${e.whlReportRef}` : e.whlRawConclusion}. Retest/return itself is decided on the Testing tab.</p>
               {e.refundInstructedAt ? (
                 <p className="text-xs text-muted-foreground">Refund instructed {e.refundInstructedAt}.</p>
-              ) : e.refundRequestedAt ? (
+              ) : e.goodsReturnedAt ? (
                 <Button onClick={() => onCompose("REFUND_INSTRUCTION")}><Send className="h-4 w-4" /> Send: refund instruction to HKin &amp; supplier</Button>
+              ) : e.refundRequestedAt ? (
+                <div className="space-y-2 rounded-lg border border-dashed p-2.5">
+                  <p className="text-xs font-medium">Real flow: HKin needs the RMA/return-address details, then confirmation the goods reached the seller, before it will process the refund.</p>
+                  {e.rmaDetails && <Field label="RMA / return address on file">{e.rmaDetails}</Field>}
+                  {e.goodsReturnTracking && <Field label="Return tracking no.">{e.goodsReturnTracking}</Field>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" onClick={() => setPrompt("rma")}>Record RMA / return details</Button>
+                    <Button variant="outline" onClick={() => recordEscrowRma(id, { markReturned: true })}>Confirm goods reached the seller</Button>
+                  </div>
+                </div>
               ) : (
                 <p className="text-xs text-muted-foreground">If the client asks for a refund instead of a retest, check inbox above.</p>
               )}
             </div>
           )}
         </div>
+      )}
+
+      {prompt === "reject" && (
+        <TextPromptModal
+          title="Reject the goods"
+          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL report NOT ACCEPTABLE\"" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) rejectEscrowGoods(id, v.reason); setPrompt(null); }}
+        />
+      )}
+      {prompt === "extension" && (
+        <TextPromptModal
+          title="Request an inspection extension"
+          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL is taking longer than expected, revised report date is...\"" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) requestEscrowExtension(id, v.reason); setPrompt(null); }}
+        />
+      )}
+      {prompt === "acceptPartial" && (
+        <TextPromptModal
+          title="Accept partially"
+          fields={[{ key: "note", label: "Note", placeholder: "What's accepted / what isn't", hint: "optional" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { acceptEscrowGoods(id, { partial: true, note: v.note || undefined }); setPrompt(null); }}
+        />
+      )}
+      {prompt === "rma" && (
+        <TextPromptModal
+          title="Record RMA / return details"
+          fields={[
+            { key: "rmaDetails", label: "RMA / return-address details", defaultValue: e.rmaDetails },
+            { key: "goodsReturnTracking", label: "Return tracking no.", defaultValue: e.goodsReturnTracking, hint: "optional" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { recordEscrowRma(id, { rmaDetails: v.rmaDetails || undefined, goodsReturnTracking: v.goodsReturnTracking || undefined }); setPrompt(null); }}
+        />
       )}
     </Panel>
   );
@@ -350,8 +432,26 @@ function AgentInboxPanel({ b }: { b: OrderBundle }) {
     { key: "dir", header: "", render: (m) => <Pill tone={m.direction === "SENT" ? "info" : "neutral"}>{m.direction}</Pill> },
     { key: "subj", header: "Subject", render: (m) => <span className="text-sm">{m.subject}</span> },
     { key: "snippet", header: "Snippet", render: (m) => <span className="text-xs text-muted-foreground">{m.snippet}</span> },
-    { key: "from", header: "From / To", render: (m) => <span className="font-mono text-xs text-muted-foreground">{m.direction === "SENT" ? m.to : m.from}</span> },
-    { key: "att", header: "Attachment", render: (m) => <span className="font-mono text-xs">{m.attachmentFileName ?? "—"}</span> },
+    {
+      key: "from", header: "From / To",
+      render: (m) => (
+        <span className="font-mono text-xs text-muted-foreground">
+          {m.direction === "SENT" ? m.to : m.from}
+          {m.direction === "SENT" && m.cc && <><br /><span className="text-faint">cc: {m.cc}</span></>}
+        </span>
+      ),
+    },
+    {
+      key: "att", header: "Attachment",
+      render: (m) => m.attachmentUrl ? (
+        <a href={`${ESCROW_API_BASE}${m.attachmentUrl}`} target="_blank" rel="noopener noreferrer"
+           className="font-mono text-xs text-primary underline underline-offset-2">
+          {m.attachmentFileName ?? "view"}
+        </a>
+      ) : (
+        <span className="font-mono text-xs">{m.attachmentFileName ?? "—"}</span>
+      ),
+    },
     { key: "when", header: "When", align: "right", render: (m) => <span className="text-xs tnum">{m.receivedAt}</span> },
   ];
   return (
@@ -367,13 +467,15 @@ function ComposeEmailModal({
   purpose, draft, onClose, onSend,
 }: { purpose: EscrowSendPurpose; draft: EscrowEmailDraft; onClose: () => void; onSend: (purpose: EscrowSendPurpose, draft: EscrowEmailDraft) => void }) {
   const [to, setTo] = useState(draft.to);
+  const [cc, setCc] = useState(draft.cc ?? "");
   const [subject, setSubject] = useState(draft.subject);
   const [body, setBody] = useState(draft.body);
   return (
     <Dialog open onClose={onClose} title="Compose email — review before sending"
-      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSend(purpose, { to, subject, body })}><Send className="h-4 w-4" /> Send</Button></>}>
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSend(purpose, { to, cc: cc || undefined, subject, body })}><Send className="h-4 w-4" /> Send</Button></>}>
       <div className="space-y-3">
         <Labeled label="To"><Input value={to} onChange={(e) => setTo(e.target.value)} /></Labeled>
+        <Labeled label="Cc" hint="optional"><Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="—" /></Labeled>
         <Labeled label="Subject"><Input value={subject} onChange={(e) => setSubject(e.target.value)} /></Labeled>
         <Labeled label="Body"><Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-[180px]" /></Labeled>
         <p className="text-xs text-faint">Nothing is sent until you click Send — edit anything above first.</p>
@@ -382,27 +484,108 @@ function ComposeEmailModal({
   );
 }
 
-function draftFor(purpose: EscrowSendPurpose, b: OrderBundle, milestoneIndex?: number): EscrowEmailDraft {
+// Step 0a is local-only (no escrow-agents draft/purpose backs it — see askSupplierHkinAccount in
+// store.ts), so it gets its own small compose modal rather than reusing sendEscrowEmail's
+// backend-draft dispatch — but the review-before-send UX must match every other outbound email.
+function HkinAccountAskModal({
+  draft, onClose, onSend,
+}: { draft: EscrowEmailDraft; onClose: () => void; onSend: (draft: EscrowEmailDraft) => void }) {
+  const [to, setTo] = useState(draft.to);
+  const [cc, setCc] = useState(draft.cc ?? "");
+  const [subject, setSubject] = useState(draft.subject);
+  const [body, setBody] = useState(draft.body);
+  return (
+    <Dialog open onClose={onClose} title="Compose email — review before sending"
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSend({ to, cc: cc || undefined, subject, body })}><Send className="h-4 w-4" /> Send</Button></>}>
+      <div className="space-y-3">
+        <Labeled label="To"><Input value={to} onChange={(e) => setTo(e.target.value)} /></Labeled>
+        <Labeled label="Cc" hint="optional"><Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="—" /></Labeled>
+        <Labeled label="Subject"><Input value={subject} onChange={(e) => setSubject(e.target.value)} /></Labeled>
+        <Labeled label="Body"><Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-[180px]" /></Labeled>
+        <p className="text-xs text-faint">Nothing is sent until you click Send — edit anything above first.</p>
+      </div>
+    </Dialog>
+  );
+}
+
+// Small single/multi-field input modal — replaces window.prompt() for every escrow action that
+// needs one, so a live demo never shows a native browser dialog on screen.
+function TextPromptModal({
+  title, fields, onClose, onSubmit,
+}: {
+  title: string;
+  fields: { key: string; label: string; placeholder?: string; defaultValue?: string; hint?: string }[];
+  onClose: () => void;
+  onSubmit: (values: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(
+    Object.fromEntries(fields.map((f) => [f.key, f.defaultValue ?? ""])),
+  );
+  return (
+    <Dialog open onClose={onClose} title={title}
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSubmit(values)}>Submit</Button></>}>
+      <div className="space-y-3">
+        {fields.map((f) => (
+          <Labeled key={f.key} label={f.label} hint={f.hint}>
+            <Textarea
+              value={values[f.key] ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              placeholder={f.placeholder}
+              className="min-h-[70px]"
+            />
+          </Labeled>
+        ))}
+      </div>
+    </Dialog>
+  );
+}
+
+function hkinAccountAskDraftFor(b: OrderBundle, id: string): EscrowEmailDraft {
   const e = b.escrow!;
+  const sellerTo = e.sellerContact.email && e.sellerContact.email !== "—" ? e.sellerContact.email : "seller@example.com";
+  return {
+    to: sellerTo,
+    subject: `Escrow order ${b.orderNo} — do you have an HKin account? [${id}]`,
+    body: `Hi ${e.sellerContact.contactPerson || "team"},\n\nWe're setting up an escrow order (${b.orderNo}) with HKin (hkinventory.com) for this purchase. Before we create the order on their platform, could you confirm — do you already have an account with HKin?\n\nIf not, please open one at your earliest convenience at https://www.hkinventory.com/ so we can proceed.\n\nThanks,\n1Buy SC Team`,
+  };
+}
+
+// Must match escrow-agents' .env (HKIN_SENDER_EMAIL / FINANCE_SENDER_EMAIL) — these are only the
+// compose modal's *default* to/cc, shown editable before send; the backend's own drafter.py uses
+// the same two config values as the authoritative source, so leaving these fields untouched still
+// sends to the right real address.
+const HKIN_ADDRESS = "rekhasanjaygupta10@gmail.com";
+const FINANCE_ADDRESS = "harsh@1buy.ai";
+
+// Every subject carries "[id]" — the REAL escrow-agents order_id (e.g. "ord-abc123"), not just
+// the display orderNo — because scripts/poll_gmail_inbox.py routes real inbound mail by matching
+// a "[order_id]" tag in the subject line (see ARCHITECTURE.md's "Real mailbox ingestion"
+// section). Hitting "Reply" in a real mail client keeps the original subject verbatim, so as long
+// as the tag is on every outbound message, every reply naturally routes correctly with zero extra
+// steps from whoever's sending real test mail for HKin/WHL/Finance.
+function draftFor(purpose: EscrowSendPurpose, b: OrderBundle, id: string, milestoneIndex?: number): EscrowEmailDraft {
+  const e = b.escrow!;
+  const tag = `[${id}]`;
   const milestonesText = (e.invoice?.conditions.releaseMilestones ?? []).map((m) => `- ${m.percent}% — ${m.trigger}`).join("\n") || "- (per the invoice conditions)";
   const sellerTo = e.sellerContact.email && e.sellerContact.email !== "—" ? e.sellerContact.email : "seller@example.com";
+  const sellerPerson = e.sellerContact.contactPerson || "Seller";
   switch (purpose) {
     case "ORDER_TO_SELLER":
-      return { to: "billing@hkin-escrow.example", subject: `Order ${b.orderNo} — please confirm acceptance`,
-        body: `Hi HKin team,\n\nPlease forward this order to ${e.sellerContact.company} for acceptance.\n\nOrder: ${b.orderNo}\nPO amount: ${money(e.poAmount, e.currency)}\nWHL ship-to: ${e.recipient.company}\n\nThanks,\n1Buy SC Team` };
+      return { to: HKIN_ADDRESS, subject: `Order ${b.orderNo} — please confirm acceptance ${tag}`,
+        body: `Hi HKin team,\n\nPlease forward this order to ${e.sellerContact.company} for acceptance.\n\nOrder: ${b.orderNo}\nPO amount: ${money(e.poAmount, e.currency)}\nShip to (1Buy hub): ${e.recipient.company}\n\nThanks,\n1Buy SC Team` };
     case "PAYMENT_INSTRUCTION_TO_FINANCE":
-      return { to: "finance@1buy.ai", subject: `Payment instruction — ${b.orderNo}`,
+      return { to: FINANCE_ADDRESS, cc: HKIN_ADDRESS, subject: `Payment instruction — ${b.orderNo} ${tag}`,
         body: `Hi Finance,\n\nInvoice ${e.invoice?.invoiceNo} reviewed for ${b.orderNo}. Please remit per the release milestones on file:\n${milestonesText}\n\nTotal buyer T/T: ${e.invoice ? money(escrowInvoiceTotals(e.invoice.fees).totalBuyerTT, e.currency) : "—"}\n\nThanks,\nSC Team` };
     case "PAYMENT_CONFIRMATION_TO_HKIN":
-      return { to: "billing@hkin-escrow.example", subject: `Payment sent — ${b.orderNo}`,
-        body: `Hi HKin team,\n\nWe've remitted the T/T per invoice ${e.invoice?.invoiceNo}${e.financeUtr ? ` — UTR ${e.financeUtr}` : ""}. Please confirm receipt.\n\nThanks,\nFinance / SC Team` };
+      return { to: HKIN_ADDRESS, cc: FINANCE_ADDRESS, subject: `Payment sent — ${b.orderNo} ${tag}`,
+        body: `Hi HKin team,\n\nWe've remitted the T/T per invoice ${e.invoice?.invoiceNo}${e.financeSwiftReference ? ` — SWIFT reference ${e.financeSwiftReference}` : ""}. Please confirm receipt.\n\nThanks,\nFinance / SC Team` };
     case "REFUND_INSTRUCTION":
-      return { to: `billing@hkin-escrow.example, ${sellerTo}`, subject: `Refund requested — ${b.orderNo}`,
-        body: `Hi HKin / ${e.sellerContact.contactPerson},\n\nThe client has requested a refund on order ${b.orderNo} following the FAIL result (report ${e.whlReportRef ?? "attached"}), instead of a retest. Please initiate the refund per the escrow terms.\n\nThanks,\nSC Team` };
+      return { to: HKIN_ADDRESS, cc: sellerTo, subject: `Refund requested — ${b.orderNo} ${tag}`,
+        body: `Hi HKin team,\n\nThe client has requested a refund on order ${b.orderNo} following the FAIL result (report ${e.whlReportRef ?? "attached"}), instead of a retest. Please initiate the refund per the escrow terms.\n\n(cc: ${sellerPerson}, for your awareness.)\n\nThanks,\nSC Team` };
     case "RELEASE_FUNDS_INSTRUCTION": {
       const m = milestoneIndex !== undefined ? e.invoice?.conditions.releaseMilestones[milestoneIndex] : undefined;
-      return { to: `billing@hkin-escrow.example, ${sellerTo}`, subject: `Release funds${m ? ` — ${m.percent}%` : ""} — ${b.orderNo}`,
-        body: `Hi HKin / ${e.sellerContact.contactPerson},\n\n${m ? m.trigger : "The release condition"} has been met for order ${b.orderNo}. HKin — please release ${m ? `${m.percent}% of the escrowed funds` : "the funds"} to the seller per the invoice terms. ${e.sellerContact.contactPerson} — for your awareness, this tranche is on its way.\n\nFull release schedule on file:\n${milestonesText}\n\nThanks,\nSC Team` };
+      return { to: HKIN_ADDRESS, cc: sellerTo, subject: `Release funds${m ? ` — ${m.percent}%` : ""} — ${b.orderNo} ${tag}`,
+        body: `Hi HKin team,\n\n${m ? m.trigger : "The release condition"} has been met for order ${b.orderNo}. Please release ${m ? `${m.percent}% of the escrowed funds` : "the funds"} to the seller per the invoice terms.\n\n(cc: ${sellerPerson}, for your awareness — this tranche is on its way.)\n\nFull release schedule on file:\n${milestonesText}\n\nThanks,\nSC Team` };
     }
   }
 }
@@ -425,18 +608,36 @@ export function EscrowTab({
   onUploadPI: () => void; onUploadDoc: () => void; onUploadPaymentClosure: () => void;
 }) {
   const checkEscrowInbox = useStore((s) => s.checkEscrowInbox);
+  const syncRealInbox = useStore((s) => s.syncRealInbox);
   const cancelEscrowOrder = useStore((s) => s.cancelEscrowOrder);
+  const createHkinOrder = useStore((s) => s.createHkinOrder);
+  const askSupplierHkinAccount = useStore((s) => s.askSupplierHkinAccount);
+  const confirmSupplierHkinAccount = useStore((s) => s.confirmSupplierHkinAccount);
   const sendEscrowEmail = useStore((s) => s.sendEscrowEmail);
   const [compose, setCompose] = useState<{ purpose: EscrowSendPurpose; milestoneIndex?: number } | null>(null);
   const onCompose: Compose = (purpose, milestoneIndex) => setCompose({ purpose, milestoneIndex });
+  const [askHkinModalOpen, setAskHkinModalOpen] = useState(false);
 
   if (!b.escrow) {
     return <Panel title="Escrow"><Empty text={`No escrow — supplier is paid via ${b.paymentMode}.`} /></Panel>;
   }
   const e = b.escrow;
+  // Real HKin evidence: HKin can reject the whole application before a seller is even assigned —
+  // the earliest possible terminal state (no seller contact, no PO data on the real portal at
+  // all). Nothing else on this tab is meaningful once that's happened.
+  if (e.applicationRejectedAt) {
+    return (
+      <Panel title="Escrow order — HKin-modelled" actions={<Pill tone="bad"><Ban className="h-3 w-3" /> Application Rejected</Pill>}>
+        <p className="text-sm text-bad">HKin rejected this escrow application on {new Date(e.applicationRejectedAt).toLocaleString()} — no seller was ever assigned.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Contact HKin support for the reason, or start a fresh order if the details need correcting.</p>
+      </Panel>
+    );
+  }
   const isFinal = e.status === "RELEASED_TO_SELLER";
   const cancelled = !!e.cancelledAt;
-  const canCancel = !cancelled && !isFinal && escrowStatusIndex(e.status) < escrowStatusIndex("TT_PAYMENT_RECEIVED");
+  // Real HKin evidence: a real order was cancelled with the fund-transfer step already marked
+  // complete — cancellation isn't gated on T/T payment, only on the order not already released.
+  const canCancel = !cancelled && !isFinal;
 
   return (
     <div className="space-y-4">
@@ -453,38 +654,89 @@ export function EscrowTab({
           <p className="mt-3 inline-flex items-center gap-1 text-xs text-bad"><Ban className="h-3.5 w-3.5" /> Cancelled on {e.cancelledAt}.</p>
         ) : (
           <>
+            {e.status === "DRAFT" && e.hkinAccountStatus !== "CONFIRMED" && (
+              <div className="mt-3 rounded-lg border border-dashed p-3">
+                <p className="text-sm font-medium">Step 0a — Confirm the supplier&apos;s HKin account</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Before we create the order on HKin, {e.sellerContact.company} needs an account there — or needs to
+                  open one. Ask first, then confirm once they&apos;ve replied.
+                </p>
+                {(!e.hkinAccountStatus || e.hkinAccountStatus === "NOT_ASKED") && (
+                  <Button className="mt-2" variant="outline" onClick={() => setAskHkinModalOpen(true)}>
+                    <Mail className="h-4 w-4" /> Ask supplier: HKin account?
+                  </Button>
+                )}
+                {e.hkinAccountStatus === "ASKED" && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Pill tone="warn">Waiting for supplier&apos;s reply</Pill>
+                    <Button variant="outline" onClick={() => confirmSupplierHkinAccount(id)}>
+                      <Inbox className="h-4 w-4" /> Check inbox
+                    </Button>
+                  </div>
+                )}
+              </div>
+            )}
+            {e.status === "DRAFT" && e.hkinAccountStatus === "CONFIRMED" && (
+              <div className="mt-3 rounded-lg border border-dashed p-3">
+                <p className="text-sm font-medium">Step 0b — Create the order on HKin</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Fills HKin&apos;s real order-creation form from this order&apos;s buyer/seller/line data (RPA), then stops
+                  at HKin&apos;s own Confirmation screen for you to review and submit yourself on the real site.
+                </p>
+                <Button className="mt-2" variant="outline" onClick={() => createHkinOrder(id)}>
+                  <PlayCircle className="h-4 w-4" /> Create HKin order
+                </Button>
+                {e.hkinRpaStartedAt && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Started {new Date(e.hkinRpaStartedAt).toLocaleString()} — check your screen for the review window.
+                  </p>
+                )}
+              </div>
+            )}
             <p className="mt-3 text-sm text-muted-foreground">{NEXT_STEP_HINT[e.status]}</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {e.status === "DRAFT" && <Button onClick={() => onCompose("ORDER_TO_SELLER")}><Send className="h-4 w-4" /> Send: order to seller for acceptance</Button>}
               {!isFinal && <Button variant="outline" onClick={() => checkEscrowInbox(id)}><Inbox className="h-4 w-4" /> Check inbox</Button>}
+              {!isFinal && <Button variant="outline" onClick={() => syncRealInbox(id)}><Inbox className="h-4 w-4" /> Sync real inbox</Button>}
               {canCancel && <Button variant="ghost" onClick={() => { if (confirm("Cancel this escrow order?")) cancelEscrowOrder(id); }}>Cancel order</Button>}
             </div>
           </>
         )}
       </Panel>
 
-      <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <ContactPanel title="Buyer contact" contact={e.buyerContact} />
-        <ContactPanel title="Seller contact" contact={e.sellerContact} />
-        <ContactPanel title="Recipient contact (WHL)" contact={e.recipient} />
-      </div>
-
-      <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+      {/* Action panels first — whatever the SC/Finance person needs to DO next, grouped together
+          right under the main status panel. Reference info (PO/invoice/contacts) sits below,
+          since it's read-once-then-rarely-touched, not something acted on every visit. */}
       {!cancelled && e.invoice && e.status === "ESCROW_FEE_INVOICED" && <PaymentFlowPanel b={b} onCompose={onCompose} />}
       {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && escrowStatusIndex(e.status) <= escrowStatusIndex("RECIPIENT_INSPECTION") && (
         <WhlTestingPanel b={b} id={id} onCompose={onCompose} />
       )}
       {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && <ReleasePanel b={b} onCompose={onCompose} />}
       {isFinal && <PaymentClosurePanel b={b} id={id} onUploadPaymentClosure={onUploadPaymentClosure} />}
+
+      <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ContactPanel title="Buyer contact" contact={e.buyerContact} />
+        <ContactPanel title="Seller contact" contact={e.sellerContact} />
+        <ContactPanel title="Recipient contact (1Buy hub)" contact={e.recipient} />
+      </div>
+      <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+
       <AgentInboxPanel b={b} />
 
       {compose && (
         <ComposeEmailModal
           purpose={compose.purpose}
-          draft={draftFor(compose.purpose, b, compose.milestoneIndex)}
+          draft={draftFor(compose.purpose, b, id, compose.milestoneIndex)}
           onClose={() => setCompose(null)}
           onSend={(purpose, draft) => { sendEscrowEmail(id, purpose, draft, compose.milestoneIndex); setCompose(null); }}
+        />
+      )}
+      {askHkinModalOpen && (
+        <HkinAccountAskModal
+          draft={hkinAccountAskDraftFor(b, id)}
+          onClose={() => setAskHkinModalOpen(false)}
+          onSend={() => { askSupplierHkinAccount(id); setAskHkinModalOpen(false); }}
         />
       )}
     </div>
