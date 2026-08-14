@@ -37,6 +37,7 @@ import {
   cancelEscrowOrder as cancelEscrowOrderApi, uploadEscrowInvoiceManually as uploadEscrowInvoiceManuallyApi,
   simulateNextInbound, createOnHkin,
   markApplicationRejected, recordRma, acceptGoods as acceptGoodsApi, rejectGoods as rejectGoodsApi, requestExtension,
+  simulateDeadlineReminder,
 } from "@/lib/escrow-api";
 import { sendRfqInvite } from "@/integrations/rfq-send";
 import { BUYERS, SUPPLIERS } from "@/data/directory";
@@ -379,6 +380,9 @@ interface Store {
   acceptEscrowGoods: (orderId: string, input: { partial?: boolean; note?: string }) => void;
   rejectEscrowGoods: (orderId: string, reason: string) => void;
   requestEscrowExtension: (orderId: string, reason: string) => void;
+  // Demo/dev button — simulates HKin's real deadline-reminder email arriving (an independent
+  // signal, not something Check inbox's awaiting-purpose mechanism can produce on its own).
+  simulateEscrowDeadlineReminder: (orderId: string) => void;
 
   simulateEscrowPoPiFetch: (orderId: string) => void;
   simulatePaymentClosureFetch: (orderId: string) => void;
@@ -1506,6 +1510,17 @@ export const useStore = create<Store>()(
             const sent = await sendEscrowDraft(res.draftId, { reviewedBy: "You (demo)" });
             set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = sent.escrow; });
             toast.success("Extension request sent to HKin.");
+          } catch (err) { toast.error(errMsg(err)); }
+        })();
+      },
+
+      simulateEscrowDeadlineReminder: (orderId) => {
+        const e = get().orders[orderId]?.escrow; if (!e) return;
+        void (async () => {
+          try {
+            const res = await simulateDeadlineReminder(orderId);
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            toast.message(`HKin's inspection-deadline reminder arrived — deadline ${res.escrow.inspectionDeadline ? new Date(res.escrow.inspectionDeadline).toLocaleDateString() : ""}.`);
           } catch (err) { toast.error(errMsg(err)); }
         })();
       },

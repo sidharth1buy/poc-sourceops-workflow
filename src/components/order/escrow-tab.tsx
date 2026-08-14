@@ -248,6 +248,7 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
   const acceptEscrowGoods = useStore((s) => s.acceptEscrowGoods);
   const rejectEscrowGoods = useStore((s) => s.rejectEscrowGoods);
   const requestEscrowExtension = useStore((s) => s.requestEscrowExtension);
+  const simulateEscrowDeadlineReminder = useStore((s) => s.simulateEscrowDeadlineReminder);
   const recordEscrowRma = useStore((s) => s.recordEscrowRma);
   const e = b.escrow!;
   const idx = escrowStatusIndex(e.status);
@@ -256,15 +257,7 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
   // A fresh verdict can always be logged again once WHL/Testing-tab reports one (e.g. after a
   // retest run there) — unless a refund's already been instructed, at which point this order's done.
   const awaitingVerdict = (!e.whlVerdict || e.whlVerdict === "FAIL") && !e.refundInstructedAt;
-
-  function requestExtension() {
-    const reason = window.prompt("Why do you need more time? (e.g. \"WHL is taking longer than expected, revised report date is...\")");
-    if (reason) requestEscrowExtension(id, reason);
-  }
-  function rejectGoods() {
-    const reason = window.prompt("Reason for rejecting the goods (e.g. \"WHL report NOT ACCEPTABLE\"):");
-    if (reason) rejectEscrowGoods(id, reason);
-  }
+  const [prompt, setPrompt] = useState<null | "reject" | "extension" | "acceptPartial" | "rma">(null);
 
   return (
     <Panel title={needsTesting ? "WHL testing — shipment & verdict" : "Shipment & receipt (no testing agreed on this PO)"}>
@@ -285,21 +278,34 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
           )}
           {awaitingVerdict && (
             <>
-              <p className="text-xs font-medium text-muted-foreground">Simulate WHL&apos;s own report:</p>
-              <div className="mt-1 flex flex-wrap gap-2">
-                <Button onClick={() => recordWhlVerdict(id, "PASS")}>WHL reported: PASS</Button>
-                <Button variant="outline" onClick={() => recordWhlVerdict(id, "FAIL")}>WHL reported: FAIL</Button>
+              {/* Demo/simulate tools — stand in for a real WHL/HKin email arriving, never a real
+                  decision themselves. Kept visually separate (muted, labelled) from the buyer's
+                  own real decision buttons below, so the two are never confused on screen. */}
+              <div className="rounded-lg bg-muted/50 p-2.5">
+                <p className="text-xs font-medium text-muted-foreground">Demo tools — simulate an inbound email</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  {!e.inspectionDeadline && (
+                    <Button variant="ghost" onClick={() => simulateEscrowDeadlineReminder(id)}>
+                      <Inbox className="h-4 w-4" /> Simulate: HKin deadline reminder
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => recordWhlVerdict(id, "PASS")}>Simulate: WHL reported PASS</Button>
+                  <Button variant="ghost" onClick={() => recordWhlVerdict(id, "FAIL")}>Simulate: WHL reported FAIL</Button>
+                </div>
               </div>
-              <p className="mt-3 text-xs font-medium text-muted-foreground">Or record the buyer&apos;s own decision directly (real portal: Accept All / Accept Partially / Reject All):</p>
-              <div className="mt-1 flex flex-wrap gap-2">
-                <Button variant="outline" onClick={() => acceptEscrowGoods(id, {})}><Check className="h-4 w-4" /> Accept All</Button>
-                <Button variant="outline" onClick={() => acceptEscrowGoods(id, { partial: true, note: window.prompt("Note on the partial acceptance:") ?? undefined })}>Accept Partially</Button>
-                <Button variant="ghost" onClick={rejectGoods}>Reject All</Button>
+
+              <div className="mt-3">
+                <p className="text-xs font-medium">Buyer&apos;s decision (real portal: Accept All / Accept Partially / Reject All)</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  <Button onClick={() => acceptEscrowGoods(id, {})}><Check className="h-4 w-4" /> Accept All</Button>
+                  <Button variant="outline" onClick={() => setPrompt("acceptPartial")}>Accept Partially</Button>
+                  <Button variant="ghost" onClick={() => setPrompt("reject")}>Reject All</Button>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {isWhl ? "Independent lab test — full detail lives on the Testing tab." : "Supplier self-test, reviewed on receipt."} Check inbox above for progress pings while you wait.
+                </p>
+                <Button className="mt-2" variant="ghost" onClick={() => setPrompt("extension")}>Request extension</Button>
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                {isWhl ? "Independent lab test — full detail lives on the Testing tab." : "Supplier self-test, reviewed on receipt."} Check inbox above for progress pings while you wait.
-              </p>
-              <Button className="mt-2" variant="ghost" onClick={requestExtension}>Request extension</Button>
             </>
           )}
           {e.whlVerdict === "FAIL" && (
@@ -315,11 +321,7 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
                   {e.rmaDetails && <Field label="RMA / return address on file">{e.rmaDetails}</Field>}
                   {e.goodsReturnTracking && <Field label="Return tracking no.">{e.goodsReturnTracking}</Field>}
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" onClick={() => {
-                      const rmaDetails = window.prompt("RMA / return-address details:", e.rmaDetails ?? "") ?? undefined;
-                      const goodsReturnTracking = window.prompt("Return tracking no. (optional):", e.goodsReturnTracking ?? "") ?? undefined;
-                      recordEscrowRma(id, { rmaDetails, goodsReturnTracking });
-                    }}>Record RMA / return details</Button>
+                    <Button variant="outline" onClick={() => setPrompt("rma")}>Record RMA / return details</Button>
                     <Button variant="outline" onClick={() => recordEscrowRma(id, { markReturned: true })}>Confirm goods reached the seller</Button>
                   </div>
                 </div>
@@ -329,6 +331,42 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
             </div>
           )}
         </div>
+      )}
+
+      {prompt === "reject" && (
+        <TextPromptModal
+          title="Reject the goods"
+          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL report NOT ACCEPTABLE\"" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) rejectEscrowGoods(id, v.reason); setPrompt(null); }}
+        />
+      )}
+      {prompt === "extension" && (
+        <TextPromptModal
+          title="Request an inspection extension"
+          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL is taking longer than expected, revised report date is...\"" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) requestEscrowExtension(id, v.reason); setPrompt(null); }}
+        />
+      )}
+      {prompt === "acceptPartial" && (
+        <TextPromptModal
+          title="Accept partially"
+          fields={[{ key: "note", label: "Note", placeholder: "What's accepted / what isn't", hint: "optional" }]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { acceptEscrowGoods(id, { partial: true, note: v.note || undefined }); setPrompt(null); }}
+        />
+      )}
+      {prompt === "rma" && (
+        <TextPromptModal
+          title="Record RMA / return details"
+          fields={[
+            { key: "rmaDetails", label: "RMA / return-address details", defaultValue: e.rmaDetails },
+            { key: "goodsReturnTracking", label: "Return tracking no.", defaultValue: e.goodsReturnTracking, hint: "optional" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { recordEscrowRma(id, { rmaDetails: v.rmaDetails || undefined, goodsReturnTracking: v.goodsReturnTracking || undefined }); setPrompt(null); }}
+        />
       )}
     </Panel>
   );
@@ -465,6 +503,38 @@ function HkinAccountAskModal({
         <Labeled label="Subject"><Input value={subject} onChange={(e) => setSubject(e.target.value)} /></Labeled>
         <Labeled label="Body"><Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-[180px]" /></Labeled>
         <p className="text-xs text-faint">Nothing is sent until you click Send — edit anything above first.</p>
+      </div>
+    </Dialog>
+  );
+}
+
+// Small single/multi-field input modal — replaces window.prompt() for every escrow action that
+// needs one, so a live demo never shows a native browser dialog on screen.
+function TextPromptModal({
+  title, fields, onClose, onSubmit,
+}: {
+  title: string;
+  fields: { key: string; label: string; placeholder?: string; defaultValue?: string; hint?: string }[];
+  onClose: () => void;
+  onSubmit: (values: Record<string, string>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(
+    Object.fromEntries(fields.map((f) => [f.key, f.defaultValue ?? ""])),
+  );
+  return (
+    <Dialog open onClose={onClose} title={title}
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSubmit(values)}>Submit</Button></>}>
+      <div className="space-y-3">
+        {fields.map((f) => (
+          <Labeled key={f.key} label={f.label} hint={f.hint}>
+            <Textarea
+              value={values[f.key] ?? ""}
+              onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              placeholder={f.placeholder}
+              className="min-h-[70px]"
+            />
+          </Labeled>
+        ))}
       </div>
     </Dialog>
   );
@@ -634,20 +704,24 @@ export function EscrowTab({
         )}
       </Panel>
 
-      <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <ContactPanel title="Buyer contact" contact={e.buyerContact} />
-        <ContactPanel title="Seller contact" contact={e.sellerContact} />
-        <ContactPanel title="Recipient contact (1Buy hub)" contact={e.recipient} />
-      </div>
-
-      <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+      {/* Action panels first — whatever the SC/Finance person needs to DO next, grouped together
+          right under the main status panel. Reference info (PO/invoice/contacts) sits below,
+          since it's read-once-then-rarely-touched, not something acted on every visit. */}
       {!cancelled && e.invoice && e.status === "ESCROW_FEE_INVOICED" && <PaymentFlowPanel b={b} onCompose={onCompose} />}
       {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && escrowStatusIndex(e.status) <= escrowStatusIndex("RECIPIENT_INSPECTION") && (
         <WhlTestingPanel b={b} id={id} onCompose={onCompose} />
       )}
       {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && <ReleasePanel b={b} onCompose={onCompose} />}
       {isFinal && <PaymentClosurePanel b={b} id={id} onUploadPaymentClosure={onUploadPaymentClosure} />}
+
+      <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <ContactPanel title="Buyer contact" contact={e.buyerContact} />
+        <ContactPanel title="Seller contact" contact={e.sellerContact} />
+        <ContactPanel title="Recipient contact (1Buy hub)" contact={e.recipient} />
+      </div>
+      <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+
       <AgentInboxPanel b={b} />
 
       {compose && (

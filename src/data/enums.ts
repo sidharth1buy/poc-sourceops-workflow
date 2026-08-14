@@ -637,9 +637,12 @@ export function notifyDigest(party: NotifyParty, c: NotifyDigestCtx): { subject:
 // Access control - only these personas may override auto-filled tests or email WHL on our behalf.
 export const TEST_EDIT_ROLES: Role[] = ["SC", "Mgmt"];
 export const LAB_EMAIL_ROLES: Role[] = ["SC", "Mgmt"];
+// Escrow/payments are money-movement actions — restricted to Finance. Escrow now lives
+// only under the Escrow board (/fulfilment/escrow/[id]), not as an order-workspace tab.
+export const ESCROW_ACCESS_ROLES: Role[] = ["Finance"];
 
 export const WORKSPACE_TABS = [
-  "Overview", "Lines", "Allocations", "Journey", "Testing", "Escrow", "Payments",
+  "Overview", "Lines", "Allocations", "Journey", "Testing", "Payments",
   "Shipments", "Customs", "Delivery", "Documents", "Events", "Approvals",
 ] as const;
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number];

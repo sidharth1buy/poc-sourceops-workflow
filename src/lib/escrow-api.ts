@@ -108,6 +108,12 @@ export function markApplicationRejected(orderId: string): Promise<Escrow> {
   return call<Escrow>(`/escrow/orders/${orderId}/application-rejected`, { method: "POST" });
 }
 
+// Demo/dev button — HKin's real deadline-reminder email is an independent signal, not
+// something simulate-next-inbound's awaiting-purpose mechanism can produce (see api.py).
+export function simulateDeadlineReminder(orderId: string): Promise<{ escrow: Escrow }> {
+  return call(`/escrow/orders/${orderId}/simulate-deadline-reminder`, { method: "POST" });
+}
+
 export function recordRma(
   orderId: string,
   input: { rmaDetails?: string; goodsReturnTracking?: string; markReturned?: boolean },
