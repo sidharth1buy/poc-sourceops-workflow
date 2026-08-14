@@ -86,14 +86,21 @@ Work in this sequence and keep the tree compiling at each step.
   the bulk bar's quick filters select; both logistics deep links pre-fill with non-zero quantities.
   Verify **collapsed and expanded** states separately — a card that renders its body while collapsed
   defeats the whole density rule, and you cannot see that from the collapsed screenshot alone.
-- Drive the lifecycle end to end rather than eyeballing it: from a fresh lot, record a dispatch and poll the
-  inbox repeatedly until the report lands, asserting that **all 8 stages are visited in order**, that none
-  is skipped, that nothing moves backwards, and that a completed lot is left untouched by further polls.
-  The stage-advance path is probabilistic, so **run it several times** — the two stage-ordering bugs called
-  out in §7.3 were each reproducible only across repeated runs.
-- Drive the fee path too: the invoice must arrive on booking, be attachable to a finance mail, and only a
-  recorded payment may close the payment stage. Check the payment node stays amber on a lot whose chain
-  has run past it unpaid — that is the case index-based rendering gets wrong.
+- Drive the lifecycle end to end rather than eyeballing it: from a fresh lot, poll the inbox repeatedly
+  until the report lands — **touching nothing else**, since every stage is meant to arrive by mail —
+  asserting that **all 7 stages are visited in order**, that none is skipped, that nothing moves
+  backwards, and that a completed lot is left untouched by further polls. The stage-advance path is
+  probabilistic, so **run it several times**: the ordering bugs called out in §7.3 were each
+  reproducible only across repeated runs, and the advance-vs-credit branch only fires on ~45% of lots,
+  so a single run will miss the held state entirely.
+- Drive the fee path too: the invoice must arrive on booking **carrying its terms**, be attachable to a
+  finance mail, and only a recorded payment may close the payment stage. Check both terms:
+  - `CREDIT` — the payment node stays **amber** on a lot whose chain has run past it unpaid; that is the
+    case index-based rendering gets wrong.
+  - `ADVANCE` — the lot reads **held**, the chain stops after `COMPONENTS_RECEIVED` no matter how many
+    times you poll, and sending the invoice to finance then polling once produces WHL's payment
+    acknowledgement, which releases it. A lot that stays held after payment means branch ordering in
+    §7.3 is wrong and the lot is deadlocked.
 - Walk the §14 acceptance checklist and report any box you could not tick, with the reason.
 - Then summarise: what you built, where each piece lives, what you seeded, and anything you deliberately
   deviated from in CONTEXT.md because this codebase required it.

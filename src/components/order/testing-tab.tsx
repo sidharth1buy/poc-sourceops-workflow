@@ -3,14 +3,15 @@
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Trash2, Pencil, History, Wand2, RefreshCw, Mail, MailQuestion, FileText, Download, Eye,
+  Plus, Pencil, History, Wand2, RefreshCw, Mail, MailQuestion, FileText, Download, Eye,
   AlertTriangle, ShieldAlert, Lock, ChevronRight, ChevronDown, Check, FlaskConical, Clock,
   Zap, Truck, Factory, Users, Landmark, Layers, Receipt,
 } from "lucide-react";
-import type { OrderBundle, Lot, LotTest, WhlReport, LabEmail, TestProcessStatus, NotifyParty } from "@/types";
+import type { OrderBundle, Lot, WhlReport, LabEmail, NotifyParty } from "@/types";
 import {
-  TEST_STANDARDS, WHL_PROCESSES, TEST_PROCESS_STATUSES, WHL_CONTACT, WHL_SLA_BUSINESS_DAYS,
+  TEST_STANDARDS, WHL_PROCESSES, WHL_CONTACT, WHL_SLA_BUSINESS_DAYS,
   WHL_EMAIL_TEMPLATES, statusTone, stageLabel, LAB_PAYMENT_TONE,
+  LAB_TERMS_LABEL, LAB_TERMS_TONE, LAB_TERMS_HINT,
 } from "@/data/enums";
 import { Panel, Pill, StatusPill, Button, Progress, Field } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/form";
@@ -19,7 +20,7 @@ import { useRole } from "@/lib/role";
 import {
   specForMpn, lotTestProgress, currentReport, lotEmails, unmatchedEmails,
   testAutofillGaps, overdueUpdateRequests, reconciliationAlerts, testingSummary, lotResults, lotStageProgress,
-  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal,
+  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labTerms, labFeeBlocking, labFeeGross, mpnFeeRollup,
 } from "@/store/selectors";
 import { qtyfmt, cn } from "@/lib/utils";
 import {
@@ -27,13 +28,14 @@ import {
   RecordDispatchModal, MarkLabFeePaidModal,
 } from "@/components/order/modals";
 import { TestingStageChain, TestingStageBar } from "@/components/order/testing-stages";
+import { LotTestTable, MpnTestMatrix, MpnFeeStrip } from "@/components/order/test-tables";
 
 type Sub = "mpns" | "lots" | "mail";
 
 const SUBS: { id: Sub; label: string }[] = [
-  { id: "mpns", label: "MPNs & tests" },
+  { id: "mpns", label: "MPNs · tests · fee" },
   { id: "lots", label: "Lots · status · reports" },
-  { id: "mail", label: "WHL correspondence" },
+  { id: "mail", label: "Mail (drives every stage)" },
 ];
 
 function Empty({ text }: { text: string }) {
@@ -159,8 +161,9 @@ export function TestingTab({
                 <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn} · {l.testStatus}</option>
               ))}
             </Select>
-            <Button variant="outline" onClick={() => syncWhlInbox(id)} title="Poll the WHL mailbox and apply interim statuses / reports">
-              <RefreshCw className="h-4 w-4" /> Sync WHL inbox
+            <Button variant="outline" onClick={() => syncWhlInbox(id)}
+              title="Poll the mailbox. Every stage arrives here: the lab's invoice (with its payment terms), the supplier's dispatch advice, WHL's receipt confirmation, progress notes, the payment acknowledgement and the report.">
+              <RefreshCw className="h-4 w-4" /> Check mail
             </Button>
             <Button variant="outline" disabled={!canEditTests} onClick={() => autofillMpnTests(id)}
               title={canEditTests ? "Re-parse the PO's test table" : "Only SC / Mgmt may change test requirements"}>
@@ -232,9 +235,10 @@ export function TestingTab({
                   <th className="px-3 py-2 text-left">Lot</th>
                   <th className="px-3 py-2 text-left">MPN</th>
                   <th className="px-3 py-2 text-left">Verdict</th>
+                  {/* F.A.R. / not-acceptable used to own a column each; they live in this
+                      cell now, which freed the width for the lab fee */}
                   <th className="px-3 py-2 text-left">Tests</th>
-                  <th className="px-3 py-2 text-center">F.A.R.</th>
-                  <th className="px-3 py-2 text-center">Not acc.</th>
+                  <th className="px-3 py-2 text-left">Lab fee</th>
                   <th className="px-3 py-2 text-left">Current report</th>
                   <th className="px-3 py-2 text-left">Outstanding</th>
                   <th className="px-3 py-2 text-left">Progress</th>
@@ -260,9 +264,15 @@ export function TestingTab({
                         <span className="tnum text-xs">{r.progress.settled}/{r.progress.total}</span>
                         <span className="w-20"><Progress value={r.pct} /></span>
                       </div>
+                      {(r.progress.far > 0 || r.progress.failed > 0 || r.progress.notConducted > 0) && (
+                        <div className="mt-0.5 flex flex-wrap gap-x-2 text-[11px]">
+                          {r.progress.far > 0 && <span className="text-warn">{r.progress.far} F.A.R.</span>}
+                          {r.progress.failed > 0 && <span className="text-bad">{r.progress.failed} not acc.</span>}
+                          {r.progress.notConducted > 0 && <span className="text-faint">{r.progress.notConducted} not cond.</span>}
+                        </div>
+                      )}
                     </td>
-                    <td className={cn("px-3 py-2 text-center tnum", r.progress.far && "font-semibold text-warn")}>{r.progress.far || "—"}</td>
-                    <td className={cn("px-3 py-2 text-center tnum", r.progress.failed && "font-semibold text-bad")}>{r.progress.failed || "—"}</td>
+                    <td className="px-3 py-2 text-xs"><LotFeeCell lot={r.lot} /></td>
                     <td className="px-3 py-2 text-xs">
                       {r.report ? (
                         <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -285,7 +295,7 @@ export function TestingTab({
                   </tr>
                   {track === r.lot.id && (
                     <tr className="border-b last:border-0 bg-card-2/60">
-                      <td colSpan={10} className="px-3 py-3">
+                      <td colSpan={9} className="px-3 py-3">
                         <TestingStageChain orderId={id} lot={r.lot} canEdit={canEditTests}
                           onRecordDispatch={() => setDispatch(r.lot.id)}
                           onSendToFinance={() => setNotify({ lotId: r.lot.id, party: "FINANCE" })}
@@ -334,13 +344,26 @@ export function TestingTab({
             {unmatched.length > 0 && (
               <Notice tone="info" icon={<MailQuestion className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
                 action={<button className="font-medium underline" onClick={() => setSub("mail")}>Open match queue</button>}>
-                {unmatched.length} inbound WHL email(s) couldn&apos;t be matched to a lot — held for manual matching.
+                {unmatched.length}{" "}inbound WHL email(s) couldn&apos;t be matched to a lot — held for manual matching.
               </Notice>
             )}
-            {fees.count > 0 && (
+            {/* an unpaid advance is a different problem from an unpaid credit invoice: one
+                stops the bench, the other just owes money. Say which. */}
+            {fees.blocking.length > 0 && (
+              <Notice tone="bad" icon={<Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+                action={<button className="font-medium underline" onClick={() => setSub("lots")}>Open lots</button>}>
+                {/* {" "} after a </b> or {expr}: JSX strips the leading space of a text
+                    chunk that spans a newline, so the words would run together without it */}
+                <b>{fees.blocking.join(", ")} held at the lab</b> — invoiced on <b>advance</b>{" "}
+                terms and unpaid, so testing hasn&apos;t started. Pay the fee to release the lot;
+                WHL&apos;s payment acknowledgement arrives on the thread.
+              </Notice>
+            )}
+            {fees.count - fees.blocking.length > 0 && (
               <Notice tone="warn" icon={<Receipt className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
                 action={<button className="font-medium underline" onClick={() => setSub("lots")}>Open lots</button>}>
-                <b>{fees.count} WHL invoice(s) unpaid</b> — {fees.currency} {fees.gross.toLocaleString()} owed to the lab.
+                <b>{fees.count} WHL invoice(s) unpaid</b> — {fees.currency} {fees.gross.toLocaleString()} owed to the lab
+                {fees.blocking.length > 0 ? ` (incl. the ${fees.blocking.length} held above)` : " on credit terms, so nothing is blocked"}.{" "}
                 Send them to finance from the lot, or tick the lots and use <b>Next actions → Send invoices to finance</b>.
               </Notice>
             )}
@@ -408,6 +431,33 @@ function LotProgressToggle({ lot, open, onToggle }: { lot: Lot; open: boolean; o
   );
 }
 
+/**
+ * The lab's fee for one lot in a table cell: amount, the mode the lab stated on its
+ * invoice, and whether that mode makes an unpaid fee a stop sign or just a ledger item.
+ */
+function LotFeeCell({ lot }: { lot: Lot }) {
+  const pay = labPaymentOf(lot);
+  const terms = labTerms(lot);
+  if (!lot.workOrderNo) return <span className="text-faint">—</span>;
+  if (!pay.invoice) {
+    return <span className="text-faint">{pay.status === "REQUESTED" ? "invoice requested" : "not invoiced"}</span>;
+  }
+  const blocked = labFeeBlocking(lot);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span className="tnum">{pay.invoice.currency} {labFeeGross(lot).toLocaleString()}</span>
+      {terms && (
+        <Pill tone={LAB_TERMS_TONE[terms]} title={LAB_TERMS_HINT[terms]}>{LAB_TERMS_LABEL[terms]}</Pill>
+      )}
+      {blocked
+        ? <Pill tone="bad"><Lock className="h-3 w-3" /> held</Pill>
+        : labFeeUnpaid(lot)
+        ? <Pill tone={LAB_PAYMENT_TONE[pay.status]}>{pay.status === "SENT_TO_FINANCE" ? "with finance" : "unpaid"}</Pill>
+        : <Pill tone="ok"><Check className="h-3 w-3" /> paid</Pill>}
+    </span>
+  );
+}
+
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "ok" | "warn" | "bad" }) {
   const color = tone === "ok" ? "text-ok" : tone === "warn" ? "text-warn" : tone === "bad" ? "text-bad" : "text-foreground";
   return (
@@ -423,7 +473,6 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "ok
 function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: string; canEdit: boolean; onlyMpn?: string }) {
   const autofillMpnTests = useStore((s) => s.autofillMpnTests);
   const addMpnTest = useStore((s) => s.addMpnTest);
-  const removeMpnTest = useStore((s) => s.removeMpnTest);
   const [editing, setEditing] = useState<string | null>(null);
   const [openAudit, setOpenAudit] = useState<string | null>(null);
   const [name, setName] = useState<string>(WHL_PROCESSES[0]);
@@ -444,6 +493,7 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
       <p className="text-xs text-muted-foreground">
         Test requirements are <b className="text-foreground">parsed off the PO</b>, never typed — the PO already carries the test table.
         Manual edits are allowed as an override and every one is logged (who · when · before → after).
+        Each MPN shows what the lab charges to run that list and how it wants paying — both read off its invoice mail.
       </p>
       {onlyMpn && <p className="text-xs text-muted-foreground">Filtered to <span className="font-mono text-foreground">{onlyMpn}</span> — the MPN of the lot selected above.</p>}
       {shown.length > 1 && (
@@ -458,6 +508,7 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
         const isEditing = editing === line.mpn;
         const lotsOfMpn = b.lots.filter((l) => l.orderLineMpn === line.mpn);
         const open = isOpen(line.mpn);
+        const fee = mpnFeeRollup(b, line.mpn);
         return (
           <CollapsibleCard key={line.id} open={open} onToggle={() => toggle(line.mpn)}
             title={<span className="flex flex-wrap items-center gap-2">
@@ -473,6 +524,18 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
               <span className="text-muted-foreground tnum">{spec?.tests.length ?? 0} test{(spec?.tests.length ?? 0) === 1 ? "" : "s"}</span>
               {(spec?.tests.filter((t) => t.source === "MANUAL").length ?? 0) > 0 && (
                 <span className="text-faint">{spec!.tests.filter((t) => t.source === "MANUAL").length} manual</span>
+              )}
+              {/* what this MPN's testing costs and how it's paid — visible without opening */}
+              {fee.invoiced > 0 && (
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="tnum text-muted-foreground">{fee.currency} {fee.gross.toLocaleString()}</span>
+                  {fee.terms.length === 1
+                    ? <Pill tone={LAB_TERMS_TONE[fee.terms[0]]} title={LAB_TERMS_HINT[fee.terms[0]]}>{LAB_TERMS_LABEL[fee.terms[0]]}</Pill>
+                    : <Pill tone="warn">mixed terms</Pill>}
+                  {fee.blocked.length > 0
+                    ? <Pill tone="bad">{fee.blocked.length} lot(s) held</Pill>
+                    : fee.unpaid > 0 && <Pill tone="warn">fee unpaid</Pill>}
+                </span>
               )}
             </>}
             actions={
@@ -512,22 +575,12 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
               </div>
             )}
 
+            {/* the lab's price for this list, and the mode it wants paying in */}
+            <div className="mb-2"><MpnFeeStrip b={b} mpn={line.mpn} /></div>
+
+            {/* requirements × lots, not a third flat list of the same test names */}
             {spec && spec.tests.length > 0 ? (
-              <ul className="divide-y rounded-lg border">
-                {spec.tests.map((t) => (
-                  <li key={t.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
-                    <span className="min-w-0 flex-1">{t.name}</span>
-                    {t.standard && <Pill tone="neutral">{t.standard}</Pill>}
-                    <Pill tone={t.source === "AUTO_PO" ? "info" : "warn"}>{t.source === "AUTO_PO" ? "from PO" : "manual"}</Pill>
-                    {t.source === "MANUAL" && t.addedBy && <span className="text-[11px] text-faint">{t.addedBy} · {t.addedAt}</span>}
-                    {isEditing && (
-                      <button onClick={() => removeMpnTest(id, line.mpn, t.id)} className="text-bad hover:opacity-70" title="Delete test (logged)">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
+              <MpnTestMatrix b={b} orderId={id} mpn={line.mpn} spec={spec} canEdit={canEdit} editing={isEditing} />
             ) : (
               <Empty text={none ? "This MPN needs no incoming test per the PO." : "No tests on file for this MPN."} />
             )}
@@ -623,11 +676,10 @@ function BulkActionsMenu({
   const none = lots.length === 0;
   // a payment run: only lots whose lab invoice has arrived and is still unpaid
   const payable = lots.filter((l) => !!l.labPayment?.invoice && labFeeUnpaid(l));
-  const payableGross = payable.reduce((a, l) => {
-    const i = l.labPayment!.invoice!;
-    return a + i.amount + (i.taxAmount ?? 0);
-  }, 0);
+  const payableGross = payable.reduce((a, l) => a + labFeeGross(l), 0);
   const payCur = payable[0]?.labPayment?.invoice?.currency ?? "USD";
+  // advance invoices in the run aren't just owed — those lots are sitting untested
+  const payableHeld = payable.filter((l) => labFeeBlocking(l)).length;
 
   const item = (label: string, sub: string, icon: React.ReactNode, onClick: () => void, disabled?: boolean) => (
     <button type="button" disabled={disabled} onClick={() => { setOpen(false); onClick(); }}
@@ -662,7 +714,7 @@ function BulkActionsMenu({
             {item("Acknowledge to WHL", `Confirm ${withReport} report(s) received`, <FlaskConical className="h-4 w-4" />,
               () => onBulk("WHL"), !canEmail || withReport === 0)}
             {item("Send invoices to finance", payable.length
-              ? `Payment run — ${payable.length} unpaid invoice(s), ${payCur} ${payableGross.toLocaleString()}`
+              ? `Payment run — ${payable.length} unpaid invoice(s), ${payCur} ${payableGross.toLocaleString()}${payableHeld ? ` · ${payableHeld} on advance, lot(s) held` : ""}`
               : "No unpaid WHL invoice among the selected lots", <Receipt className="h-4 w-4" />,
               () => onBulk("FINANCE"), !canEmail || payable.length === 0)}
             <div className="my-1 border-t" />
@@ -768,9 +820,15 @@ function LotCard({
         {report ? <span className="font-mono text-faint">{report.reportNo}</span> : <span className="text-warn">no report</span>}
         {blocker && <Pill tone={p.failed > 0 ? "bad" : "warn"}>{blocker}</Pill>}
         {lot.workOrderNo && labFeeUnpaid(lot) && (
-          <Pill tone={LAB_PAYMENT_TONE[labPaymentOf(lot).status]}>
-            <Receipt className="h-3 w-3" /> fee {labPaymentOf(lot).status === "SENT_TO_FINANCE" ? "with finance" : "unpaid"}
-          </Pill>
+          labFeeBlocking(lot) ? (
+            <Pill tone="bad" title="Advance terms and unpaid — WHL is holding the lot, so testing hasn't started.">
+              <Lock className="h-3 w-3" /> held — advance fee
+            </Pill>
+          ) : (
+            <Pill tone={LAB_PAYMENT_TONE[labPaymentOf(lot).status]}>
+              <Receipt className="h-3 w-3" /> fee {labPaymentOf(lot).status === "SENT_TO_FINANCE" ? "with finance" : "unpaid"}
+            </Pill>
+          )
         )}
         {awaiting && <span title="Awaiting a WHL reply"><Clock className="h-3.5 w-3.5 text-warn" /></span>}
       </>}
@@ -792,7 +850,8 @@ function LotCard({
           onMarkPaid={() => onMarkPaid(lot.id)} />
       </div>
 
-      {/* ---- 3 · per-test status tracker ---- */}
+      {/* ---- the one per-test table: requirement, live status, and the report line
+             that settled it. The report block below no longer re-lists the processes. ---- */}
       <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span className="font-semibold uppercase tracking-wide">Test status tracker</span>
         <span>{p.settled}/{p.total} passed</span>
@@ -801,32 +860,11 @@ function LotCard({
         {p.notConducted > 0 && <span>{p.notConducted} not conducted</span>}
         {p.open > 0 && <span>{p.open} open</span>}
       </div>
-      {p.total === 0 ? (
-        <Empty text="No tests on this lot — the MPN's test list is empty or failed to auto-fill (see MPNs & tests)." />
-      ) : (
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full min-w-[620px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="px-3 py-2 text-left">Test</th>
-                <th className="px-3 py-2 text-left">Std</th>
-                <th className="px-3 py-2 text-left">Source</th>
-                <th className="px-3 py-2 text-left">Status</th>
-                <th className="px-3 py-2 text-right">Accept / Reject</th>
-                <th className="px-3 py-2 text-left">Updated</th>
-                <th className="px-3 py-2 text-right">Set</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(lot.tests ?? []).map((t) => <TestRow key={t.id} orderId={id} lotId={lot.id} t={t} canEdit={canEdit} />)}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <LotTestTable orderId={id} lot={lot} canEdit={canEdit} />
 
-      {/* ---- 4 + 5 · report repository & auto-parsed summary ---- */}
+      {/* ---- report repository & auto-parsed header summary ---- */}
       <div className="mt-4">
-        <ReportRepository b={b} orderId={id} lot={lot} canEmail={canEmail} />
+        <ReportRepository b={b} orderId={id} lot={lot} />
       </div>
 
       {/* ---- who has been told, and what went with it ---- */}
@@ -913,82 +951,27 @@ function LotCard({
   );
 }
 
-function TestRow({ orderId, lotId, t, canEdit }: { orderId: string; lotId: string; t: LotTest; canEdit: boolean }) {
-  const setLotTestStatus = useStore((s) => s.setLotTestStatus);
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <tr className="border-b last:border-0">
-        <td className="px-3 py-2">
-          <button onClick={() => setOpen((o) => !o)} className="inline-flex items-start gap-1 text-left hover:text-primary">
-            {open ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-            {t.name}
-          </button>
-        </td>
-        <td className="px-3 py-2 text-xs text-muted-foreground">{t.standard ?? "—"}</td>
-        <td className="px-3 py-2"><Pill tone={t.source === "AUTO_PO" ? "info" : "warn"}>{t.source === "AUTO_PO" ? "from PO" : "manual"}</Pill></td>
-        <td className="px-3 py-2"><StatusPill status={t.status} /></td>
-        <td className="px-3 py-2 text-right tnum text-xs">
-          {t.acceptQty === undefined && t.rejectQty === undefined ? "—" : `${t.acceptQty ?? 0} / ${t.rejectQty ?? 0}`}
-        </td>
-        <td className="px-3 py-2 text-xs text-muted-foreground">{t.updatedAt ?? "—"}</td>
-        <td className="px-3 py-2 text-right">
-          <Select className="w-36 py-1 text-xs" value={t.status} disabled={!canEdit}
-            onChange={(e) => setLotTestStatus(orderId, lotId, t.id, e.target.value as TestProcessStatus, "Set manually on the tracker.")}>
-            {TEST_PROCESS_STATUSES.map((s) => <option key={s} value={s}>{s === "FAR" ? "F.A.R." : s.replace(/_/g, " ")}</option>)}
-          </Select>
-        </td>
-      </tr>
-      {open && (
-        <tr className="border-b bg-card-2 last:border-0">
-          <td colSpan={7} className="px-3 py-2">
-            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Status history</div>
-            {t.history.length === 0 ? <p className="text-xs text-muted-foreground">No history yet.</p> : (
-              <ol className="space-y-1.5">
-                {t.history.slice().reverse().map((h) => (
-                  <li key={h.id} className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="tnum text-faint">{h.at}</span>
-                    {h.before && <><StatusPill status={h.before} /><span className="text-faint">→</span></>}
-                    <StatusPill status={h.after} />
-                    <span className="text-muted-foreground">{h.by}{h.note ? ` · ${h.note}` : ""}{h.sourceEmailId ? " · from inbound email" : ""}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </td>
-        </tr>
-      )}
-    </>
-  );
-}
-
 // ---- report repository (per lot) + on-screen parsed summary ----
 
-function ReportRepository({ b, orderId, lot, canEmail }: { b: OrderBundle; orderId: string; lot: Lot; canEmail: boolean }) {
-  const requestWhlUpdate = useStore((s) => s.requestWhlUpdate);
+function ReportRepository({ b, orderId, lot }: { b: OrderBundle; orderId: string; lot: Lot }) {
   const logReportAccess = useStore((s) => s.logReportAccess);
   const reports = (lot.reports ?? []).slice().sort((a, c) => c.revision - a.revision);
   const [shown, setShown] = useState<string | null>(null);
   const current = currentReport(lot);
   const active = reports.find((r) => r.id === (shown ?? current?.id));
 
+  // No chase button here: the card footer already carries "Request update" while there's
+  // no report, and two buttons firing the same mail two inches apart is just a second
+  // thing to read.
   if (reports.length === 0) {
     return (
       <div className="rounded-lg border border-dashed p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-medium">WHL report — <span className="text-warn">Not Available</span></div>
-            <p className="text-xs text-muted-foreground">
-              Nothing received by email for WO {lot.workOrderNo ?? "—"} yet.
-              {lot.lastUpdateRequestAt && <> Update requested {lot.lastUpdateRequestAt}.</>}
-            </p>
-          </div>
-          <Button variant="outline" disabled={!canEmail} onClick={() => requestWhlUpdate(orderId, lot.id)}
-            title={canEmail ? `Pre-mapped chase to ${WHL_CONTACT}` : "Only SC / Mgmt may email WHL"}>
-            <Mail className="h-4 w-4" /> Request Update
-          </Button>
-        </div>
-        {!canEmail && <p className="mt-2"><Denied what="Emailing WHL" /></p>}
+        <div className="text-sm font-medium">WHL report — <span className="text-warn">Not Available</span></div>
+        <p className="text-xs text-muted-foreground">
+          Nothing received by email for WO {lot.workOrderNo ?? "—"} yet.
+          {lot.lastUpdateRequestAt && <> Update requested {lot.lastUpdateRequestAt}.</>}
+          {" "}Use <b className="text-foreground">Request update</b> below to chase {WHL_CONTACT}.
+        </p>
       </div>
     );
   }
@@ -1072,35 +1055,18 @@ function ReportSummary({ b, orderId, lot, r }: { b: OrderBundle; orderId: string
         <Field label="Package type">{r.packageType ?? "—"}</Field>
       </div>
 
-      <div className="mt-3">
-        <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Process-level results</div>
-        <div className="overflow-x-auto rounded-lg border">
-          <table className="w-full min-w-[520px] border-collapse text-sm">
-            <thead>
-              <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                <th className="px-3 py-2 text-left">Process</th>
-                <th className="px-3 py-2 text-left">Result</th>
-                <th className="px-3 py-2 text-right">Acceptable qty</th>
-                <th className="px-3 py-2 text-right">Not-acceptable qty</th>
-                <th className="px-3 py-2 text-left">Note</th>
-              </tr>
-            </thead>
-            <tbody>
-              {r.processes.map((p, i) => (
-                <tr key={i} className="border-b last:border-0">
-                  <td className="px-3 py-2">{p.name}</td>
-                  <td className="px-3 py-2"><Pill tone={statusTone(p.result)}>{p.result === "FAR" ? "F.A.R." : p.result.replace(/_/g, " ")}</Pill></td>
-                  <td className="px-3 py-2 text-right tnum">{p.acceptQty ?? "—"}</td>
-                  <td className="px-3 py-2 text-right tnum">{p.rejectQty ?? "—"}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.note ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="mt-1.5 text-[11px] text-faint">
-          A report can be <b>Acceptable</b> overall while one process is <b>F.A.R.</b> — the matrix is the source of truth, not the headline conclusion.
-        </p>
+      {/* The process matrix used to be repeated here. It isn't any more: fetching a report
+          rolls every process onto the lot's tracker above, so that table is the matrix —
+          with the report number and the process note on each row. Only the roll-up stays. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card-2 px-3 py-2 text-xs">
+        <span className="font-semibold uppercase tracking-wide text-muted-foreground">{r.processes.length} process(es) reported</span>
+        {(["ACCEPTABLE", "FAR", "NOT_ACCEPTABLE", "NOT_CONDUCTED"] as const).map((res) => {
+          const n = r.processes.filter((p) => p.result === res).length;
+          return n === 0 ? null : (
+            <Pill key={res} tone={statusTone(res)}>{n} {res === "FAR" ? "F.A.R." : res.replace(/_/g, " ").toLowerCase()}</Pill>
+          );
+        })}
+        <span className="text-faint">per-process results, quantities and notes are on the test tracker above</span>
       </div>
 
       {showAccess && (
@@ -1167,7 +1133,7 @@ function MailSection({
 
       <Panel title="WHL inbox — manual match queue"
         actions={<div className="flex gap-2">
-          <Button variant="outline" onClick={() => syncWhlInbox(id)}><RefreshCw className="h-4 w-4" /> Sync inbox</Button>
+          <Button variant="outline" onClick={() => syncWhlInbox(id)}><RefreshCw className="h-4 w-4" /> Check mail</Button>
           <Button disabled={!canEmail} onClick={() => onCompose(undefined)} title={canEmail ? "Compose to WHL" : "Only SC / Mgmt may email WHL"}>
             <Mail className="h-4 w-4" /> Compose
           </Button>
@@ -1219,7 +1185,9 @@ function MailSection({
           </>
         )}
         <p className="mt-3 text-xs text-muted-foreground">
-          Every message to and from <b className="text-foreground">{WHL_CONTACT}</b> is logged against its lot — status requests, interim updates and report deliveries in one thread.
+          This thread is what drives the lifecycle. Everything to and from <b className="text-foreground">{WHL_CONTACT}</b>{" "}
+          lands here against its lot — the invoice and its payment terms, the supplier&apos;s dispatch advice, receipt
+          confirmations, interim updates, the payment acknowledgement and the report — and each one moves the stage it establishes.
           {thread.length > RECENT_MAILS && ` Showing the ${RECENT_MAILS} most recent of ${thread.length}.`}
         </p>
       </Panel>
@@ -1227,8 +1195,25 @@ function MailSection({
   );
 }
 
+// Every lifecycle stage is established by one of these, so the kind is worth a glance:
+// it says whether a message was a bill, a dispatch advice, a receipt or the report.
+// STATUS_UPDATE and the outbound kinds are left unlabelled — the subject already says it.
+const MAIL_KIND_LABEL: Partial<Record<LabEmail["kind"], string>> = {
+  INVOICE: "invoice",
+  PAYMENT: "payment",
+  DISPATCH: "dispatch",
+  REPORT: "report",
+};
+
+const MAIL_KIND_TONE: Record<string, "ok" | "warn" | "info" | "neutral"> = {
+  INVOICE: "warn",
+  PAYMENT: "ok",
+  DISPATCH: "info",
+  REPORT: "ok",
+};
+
 /**
- * One message in the WHL thread. The body is clamped to a couple of lines so a long
+ * One message in the thread. The body is clamped to a couple of lines so a long
  * report mail can't push the rest of the thread off screen — "view full email" opens it
  * in place. Short mails are shown whole and get no toggle.
  */
@@ -1242,6 +1227,8 @@ function MailRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <Pill tone={m.direction === "OUT" ? "info" : "neutral"}>{m.direction === "OUT" ? "sent" : "received"}</Pill>
+          {/* the kind is what tells you which stage this mail moved */}
+          {MAIL_KIND_LABEL[m.kind] && <Pill tone={MAIL_KIND_TONE[m.kind]}>{MAIL_KIND_LABEL[m.kind]}</Pill>}
           <StatusPill status={m.status} />
           <span className="text-xs text-faint tnum">{m.at}</span>
           {m.lotCode && <span className="text-xs text-muted-foreground">{m.lotCode} · <span className="font-mono">{m.mpn}</span>{m.workOrderNo ? ` · WO ${m.workOrderNo}` : ""}</span>}

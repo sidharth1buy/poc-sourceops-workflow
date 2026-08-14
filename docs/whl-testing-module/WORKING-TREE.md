@@ -59,25 +59,34 @@ drives escrow release**. This module reads and sets it but never repurposes it.
 
 ```
 1 Test Requested        1Buy      work order raised with WHL
-2 Payment to WHL        1Buy      lab invoices on booking → finance pays  ← parallel track
-3 Supplier Dispatching  Supplier  ← the only stage we must input ourselves
+2 Payment to WHL        1Buy      invoice mail states ADVANCE|CREDIT → payment ack closes it
+3 Supplier Dispatching  Supplier  supplier's own dispatch advice, relayed onto the thread
 4 Components Received   WHL       receipt confirmation mail
-5 Testing Started       WHL       "on the bench" mail
-6 Testing In Progress   WHL       interim mails (these also move the test tracker)
-7 Testing Completed     WHL       "all processes conducted" mail
-8 Report Preparation    WHL       "with the reviewer" mail ← can lag stage 7 by days
-9 Test Report Shared    WHL       report received  ← TERMINAL
+5 Testing In Progress   WHL       interim mails (these also move the test tracker)
+6 Testing Completed     WHL       "all processes conducted" mail
+7 Test Report Shared    WHL       report received  ← TERMINAL
 ```
 
-Four rules that fall out of this shape:
+**Every stage arrives by mail** — `syncWhlInbox` is the driver, including for the two stages that
+don't originate with the lab. The operator paths (`recordSupplierDispatch`, `markLabFeePaid`,
+`setLotStage`) are labelled fallbacks for the phone-call case.
 
-- **Stage 3 cannot arrive by mail.** The lab only learns a shipment exists when it lands, so dispatch
-  is an operator input (`recordSupplierDispatch`). Before it, the lab *chases us* for the samples.
-- **Stages 7 and 8 are separate on purpose.** Testing finishing and the report landing are different
-  events, often days apart. Merging them hides where the delay actually is.
-- **Stage 2 does not gate stages 3+.** The lab tests on account, so the chain routinely runs past the
-  payment stage with the fee owed. That node therefore reads the payment record, not its index — the
-  only node in the stepper whose truth isn't positional.
+Rules that fall out of this shape:
+
+- **Stage 3 cannot come from a *lab* mail.** The lab only learns a shipment exists when it lands, so
+  the stage comes from the supplier's dispatch advice (`kind: "DISPATCH"`, carrying courier/AWB/ETA)
+  with `recordSupplierDispatch` as the manual fallback. Before it, the lab *chases us* for the samples.
+- **Stages 6 and 7 are separate on purpose.** Testing finishing and the report landing are different
+  events, often days apart. Keeping them separate is what makes the lag visible — and is why no
+  "report being written" stage is needed between them.
+- **Whether stage 2 gates stages 5+ depends on the terms.** On `CREDIT` the lab tests on account, so
+  the chain routinely runs past the payment stage with the fee owed. On `ADVANCE` the lab holds the
+  lot, so nothing past stage 4 fires until a payment acknowledgement lands. That node therefore reads
+  the payment record (amber unpaid-on-credit, red when blocking), not its index — the only node in the
+  stepper whose truth isn't positional.
+- **Two stages were removed** (`TESTING_STARTED` after 4, `REPORT_PREPARATION` after 6). "In progress"
+  already says the lot is on the bench and "report shared" already says the write-up finished, so both
+  were nodes the operator read past. Don't reintroduce them.
 - **Reaching stage 9 is not a verdict.** It means the report is in hand. Whether the lot is acceptable
   is `testStatus` + the blocker; an F.A.R. still needs follow-up on a chain that reads complete.
 
@@ -171,16 +180,32 @@ The screen. `TestingTab` (L113) is the only export; everything else is local.
 | `LotCard` | 741 | a lot: stepper → tracker → reports → circulated → verdict footer |
 | `MailSection` | 1134 | sub-tab 3 — templates, match queue, thread |
 | `MailRow` | 1242 | one thread message, body clamped, `view full email` |
-| `ReportRepository` / `ReportSummary` | 974 / 1025 | version switcher + the parsed report on screen |
-| `TestRow` | 923 | one tracker row, expands to its status history |
+| `ReportRepository` / `ReportSummary` | ~960 / ~1010 | version switcher + the parsed report header on screen (no process table — see below) |
 | `NextActionsMenu` / `BulkActionsMenu` | 690 / 622 | per-lot and N-lot follow-through |
 | `LotProgressToggle` | 404 | the roll-up table's **Progress** cell |
+| `LotFeeCell` | ~430 | the roll-up table's **Lab fee** cell: gross · terms pill · held/unpaid/paid |
+| `MAIL_KIND_LABEL` / `MAIL_KIND_TONE` | ~1250 | the thread's kind pills (invoice · payment · dispatch · report) |
 | `CollapsibleCard` / `ExpandBar` | 65 / 93 | the density primitives (see Part 5) |
-| `Empty` / `Notice` / `Denied` / `Stat` | 39–109, 418 | local presentation helpers |
+| `Empty` / `Notice` / `Denied` / `Stat` | 39–109, ~455 | local presentation helpers |
 
-#### `components/order/testing-stages.tsx` — 294 lines
+#### `components/order/test-tables.tsx` — the two per-test tables
 
-- `TestingStageBar` (L34) — 9 thin segments + label + `n/8` + "waiting on X". Used in the scope
+Extracted so there is one owner for "render the test list", after an earlier cut rendered it three
+times (MPN requirements, lot tracker, report process matrix — the same names three times over):
+
+- `LotTestTable` — the lot card's tracker, rows from `lotTestRows(lot)`. Columns
+  `Test | Status | Accept/Reject | Per the report | Updated | Set`. The `Per the report` column **is**
+  the old process matrix: result pill, report no, process note. `TestRow` (local) expands to the
+  status history.
+- `MpnTestMatrix` — requirements down, lots across, each cell that lot's status for that test
+  (`not on lot` when the requirement never propagated), a `Rate` column when every invoice on the MPN
+  agrees, and a `passed / tracked` footer per lot.
+- `MpnFeeStrip` — the MPN's fee from `mpnFeeRollup`: gross, per-process rate, terms (or `mixed terms`),
+  unpaid total, held lot codes.
+
+#### `components/order/testing-stages.tsx` — ~330 lines
+
+- `TestingStageBar` (L34) — 7 thin segments + label + `n/7` + "waiting on X". Used in the scope
   banner and on the cross-order board.
 - `TestingStageChain` (L65) — the horizontal stepper. Reuses the **Journey stepper's** markup and
   classes on purpose, so order-level and lot-level progress read as one idea at two scales. Per-stage
@@ -248,22 +273,36 @@ notifyLotsResult    978
 `moveStage` (L57) is the **single** path for every automatic lifecycle move. It compares against
 `lot.stage` — the *recorded* stage — never `lotStage(lot)`, the displayed one. The displayed stage is
 floored by what the tests/report imply, and that floor can run ahead of what the lab has told us; using
-it here silently swallows history rows. The comment at L57 spells this out. Don't "simplify" it.
+it here silently swallows history rows. The comment above it spells this out. Don't "simplify" it.
+
+Three helpers, not one: `moveStage` (forward-only, advances the cursor + records),
+`recordStageEvent` (records only), and `settleStage` (records even when the stage is already behind the
+cursor). **`WHL_PAYMENT` uses `settleStage`** — from `markLabFeePaid` and from the `PAYMENT_ACK` branch
+of `syncWhlInbox` — because the fee routinely clears after the lot has shipped, and `moveStage` would
+treat that as a backwards move and drop the row. That was a live bug: the fee read "paid" with no
+history row behind it.
 
 ### Selectors
 
 ```
-specForMpn 87 · lotTestProgress 90 · currentReport 99
-derivedStage 115 (internal) · lotStage 166 · lotStageProgress 174 · stageWaiting ~198
-labPaymentOf 134 · labFeeUnpaid 136 · outstandingLabFees 139 · labFeeOutstandingTotal 160
-lotEmails ~204 · unmatchedEmails ~208 · testAutofillGaps ~211 · overdueUpdateRequests ~230
-reconciliationAlerts ~238 · testingSummary ~257 · lotResults ~282
+specForMpn · lotTestProgress · currentReport · lotTestRows (the joined tracker rows)
+derivedStage (internal) · lotStage · lotStageProgress · stageWaiting
+labPaymentOf · labFeeUnpaid · labTerms · labFeeGross · labFeeBlocking
+outstandingLabFees · labFeeOutstandingTotal · mpnFeeRollup
+lotEmails · unmatchedEmails · testAutofillGaps · overdueUpdateRequests
+reconciliationAlerts · testingSummary · lotResults
 ```
 
 `lotStage` = `max(recorded, derived)`. The derived value is a **display floor** so a lot holding a
 report can never *read* as pre-report — which keeps imported or legacy lots from displaying a lie.
-`REPORT_PREPARATION` is deliberately not derivable: it's a state inside the lab that nothing on our
-side of the wire implies.
+
+`lotTestRows` is the join that killed the third test list: one row per `lot.tests[]` entry with the
+current report's matching process folded in, plus a `report only` row for any process on the report
+that never had a tracker entry (dropping it would hide a process the lab ran).
+
+`labFeeBlocking` is the advance gate — `terms === "ADVANCE" && status !== "PAID"`. Read it, don't
+re-derive it: it's what separates "owes money" from "the bench is stopped", and it's consulted by the
+stepper node, the header pill, the lot summary, the roll-up cell and the order alert.
 
 ---
 
@@ -348,13 +387,19 @@ buyer digest spanning several client POs is split into one mail per PO.
 **5 · The lab's fee (parallel to 2–4)**
 The lab bills on booking, so `nextStageMail` returns an `INVOICE` mail as its first reply after the
 work order — carrying an `invoice` payload (N processes × USD 145 + 6% tax, due in 15 days). `syncWhlInbox`
-stores it as a `LabInvoice`, files the PDF in the document vault, and sets the fee to
+stores it as a `LabInvoice` — **including the `terms` (`ADVANCE` | `CREDIT`), `creditDays` and
+`ratePerProcess` the mail states** — files the PDF in the document vault, and sets the fee to
 `INVOICE_RECEIVED`; the mail lands on the thread as `kind: "INVOICE"`. From there:
 `requestWhlInvoice` (chase it) → `notifyLotResult(party: "FINANCE")` attaches the **invoice** and marks
-it `SENT_TO_FINANCE` → `markLabFeePaid` records the reference and is the **only** thing that calls
-`moveStage(WHL_PAYMENT)`. `logInvoiceAccess` logs every download. Bulk: `notifyLotsResult(FINANCE)` is a
-payment run that moves every covered invoice at once. Nothing here blocks testing — the fee is a
-parallel track, surfaced as an amber stepper node, a lot-summary pill and an order-level alert.
+it `SENT_TO_FINANCE` → and once it's with finance, WHL's own `PAYMENT_ACK` mail sets `PAID` with its
+`paidRef` and calls `moveStage(WHL_PAYMENT)`; `markLabFeePaid` does the same by hand. `logInvoiceAccess`
+logs every download. Bulk: `notifyLotsResult(FINANCE)` is a payment run that moves every covered invoice
+at once and flags advance lots as held.
+
+**The terms decide whether the fee blocks.** On `CREDIT` it's a parallel track — amber stepper node,
+lot pill, order alert, nothing stopped. On `ADVANCE` the lab holds the lot: the mock stops answering
+with bench mails until a payment acknowledgement lands, and the UI goes red (`Held — advance fee
+unpaid`). The terms are never chosen in the app; they are only ever read off the invoice mail.
 
 ### Density (built in, not a polish pass)
 
@@ -362,8 +407,8 @@ An order can carry 100 lots, so every repeated card starts collapsed:
 
 | Surface | Collapsed | Always visible |
 |---|---|---|
-| MPN card | test list, meta, edit, audit | MPN · mode · state pill · `k tests` · `m manual` |
-| Lot card | stepper, tracker, reports, notifications, verdict | lot · MPN · verdict · `n/m tests` · stage + `n/8` · report no · blocker · awaiting clock |
+| MPN card | test matrix, fee strip, meta, edit, audit | MPN · mode · state pill · `k tests` · `m manual` · fee gross · terms · unpaid/held |
+| Lot card | stepper, tracker, reports, notifications, verdict | lot · MPN · verdict · `n/m tests` · stage + `n/7` · report no · blocker · fee pill · awaiting clock |
 | Result circulated | the notification log | the party pills |
 | Correspondence | everything past the 2 newest; bodies clamped to 2 lines | the 2 most recent messages |
 

@@ -1,4 +1,4 @@
-import type { NotifyParty, TestingStage, LabPaymentStatus } from "@/types";
+import type { NotifyParty, TestingStage, LabPaymentStatus, LabPaymentTerms } from "@/types";
 
 export type Tone = "neutral" | "active" | "warn" | "ok" | "bad" | "info";
 
@@ -190,20 +190,23 @@ export const WHL_SLA_BUSINESS_DAYS = 3; // an unanswered "Request Update" past t
 // Ordered, and only ever traversed forward: a later interim mail can't rewind a lot
 // that already has a report. Operators can correct a stage by hand (logged as manual).
 //
+// Every stage here is established by an inbound mail — the lab's invoice and receipt
+// confirmations, the supplier's dispatch advice, WHL's progress notes and the report,
+// plus the payment acknowledgement that closes the fee. `syncWhlInbox` is the single
+// driver; the operator buttons exist for the phone-call case, not as the normal path.
+//
 // Note the tail: testing finishing and the report landing are separate events, and the
 // gap between them can be days — the lab can be done on the bench while the write-up is
-// still with its reviewer. So "Testing Completed" sits BEFORE report preparation, and the
-// chain ends on "Test Report Shared", which is the point we can actually act on.
+// still with its reviewer. So "Testing Completed" sits before "Test Report Shared",
+// which is the point we can actually act on.
 
 export const TESTING_STAGES: readonly TestingStage[] = [
   "TEST_REQUESTED",
   "WHL_PAYMENT",
   "SUPPLIER_DISPATCHING",
   "COMPONENTS_RECEIVED",
-  "TESTING_STARTED",
   "TESTING_IN_PROGRESS",
   "TESTING_COMPLETED",
-  "REPORT_PREPARATION",
   "REPORT_SHARED",
 ] as const;
 
@@ -230,15 +233,15 @@ export const TESTING_STAGE_META: Record<TestingStage, TestingStageMeta> = {
   },
   WHL_PAYMENT: {
     label: "Payment to WHL",
-    description: "WHL's testing invoice has been received and settled.",
+    description: "WHL's testing invoice has been received and settled — on advance terms this is what frees the bench.",
     owner: "1BUY",
-    trigger: "Invoice received from WHL, passed to finance, and confirmed paid.",
+    trigger: "Invoice mail states the terms; WHL's payment acknowledgement closes it.",
   },
   SUPPLIER_DISPATCHING: {
     label: "Supplier Dispatching Components",
     description: "Supplier is preparing and shipping the components to WHL.",
     owner: "SUPPLIER",
-    trigger: "Supplier confirms dispatch — record it with courier / AWB.",
+    trigger: "Supplier's dispatch advice mail (courier / AWB) — or record it by hand.",
   },
   COMPONENTS_RECEIVED: {
     label: "Components Received by WHL",
@@ -246,29 +249,17 @@ export const TESTING_STAGE_META: Record<TestingStage, TestingStageMeta> = {
     owner: "WHL",
     trigger: "Receipt confirmation mail from WHL.",
   },
-  TESTING_STARTED: {
-    label: "Testing Started",
-    description: "Laboratory testing has commenced.",
-    owner: "WHL",
-    trigger: "WHL mails to say the lot is on the bench.",
-  },
   TESTING_IN_PROGRESS: {
     label: "Testing In Progress",
-    description: "WHL is actively conducting the required tests and sharing progress updates.",
+    description: "The lot is on the bench — WHL is conducting the required tests and mailing progress.",
     owner: "WHL",
     trigger: "Interim progress mails from WHL — each one updates the test tracker.",
   },
   TESTING_COMPLETED: {
     label: "Testing Completed",
-    description: "Testing process has been successfully completed.",
+    description: "Every process in the agreed test plan has been run; the write-up is with WHL's reviewer.",
     owner: "WHL",
-    trigger: "WHL confirms every process in the agreed test plan has been run.",
-  },
-  REPORT_PREPARATION: {
-    label: "Report Preparation",
-    description: "Testing is complete and the final report is being compiled.",
-    owner: "WHL",
-    trigger: "WHL confirms the report is being written / with its reviewer — this can lag the bench work by days.",
+    trigger: "WHL confirms the bench work is finished.",
   },
   REPORT_SHARED: {
     label: "Test Report Shared",
@@ -302,9 +293,35 @@ export const LAB_PAYMENT_TONE: Record<LabPaymentStatus, Tone> = {
 /** Anything short of PAID means the lab fee is still outstanding. */
 export const labFeeOutstanding = (s?: LabPaymentStatus) => s !== "PAID";
 
+// ---- how the lab agreed to be paid (stated on its invoice mail, not chosen by us) ----
+// The mode changes what an unpaid fee *means*: on ADVANCE the lab holds the lot, so the
+// fee gates the bench; on CREDIT it tests on account and the fee is a parallel track.
+
+export const LAB_TERMS: readonly LabPaymentTerms[] = ["ADVANCE", "CREDIT"] as const;
+
+export const LAB_TERMS_LABEL: Record<LabPaymentTerms, string> = {
+  ADVANCE: "Advance",
+  CREDIT: "Credit",
+};
+
+export const LAB_TERMS_TONE: Record<LabPaymentTerms, Tone> = {
+  ADVANCE: "warn",    // money has to move before anything happens
+  CREDIT: "info",
+};
+
+export const LAB_TERMS_HINT: Record<LabPaymentTerms, string> = {
+  ADVANCE: "Payable before testing — WHL holds the lot until the transfer clears.",
+  CREDIT: "WHL tests on account and bills on terms — the fee never blocks the bench.",
+};
+
+/** On advance terms an unpaid fee is a hard stop at the bench, not just an amber flag. */
+export const labFeeGates = (terms?: LabPaymentTerms, status?: LabPaymentStatus) =>
+  terms === "ADVANCE" && status !== "PAID";
+
 export const FINANCE_CONTACT = "finance@sharpbuy.example";
 export const WHL_TEST_FEE_PER_PROCESS = 145;   // USD per process — drives the mock invoice
 export const WHL_INVOICE_TAX_PCT = 0.06;       // lab-site service tax on the mock invoice
+export const WHL_CREDIT_DAYS = 15;             // days the lab allows on CREDIT terms
 
 export const STAGE_OWNER_LABEL: Record<StageOwner, string> = {
   "1BUY": "1Buy",
@@ -437,6 +454,8 @@ export interface NotifyCtx {
   invoiceCurrency?: string;
   invoiceDueDate?: string;
   invoiceFile?: string;
+  /** advance vs credit — finance needs to know when the lot is held on the money */
+  invoiceTerms?: LabPaymentTerms;
 }
 
 export interface NotifyTemplate {
@@ -508,8 +527,16 @@ export const NOTIFY_TEMPLATES: NotifyTemplate[] = [
     party: "FINANCE", label: "Send to finance — initiate payment", hint: "Forward WHL's invoice so finance can pay the testing fee",
     to: () => FINANCE_CONTACT,
     masking: "Internal mail. The client's identity and sell prices are not needed to pay a lab fee — leave them out.",
-    subject: (c) => `Payment request — WHL invoice ${c.invoiceNo ?? "(awaited)"} — ${c.mpn} / Lot ${c.lotCode}`,
-    body: (c) => `Hi Finance,\n\nPlease initiate payment of the independent testing fee below. The invoice is attached.\n\n${lotRef(c)}\n· Laboratory: ${c.lab ?? "White Horse Laboratories"}\n· Invoice: ${c.invoiceNo ?? "awaited"}${c.invoiceDueDate ? ` · due ${c.invoiceDueDate}` : ""}\n· Amount: ${c.invoiceCurrency ?? c.currency ?? "USD"} ${(c.invoiceAmount ?? 0).toLocaleString()}${c.invoiceTax ? ` + tax ${c.invoiceCurrency ?? "USD"} ${c.invoiceTax.toLocaleString()}` : ""}\n\nPlease quote work order ${c.workOrderNo ?? "—"} and lot ${c.lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against ${c.supplierPoNo ?? "the supplier PO"} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n${c.entity}`,
+    subject: (c) => `Payment request${c.invoiceTerms === "ADVANCE" ? " (ADVANCE — lot held)" : ""} — WHL invoice ${c.invoiceNo ?? "(awaited)"} — ${c.mpn} / Lot ${c.lotCode}`,
+    // the terms line goes near the top: on advance terms this mail is the thing standing
+    // between us and a test result, and finance can't know that from an amount and a date
+    body: (c) => `Hi Finance,\n\nPlease initiate payment of the independent testing fee below. The invoice is attached.\n\n${lotRef(c)}\n· Laboratory: ${c.lab ?? "White Horse Laboratories"}\n· Invoice: ${c.invoiceNo ?? "awaited"}${c.invoiceDueDate ? ` · due ${c.invoiceDueDate}` : ""}\n· Amount: ${c.invoiceCurrency ?? c.currency ?? "USD"} ${(c.invoiceAmount ?? 0).toLocaleString()}${c.invoiceTax ? ` + tax ${c.invoiceCurrency ?? "USD"} ${c.invoiceTax.toLocaleString()}` : ""}${
+      c.invoiceTerms ? `\n· Terms: ${c.invoiceTerms === "ADVANCE" ? "ADVANCE — payable before testing" : "CREDIT — testing is running on account"}` : ""
+    }\n\n${
+      c.invoiceTerms === "ADVANCE"
+        ? "This work order is on advance terms, so the laboratory is holding the lot and has not started testing. The order is waiting on this transfer — please treat it as priority.\n\n"
+        : ""
+    }Please quote work order ${c.workOrderNo ?? "—"} and lot ${c.lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against ${c.supplierPoNo ?? "the supplier PO"} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n${c.entity}`,
   },
 ];
 
@@ -537,6 +564,7 @@ export interface NotifyDigestLot {
   invoiceTax?: number;
   invoiceCurrency?: string;
   invoiceDueDate?: string;
+  invoiceTerms?: LabPaymentTerms;
 }
 
 export interface NotifyDigestCtx {
@@ -612,12 +640,16 @@ export function notifyDigest(party: NotifyParty, c: NotifyDigestCtx): { subject:
       const lines = billed.map((l, i) =>
         `${i + 1}. ${l.mpn} · Lot ${l.lotCode} · WO ${l.workOrderNo ?? "—"} · invoice ${l.invoiceNo}`
         + `${l.invoiceDueDate ? ` (due ${l.invoiceDueDate})` : ""} — ${l.invoiceCurrency ?? cur} ${(l.invoiceAmount ?? 0).toLocaleString()}`
-        + `${l.invoiceTax ? ` + tax ${l.invoiceTax.toLocaleString()}` : ""}`).join("\n");
+        + `${l.invoiceTax ? ` + tax ${l.invoiceTax.toLocaleString()}` : ""}`
+        + `${l.invoiceTerms ? ` · ${l.invoiceTerms === "ADVANCE" ? "ADVANCE — lot held" : "credit"}` : ""}`).join("\n");
       const missing = c.lots.filter((l) => !l.invoiceNo);
+      // an advance invoice in the run isn't just money owed — those lots aren't being tested
+      const held = billed.filter((l) => l.invoiceTerms === "ADVANCE");
       return {
-        subject: `Payment request — ${billed.length} WHL invoice(s) — ${c.orderNo}`,
+        subject: `Payment request — ${billed.length} WHL invoice(s)${held.length ? ` (${held.length} ADVANCE — lots held)` : ""} — ${c.orderNo}`,
         body: `Hi Finance,\n\nPlease initiate payment of the independent testing fees below. The invoices are attached.\n\n${lines}\n\n`
           + `Total: ${cur} ${net.toLocaleString()}${tax ? ` + tax ${cur} ${tax.toLocaleString()} = ${cur} ${(net + tax).toLocaleString()}` : ""}\n\n`
+          + (held.length ? `${codes(held)} ${held.length === 1 ? "is" : "are"} on advance terms — the laboratory is holding ${held.length === 1 ? "that lot" : "those lots"} and has not started testing, so please treat ${held.length === 1 ? "it" : "them"} as priority.\n\n` : "")
           + `Please quote each work order and lot code as the payment reference so the lab can reconcile them, and send us the transfer references once released.\n\n`
           + (missing.length ? `No invoice has been received yet for ${codes(missing)} — those are excluded from this run and will follow separately.\n\n` : "")
           + `These are testing costs against ${c.supplierPoNo ?? "the supplier PO"} — book them to the order, not to the supplier's material payment.\n\n${sign}`,

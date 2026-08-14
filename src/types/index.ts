@@ -14,16 +14,20 @@ export type TestProcessStatus = "PENDING" | "IN_PROGRESS" | "PASSED" | "FAILED" 
 /**
  * Where a lot sits in the testing lifecycle. Ordered — a lot only ever moves
  * forward through this chain (see TESTING_STAGES in data/enums).
+ *
+ * Seven stages, and every one of them is established by an inbound mail (the
+ * operator buttons are fallbacks, not the primary path). "Testing started" and
+ * "report preparation" were dropped deliberately: "in progress" already says the
+ * lot is on the bench, and "report shared" already says the write-up is done, so
+ * both only added a node the operator had to read past.
  */
 export type TestingStage =
   | "TEST_REQUESTED"
   | "WHL_PAYMENT"
   | "SUPPLIER_DISPATCHING"
   | "COMPONENTS_RECEIVED"
-  | "TESTING_STARTED"
   | "TESTING_IN_PROGRESS"
   | "TESTING_COMPLETED"
-  | "REPORT_PREPARATION"
   | "REPORT_SHARED";
 // WHL report verdicts: per-process result and the report's overall conclusion
 export type WhlProcessResult = "ACCEPTABLE" | "NOT_ACCEPTABLE" | "FAR" | "NOT_CONDUCTED";
@@ -300,7 +304,7 @@ export interface LabEmail {
   at: string;
   by: string;                 // sender ("You (demo)" / "WHL Reports")
   status: LabEmailStatus;
-  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE";
+  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE" | "DISPATCH" | "PAYMENT";
   attachments?: string[];
   matchedBy?: string;         // set when an operator resolved it out of the manual-match queue
   matchNote?: string;         // why auto-matching failed
@@ -308,6 +312,19 @@ export interface LabEmail {
 
 /** Who we notify once a lot's result is in. Buyer/supplier mails stay masked from each other. */
 export type NotifyParty = "SUPPLIER" | "BUYER" | "ESCROW" | "WHL" | "FINANCE";
+
+/**
+ * How WHL agreed to be paid for this work order, as stated on its invoice mail:
+ *
+ * - `ADVANCE` — the fee clears before the bench starts. The lab holds the lot, so the
+ *   fee is a genuine gate on the lifecycle.
+ * - `CREDIT`  — the lab tests on account and bills on terms. The fee runs as a parallel
+ *   track and must never block dispatch or results.
+ *
+ * Read off the invoice mail, never chosen by us — which mode applies is the lab's call
+ * per work order.
+ */
+export type LabPaymentTerms = "ADVANCE" | "CREDIT";
 
 /**
  * WHL's own invoice for the testing service — a separate document from the test report,
@@ -323,6 +340,14 @@ export interface LabInvoice {
   receivedAt: string;
   dueDate?: string;
   note?: string;
+  /** payment mode the lab stated on this invoice — drives whether the fee gates testing */
+  terms: LabPaymentTerms;
+  /** CREDIT only: days the lab allowed from the invoice date */
+  creditDays?: number;
+  /** what the lab charges per process, so a test row can show its own price */
+  ratePerProcess?: number;
+  /** processes billed — amount === processCount × ratePerProcess */
+  processCount?: number;
   accessLog: { at: string; by: string; action: "VIEW" | "DOWNLOAD" }[];
 }
 

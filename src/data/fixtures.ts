@@ -623,7 +623,9 @@ const LOT_A_NOTIFICATIONS: LotNotification[] = [
 // Testing lifecycle history. LOT-A and LOT-B have run the full chain (their reports are
 // in), while LOT-C is still mid-bench — so the tab shows both a closed-out lot and one
 // in flight. Note the gap on LOT-A between "Testing Completed" and "Test Report Shared":
-// the bench finished on the 24th, the signed report only landed on the 25th.
+// the bench finished on the 24th, the signed report only landed on the 25th. That gap is
+// the whole reason the two are separate stages, and why neither needs a "report being
+// written" stage between them.
 const stg = (
   id: string, stage: TestingStage, at: string, by: string, note?: string, o: Partial<TestingStageEvent> = {},
 ): TestingStageEvent => ({ id, stage, at, by, note, ...o });
@@ -635,31 +637,29 @@ const LOT_A_STAGES: TestingStageEvent[] = [
   stg("sg-a1b", "WHL_PAYMENT", "2026-07-19 14:05", "A. Sharma", "Testing fee paid — invoice WHL-INV-352146, USD 923 · ref UTR-7741930.", { manual: true }),
   stg("sg-a2", "SUPPLIER_DISPATCHING", "2026-07-19 15:10", "Supplier (relayed)", "DHL Express · AWB 4471-9920-11 · dispatched 2026-07-19 — supplier confirmed by mail."),
   stg("sg-a3", "COMPONENTS_RECEIVED", "2026-07-21 09:00", WHL_AUTO, "Receipt confirmation — WO 352146 / Lot LOT-A"),
-  stg("sg-a4", "TESTING_STARTED", "2026-07-21 14:25", WHL_AUTO, "Testing commenced — WO 352146 / Lot LOT-A"),
-  stg("sg-a5", "TESTING_IN_PROGRESS", "2026-07-23 11:10", WHL_AUTO, "Interim status — WO 352146 / Lot LOT-A"),
+  stg("sg-a5", "TESTING_IN_PROGRESS", "2026-07-21 14:25", WHL_AUTO, "On the bench — documentation & packaging and external visual underway."),
   stg("sg-a6", "TESTING_COMPLETED", "2026-07-24 09:05", WHL_AUTO, "Testing complete — all six processes conducted; results with the reviewer."),
-  // three days between the bench finishing and the signed report landing (re-test on the flagged units)
-  stg("sg-a7", "REPORT_PREPARATION", "2026-07-24 11:30", WHL_AUTO, "Report in preparation — with the laboratory manager for sign-off."),
+  // a day and a half between the bench finishing and the signed report landing
   stg("sg-a8", "REPORT_SHARED", "2026-07-25 16:05", WHL_AUTO, "Revised report 352146.2 received — acceptable (electrical re-test cleared the flagged units).", { sourceEmailId: "em-5" }),
 ];
 
 const LOT_B_STAGES: TestingStageEvent[] = [
   stg("sg-b1", "TEST_REQUESTED", "2026-07-21 10:15", "A. Sharma", "Work order 352147 raised with WHL Shenzhen — quoted TAT 6 days."),
-  stg("sg-b1b", "WHL_PAYMENT", "2026-07-21 16:20", "A. Sharma", "Testing fee paid — invoice WHL-INV-352147, USD 615 · ref UTR-7742118.", { manual: true }),
+  // advance terms: WHL held the lot until the transfer cleared, and its own payment
+  // acknowledgement is what closed this stage — hence the mail reference, not a manual flag
+  stg("sg-b1b", "WHL_PAYMENT", "2026-07-21 16:20", WHL_AUTO, "Advance fee settled — invoice WHL-INV-352147, USD 615 · ref UTR-7742118. Lot released from hold.", { sourceEmailId: "em-pay-b" }),
   stg("sg-b2", "SUPPLIER_DISPATCHING", "2026-07-21 17:40", "Supplier (relayed)", "DHL Express · AWB 4471-9931-08 · dispatched 2026-07-21."),
   stg("sg-b3", "COMPONENTS_RECEIVED", "2026-07-23 08:50", WHL_AUTO, "Receipt confirmation — WO 352147 / Lot LOT-B"),
-  stg("sg-b4", "TESTING_STARTED", "2026-07-23 13:05", WHL_AUTO, "Testing commenced — WO 352147 / Lot LOT-B"),
-  stg("sg-b5", "TESTING_IN_PROGRESS", "2026-07-24 16:20", WHL_AUTO, "Interim status — WO 352147 / Lot LOT-B"),
+  stg("sg-b5", "TESTING_IN_PROGRESS", "2026-07-23 13:05", WHL_AUTO, "On the bench — WO 352147 / Lot LOT-B"),
   stg("sg-b6", "TESTING_COMPLETED", "2026-07-25 10:00", WHL_AUTO, "Testing complete — all four processes conducted on Lot LOT-B."),
-  stg("sg-b7", "REPORT_PREPARATION", "2026-07-25 15:20", WHL_AUTO, "Report in preparation — WO 352147 / Lot LOT-B"),
   stg("sg-b8", "REPORT_SHARED", "2026-07-26 14:40", WHL_AUTO, "Report 352147.1 received — acceptable (a process came back F.A.R., follow-up open).", { sourceEmailId: "em-4" }),
 ];
 
 const LOT_C_STAGES: TestingStageEvent[] = [
   stg("sg-c1", "TEST_REQUESTED", "2026-07-26 09:00", "A. Sharma", "Work order 352151 raised with WHL Hong Kong — quoted TAT 6 days."),
-  stg("sg-c2", "SUPPLIER_DISPATCHING", "2026-07-26 12:30", "Supplier (relayed)", "FedEx IP · AWB 7788-0021-45 · dispatched 2026-07-26 · ETA 2026-07-27."),
+  // came in as the supplier's own dispatch advice on the lot's thread, not typed by us
+  stg("sg-c2", "SUPPLIER_DISPATCHING", "2026-07-26 12:30", "Supplier (relayed)", "FedEx IP · AWB 7788-0021-45 · dispatched 2026-07-26 · ETA 2026-07-27.", { sourceEmailId: "em-dsp-c" }),
   stg("sg-c3", "COMPONENTS_RECEIVED", "2026-07-27 09:15", WHL_AUTO, "Receipt confirmation — WO 352151 / Lot LOT-C"),
-  stg("sg-c4", "TESTING_STARTED", "2026-07-27 10:15", WHL_AUTO, "Testing commenced — WO 352151 / Lot LOT-C"),
   // matches LOT_C_TESTS: intake inspection is already IN_PROGRESS on the tracker
   stg("sg-c5", "TESTING_IN_PROGRESS", "2026-07-27 10:15", WHL_AUTO, "Interim mail — intake complete, documentation & packaging inspection underway.", { sourceEmailId: "em-3" }),
 ];
@@ -671,7 +671,7 @@ const HERO_LOTS: Lot[] = [
     stage: "REPORT_SHARED", stageHistory: LOT_A_STAGES,
     dispatch: { courier: "DHL Express", awb: "4471-9920-11", dispatchedOn: "2026-07-19", expectedArrival: "2026-07-21",
       note: "Supplier confirmed by mail; samples drawn from the same date-code reel.", recordedBy: "A. Sharma", recordedAt: "2026-07-19 15:10" },
-    // settled: invoice in, sent to finance, paid — the Payment-to-WHL stage is closed
+    // settled on CREDIT terms: invoice in, sent to finance, paid — Payment-to-WHL closed
     labPayment: {
       status: "PAID",
       requestedAt: "2026-07-19 09:45",
@@ -679,7 +679,8 @@ const HERO_LOTS: Lot[] = [
       paidAt: "2026-07-19 14:05", paidRef: "UTR-7741930",
       invoice: { id: "inv-352146", invoiceNo: "WHL-INV-352146", amount: 870, taxAmount: 53, currency: "USD",
         fileName: "WHL-INV-352146.pdf", receivedAt: "2026-07-19 10:30", dueDate: "2026-08-03",
-        note: "6 process(es) billed against WO 352146.", accessLog: [{ at: "2026-07-19 11:15", by: "A. Sharma", action: "DOWNLOAD" }] },
+        terms: "CREDIT", creditDays: 15, ratePerProcess: 145, processCount: 6,
+        note: "6 process(es) billed against WO 352146 at USD 145 each.", accessLog: [{ at: "2026-07-19 11:15", by: "A. Sharma", action: "DOWNLOAD" }] },
     } },
   { id: "lot-b", orderLineMpn: "TPS54560DDAR", lotCode: "LOT-B", dateCode: "2410", qty: 150, sampleQty: 20,
     testStatus: "MAYBE", lab: "WHL Shenzhen", workOrderNo: "352147", reportNo: "352147.1", tatDays: 6, testedAt: "2026-07-26",
@@ -687,14 +688,17 @@ const HERO_LOTS: Lot[] = [
     stage: "REPORT_SHARED", stageHistory: LOT_B_STAGES,
     dispatch: { courier: "DHL Express", awb: "4471-9931-08", dispatchedOn: "2026-07-21", expectedArrival: "2026-07-23",
       recordedBy: "A. Sharma", recordedAt: "2026-07-21 17:40" },
+    // ADVANCE terms, settled: the lab held the lot until the transfer cleared, which is
+    // why the fee row sits before the dispatch row in this lot's history
     labPayment: {
       status: "PAID",
       requestedAt: "2026-07-21 10:20",
       sentToFinanceAt: "2026-07-21 12:05", sentToFinanceBy: "A. Sharma",
       paidAt: "2026-07-21 16:20", paidRef: "UTR-7742118",
       invoice: { id: "inv-352147", invoiceNo: "WHL-INV-352147", amount: 580, taxAmount: 35, currency: "USD",
-        fileName: "WHL-INV-352147.pdf", receivedAt: "2026-07-21 11:05", dueDate: "2026-08-05",
-        note: "4 process(es) billed against WO 352147.", accessLog: [] },
+        fileName: "WHL-INV-352147.pdf", receivedAt: "2026-07-21 11:05", dueDate: "2026-07-24",
+        terms: "ADVANCE", ratePerProcess: 145, processCount: 4,
+        note: "4 process(es) billed against WO 352147 at USD 145 each — payable before testing.", accessLog: [] },
     } },
   // no report yet → "Not Available" + Request Update; the chase is already past the 3-business-day SLA
   { id: "lot-c", orderLineMpn: "TPS54560DDAR", lotCode: "LOT-C", dateCode: "2412", qty: 100, sampleQty: 15,
@@ -702,34 +706,47 @@ const HERO_LOTS: Lot[] = [
     clientPoNo: "ACME-PO-3391", tests: LOT_C_TESTS, reports: [], lastUpdateRequestAt: "2026-07-24",
     stage: "TESTING_IN_PROGRESS", stageHistory: LOT_C_STAGES,
     dispatch: { courier: "FedEx IP", awb: "7788-0021-45", dispatchedOn: "2026-07-26", expectedArrival: "2026-07-27",
-      recordedBy: "A. Sharma", recordedAt: "2026-07-26 12:30" },
-    // deliberately UNPAID and already with finance: the lab is testing on account, so the
-    // chain has run past the payment stage while the fee is still owed. Exercises the
-    // amber payment node, the roll-up fee alert and the "Mark paid" path.
+      recordedBy: "Supplier (mail)", recordedAt: "2026-07-26 12:30" },
+    // CREDIT terms, deliberately UNPAID and already with finance: the lab is testing on
+    // account, so the chain has run past the payment stage while the fee is still owed.
+    // Exercises the amber payment node, the roll-up fee alert, the "Mark paid" path — and
+    // the inbox path, since a lot sitting at SENT_TO_FINANCE is what makes WHL's payment
+    // acknowledgement the next mail to arrive.
     labPayment: {
       status: "SENT_TO_FINANCE",
       requestedAt: "2026-07-26 09:10",
       sentToFinanceAt: "2026-07-27 09:40", sentToFinanceBy: "A. Sharma",
       invoice: { id: "inv-352151", invoiceNo: "WHL-INV-352151", amount: 580, taxAmount: 35, currency: "USD",
         fileName: "WHL-INV-352151.pdf", receivedAt: "2026-07-26 10:15", dueDate: "2026-08-10",
-        note: "4 process(es) billed against WO 352151.", accessLog: [{ at: "2026-07-27 09:35", by: "A. Sharma", action: "DOWNLOAD" }] },
+        terms: "CREDIT", creditDays: 15, ratePerProcess: 145, processCount: 4,
+        note: "4 process(es) billed against WO 352151 at USD 145 each.", accessLog: [{ at: "2026-07-27 09:35", by: "A. Sharma", action: "DOWNLOAD" }] },
     } },
 ];
 
 const HERO_LAB_EMAILS: LabEmail[] = [
-  // ---- the lab's own invoices: they arrive by mail on booking, long before the reports ----
+  // ---- the lab's own invoices: they arrive by mail on booking, long before the reports,
+  // and the mail is where the payment mode comes from (advance vs credit is WHL's call
+  // per work order — LOT-B came back on advance, the other two on credit) ----
   { id: "em-inv-c", direction: "IN", lotId: "lot-c", lotCode: "LOT-C", mpn: "TPS54560DDAR", workOrderNo: "352151",
-    subject: "Invoice WHL-INV-352151 — testing services — WO 352151 / Lot LOT-C", kind: "INVOICE", status: "UPDATE_RECEIVED",
+    subject: "Invoice WHL-INV-352151 — testing services (credit) — WO 352151 / Lot LOT-C", kind: "INVOICE", status: "UPDATE_RECEIVED",
     at: "2026-07-26 10:15", by: "WHL Accounts", attachments: ["WHL-INV-352151.pdf"],
-    body: "Please find attached our invoice WHL-INV-352151 for the testing booked against work order 352151 (TPS54560DDAR, Lot LOT-C).\n\n4 processes at USD 145 each — USD 580 plus service tax USD 35. Payment is due within 15 days; please quote the work order and lot code as the reference so we can reconcile it." },
+    body: "Please find attached our invoice WHL-INV-352151 for the testing booked against work order 352151 (TPS54560DDAR, Lot LOT-C).\n\n4 processes at USD 145 each — USD 580 plus service tax USD 35.\n\nThis work order is on CREDIT terms: USD 615 is due within 15 days of the invoice date. Testing proceeds on account in the meantime.\n\nPlease quote the work order and lot code as the payment reference so we can reconcile it." },
   { id: "em-inv-b", direction: "IN", lotId: "lot-b", lotCode: "LOT-B", mpn: "TPS54560DDAR", workOrderNo: "352147",
-    subject: "Invoice WHL-INV-352147 — testing services — WO 352147 / Lot LOT-B", kind: "INVOICE", status: "UPDATE_RECEIVED",
+    subject: "Invoice WHL-INV-352147 — testing services (advance) — WO 352147 / Lot LOT-B", kind: "INVOICE", status: "UPDATE_RECEIVED",
     at: "2026-07-21 11:05", by: "WHL Accounts", attachments: ["WHL-INV-352147.pdf"],
-    body: "Invoice WHL-INV-352147 attached for work order 352147 (Lot LOT-B) — 4 processes, USD 580 plus service tax USD 35." },
+    body: "Invoice WHL-INV-352147 attached for work order 352147 (Lot LOT-B) — 4 processes at USD 145 each, USD 580 plus service tax USD 35.\n\nThis work order is on ADVANCE terms: USD 615 is payable before testing begins. The lot will be held in our bonded store until the transfer clears." },
+  { id: "em-pay-b", direction: "IN", lotId: "lot-b", lotCode: "LOT-B", mpn: "TPS54560DDAR", workOrderNo: "352147",
+    subject: "Payment received — invoice WHL-INV-352147 — WO 352147 / Lot LOT-B", kind: "PAYMENT", status: "UPDATE_RECEIVED",
+    at: "2026-07-21 16:20", by: "WHL Accounts", attachments: ["WHL-RCPT-352147.pdf"],
+    body: "We confirm receipt of your transfer against invoice WHL-INV-352147 for TPS54560DDAR (Lot LOT-B), reference UTR-7742118. The invoice is settled in full and our receipt is attached.\n\nThe lot is released from hold and goes to the bench on the next available slot." },
   { id: "em-inv-a", direction: "IN", lotId: "lot-a", lotCode: "LOT-A", mpn: "STM32F407VGT6", workOrderNo: "352146",
-    subject: "Invoice WHL-INV-352146 — testing services — WO 352146 / Lot LOT-A", kind: "INVOICE", status: "UPDATE_RECEIVED",
+    subject: "Invoice WHL-INV-352146 — testing services (credit) — WO 352146 / Lot LOT-A", kind: "INVOICE", status: "UPDATE_RECEIVED",
     at: "2026-07-19 10:30", by: "WHL Accounts", attachments: ["WHL-INV-352146.pdf"],
-    body: "Invoice WHL-INV-352146 attached for work order 352146 (Lot LOT-A) — 6 processes, USD 870 plus service tax USD 53." },
+    body: "Invoice WHL-INV-352146 attached for work order 352146 (Lot LOT-A) — 6 processes at USD 145 each, USD 870 plus service tax USD 53.\n\nThis work order is on CREDIT terms: USD 923 is due within 15 days of the invoice date." },
+  { id: "em-dsp-c", direction: "IN", lotId: "lot-c", lotCode: "LOT-C", mpn: "TPS54560DDAR", workOrderNo: "352151",
+    subject: "Dispatch advice — samples to WHL — WO 352151 / Lot LOT-C", kind: "DISPATCH", status: "UPDATE_RECEIVED",
+    at: "2026-07-26 12:30", by: "Supplier (relayed)",
+    body: "Samples for TPS54560DDAR (Lot LOT-C) have been handed to FedEx IP today under AWB 7788-0021-45, consigned to the laboratory against work order 352151. Expected arrival 2026-07-27.\n\nUnits were drawn from the same date-code reel as the balance stock." },
   { id: "em-1", direction: "IN", lotId: undefined, subject: "RE: Testing update", kind: "STATUS_UPDATE", status: "AWAITING_RESPONSE",
     at: "2026-07-28 09:12", by: "WHL Reports",
     body: "Hi, quick update on the parts you sent through — one of the lots needs another day on the electrical bench. Will revert with the report. Regards, WHL",

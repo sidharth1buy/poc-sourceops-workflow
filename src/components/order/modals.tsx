@@ -9,7 +9,7 @@ import { useStore } from "@/store/store";
 import { remainingToShipLeg, remainingToAllocate, sourcedForClientLine, orderSourcedForClient, deliveredForClientLine } from "@/store/selectors";
 import { computeDuty } from "@/lib/fx";
 import { money, fmtAddress } from "@/lib/utils";
-import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
+import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
 import type {
   PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty,
 } from "@/types";
@@ -70,10 +70,11 @@ export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: ()
 }
 
 /**
- * Record the supplier → WHL leg. The lab can't tell us a shipment exists until it
- * lands, so this is the one lifecycle stage that has to come from us. Everything is
- * optional except the fact of dispatch — chasing a supplier for an AWB shouldn't
- * block the chain from showing the lot as on its way.
+ * Record the supplier → WHL leg by hand. The lab can't tell us a shipment exists until
+ * it lands, so this stage comes from the supplier's own dispatch advice — which normally
+ * arrives on the lot's thread and moves the stage on its own. This is the fallback for a
+ * supplier who phoned it in. Everything is optional except the fact of dispatch: chasing
+ * a supplier for an AWB shouldn't block the chain from showing the lot as on its way.
  */
 export function RecordDispatchModal({
   orderId, lotId, onClose,
@@ -105,7 +106,12 @@ export function RecordDispatchModal({
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
           <b className="text-foreground">{lot.lotCode}</b> · <span className="font-mono">{lot.orderLineMpn}</span> · sample {lot.sampleQty} of {lot.qty}
           {lot.workOrderNo ? <> · WO {lot.workOrderNo}</> : null} → <b className="text-foreground">{lot.lab ?? "WHL"}</b>
-          <p className="mt-1">Moves the lot to <b className="text-foreground">Supplier Dispatching Components</b>. WHL&apos;s receipt confirmation then advances it again on the next inbox sync.</p>
+          <p className="mt-1">
+            Moves the lot to <b className="text-foreground">Supplier Dispatching Components</b>. WHL&apos;s receipt confirmation then advances it again on the next mail sync.
+          </p>
+          <p className="mt-1 text-faint">
+            Only needed if the supplier phoned the details in — a dispatch advice on the lot&apos;s thread records this on its own.
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="Courier"><Input value={courier} onChange={(e) => setCourier(e.target.value)} placeholder="DHL Express" /></Labeled>
@@ -127,9 +133,11 @@ export function RecordDispatchModal({
 }
 
 /**
- * Record the transfer finance released against WHL's testing invoice. This is what
- * closes the Payment-to-WHL stage — the lab's own reminder mails are just noise until
- * we can quote a reference back at them.
+ * Record the transfer finance released against WHL's testing invoice, by hand.
+ *
+ * Normally the lab's own payment acknowledgement closes this stage on the next mail sync —
+ * this is the fallback for when finance confirms out of band and the lab hasn't caught up,
+ * which is why it's the ghost button and not the primary one.
  */
 export function MarkLabFeePaidModal({
   orderId, lotId, onClose,
@@ -159,10 +167,15 @@ export function MarkLabFeePaidModal({
             <p className="mt-1">
               Invoice <b className="text-foreground">{inv.invoiceNo}</b> — {inv.currency} {inv.amount.toLocaleString()}
               {inv.taxAmount ? ` + tax ${inv.taxAmount.toLocaleString()}` : ""} = <b className="text-foreground">{inv.currency} {gross.toLocaleString()}</b>
-              {inv.dueDate ? ` · due ${inv.dueDate}` : ""}
+              {inv.dueDate ? ` · due ${inv.dueDate}` : ""} · <b className="text-foreground">{LAB_TERMS_LABEL[inv.terms].toLowerCase()}</b>{" "}terms
             </p>
           ) : <p className="mt-1 text-warn">No invoice on file yet — recording payment without one is unusual; confirm with finance first.</p>}
-          <p className="mt-1">Closes the <b className="text-foreground">Payment to WHL</b> stage on this lot&apos;s lifecycle.</p>
+          <p className="mt-1">
+            Closes the <b className="text-foreground">Payment to WHL</b> stage
+            {inv?.terms === "ADVANCE" ? <> and releases the lot from the lab&apos;s hold</> : null}.
+            {" "}WHL&apos;s own payment acknowledgement does this automatically on the next mail sync — use this only if finance
+            confirmed out of band.
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="Transfer reference" hint="the UTR / wire ref finance sends back">
@@ -183,6 +196,7 @@ export function MarkLabFeePaidModal({
  * operator never has to look up WHL's address or reference numbers. In-app send logs
  * the message against the lot; "mailto" is offered as the quick fallback.
  */
+
 export function ComposeWhlEmailModal({
   orderId, lotId, templateId, onClose,
 }: { orderId: string; lotId?: string; templateId?: string; onClose: () => void }) {
@@ -264,6 +278,7 @@ export function ComposeWhlEmailModal({
  * current report; the operator edits and sends. Supplier and buyer templates are
  * masked from each other, and attaching the report carries an NDA caveat.
  */
+
 export function NotifyLotResultModal({
   orderId, lotId, party, onClose,
 }: { orderId: string; lotId: string; party: NotifyParty; onClose: () => void }) {
@@ -287,6 +302,7 @@ export function NotifyLotResultModal({
       invoiceCurrency: lot?.labPayment?.invoice?.currency,
       invoiceDueDate: lot?.labPayment?.invoice?.dueDate,
       invoiceFile: lot?.labPayment?.invoice?.fileName,
+      invoiceTerms: lot?.labPayment?.invoice?.terms,
     };
   };
 
@@ -317,7 +333,9 @@ export function NotifyLotResultModal({
           <b className="text-foreground">{lot.lotCode}</b> · <span className="font-mono">{lot.orderLineMpn}</span> · qty {lot.qty}
           {isFinance
             ? (inv
-                ? <> · invoice <b className="text-foreground">{inv.invoiceNo}</b> — {inv.currency} {(inv.amount + (inv.taxAmount ?? 0)).toLocaleString()}{inv.dueDate ? ` · due ${inv.dueDate}` : ""}</>
+                ? <> · invoice <b className="text-foreground">{inv.invoiceNo}</b> — {inv.currency} {(inv.amount + (inv.taxAmount ?? 0)).toLocaleString()}{inv.dueDate ? ` · due ${inv.dueDate}` : ""}
+                    {" · "}<b className={inv.terms === "ADVANCE" ? "text-warn" : "text-foreground"}>{LAB_TERMS_LABEL[inv.terms].toLowerCase()}</b>
+                    {inv.terms === "ADVANCE" && lot.labPayment?.status !== "PAID" && <span className="text-bad"> — lot held at the lab</span>}</>
                 : <span className="text-warn"> · no WHL invoice received yet</span>)
             : (rep ? <> · report <b className="text-foreground">{rep.reportNo}</b> — {rep.conclusion.replace(/_/g, " ").toLowerCase()}{rep.anyFar ? " (F.A.R. flagged)" : ""}</> : " · no report yet")}
         </div>
@@ -351,6 +369,7 @@ export function NotifyLotResultModal({
  * client must never see another client's lots. Supplier / escrow / lab are single
  * recipients per order, so those go out as one mail.
  */
+
 export function BulkNotifyModal({
   orderId, lotIds, party, onClose,
 }: { orderId: string; lotIds: string[]; party: NotifyParty; onClose: () => void }) {
@@ -380,7 +399,7 @@ export function BulkNotifyModal({
       return { mpn: l.orderLineMpn, lotCode: l.lotCode, qty: l.qty, sampleQty: l.sampleQty, dateCode: l.dateCode,
         reportNo: r?.reportNo, reportDate: r?.reportDate, conclusion: r?.conclusion, anyFar: r?.anyFar, lab: l.lab, workOrderNo: l.workOrderNo,
         invoiceNo: iv?.invoiceNo, invoiceAmount: iv?.amount, invoiceTax: iv?.taxAmount,
-        invoiceCurrency: iv?.currency, invoiceDueDate: iv?.dueDate };
+        invoiceCurrency: iv?.currency, invoiceDueDate: iv?.dueDate, invoiceTerms: iv?.terms };
     }),
   });
 

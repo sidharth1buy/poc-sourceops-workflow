@@ -18,24 +18,34 @@ Pair this file with `PROMPT.md` (the instruction to give Claude in the target re
 
 The primary screen lives on **one order** and answers six questions:
 
-1. **What tests does each MPN need?** — auto-filled by parsing the PO (never hand-typed), with an
-   audited manual override and an explicit "auto-fill failed — needs manual review" state.
-2. **Where is each lot right now, and who owes the next move?** — an 8-stage testing lifecycle per lot
-   (request → supplier dispatch → lab receipt → testing → report), advanced automatically by inbound lab
-   mail, with a timestamped row per stage.
+1. **What tests does each MPN need, and what do they cost?** — auto-filled by parsing the PO (never
+   hand-typed), with an audited manual override and an explicit "auto-fill failed — needs manual review"
+   state; priced from the lab's invoice, which is that same list × a per-process rate.
+2. **Where is each lot right now, and who owes the next move?** — a 7-stage testing lifecycle per lot
+   (request → fee → supplier dispatch → lab receipt → testing → report). **Every stage is established by
+   an inbound mail**, with a timestamped row per stage citing the message that moved it.
 3. **Where does every test stand, per lot?** — a live status tracker per MPN × lot × test, updated
-   automatically from inbound lab email, with full timestamped history (not just latest state).
+   automatically from inbound lab email, with full timestamped history (not just latest state) **and the
+   report's process result folded into the same row**.
 4. **What does the report say?** — a per-lot report repository holding *all* revisions, with the key
-   fields and the process-level result matrix parsed on screen so nobody opens the PDF.
-5. **What does the lab charge, and has it been paid?** — WHL's own invoice for the testing service
-   arrives by mail on booking (long before the report), is downloadable per lot, and is handed to
-   finance to pay. Its own lifecycle stage sits right after the work order.
+   header fields parsed on screen so nobody opens the PDF.
+5. **What does the lab charge, on what terms, and has it been paid?** — WHL's own invoice for the testing
+   service arrives by mail on booking (long before the report), states **advance or credit terms**, is
+   downloadable per lot, and is handed to finance to pay. Its own lifecycle stage sits right after the
+   work order, and on advance terms it genuinely gates the bench.
 6. **What happens next?** — per-lot and bulk follow-through: notify supplier / buyer / escrow / lab /
    finance (the right document attached), or hand off to logistics with a shipment pre-filled.
 
 Questions 2 and 3 are **separate axes** and the module keeps them separate: the lifecycle answers *where
 the parts are*, the tracker answers *what was tested*. Conflating them is the most tempting wrong turn
 here — see §3 and invariant 18.
+
+**The test list is rendered exactly twice, and the two are different questions.** Once per lot (the
+tracker: status, quantities, and the report line that settled each test) and once per MPN (a
+requirements × lots matrix: is every requirement covered on every lot, and what did each say). An
+earlier cut rendered it three times — MPN requirements, lot tracker, *and* the report's process matrix —
+which was the same names three times over, because the report's results are rolled onto the tracker the
+moment it's fetched. See invariant 25.
 
 Plus the plumbing that makes it trustworthy: a WHL correspondence thread per lot, a manual-match queue
 for unroutable inbound mail, reconciliation alerts, an SLA clock on unanswered chases, an audit trail on
@@ -65,10 +75,11 @@ every change, role-gated actions and an NDA access log on reports.
 | **Conclusion set** | WHL's own overall verdicts: **Acceptable / Not Acceptable / Suspect Counterfeit**. Not a generic pass/fail. |
 | **Escrow release trigger** | Money is released to the supplier on an independent lab PASS. So a lot verdict has financial consequence. |
 | **Three identifiers** | Client PO no., WHL work-order no., WHL report no. (with revision) are *separate* keys and must all be tracked; email routing and reconciliation depend on them. |
-| **Testing lifecycle** | The physical journey of a lot while it's at the lab, distinct from its test results: we raise a work order, the **supplier** ships samples to the lab, the lab confirms receipt, tests, reports progress, finishes testing, compiles the report, and finally shares it. Only the dispatch step originates with us; the rest arrive as lab email. |
-| **Testing fee** | WHL bills for the testing itself — a separate invoice from the test report, issued on booking, payable by our finance team. Nothing to do with the supplier's material payment or the escrow; it is our cost against the order. |
-| **On account** | The lab starts testing before the fee clears. So the physical chain can legitimately run ahead of the payment stage with the invoice still outstanding — the two are parallel tracks. |
-| **Bench-vs-report lag** | Testing finishing and the report arriving are different events, often days apart — the lab is done but the signed report is with its reviewer. Treating them as one event hides where the delay actually is. |
+| **Testing lifecycle** | The physical journey of a lot while it's at the lab, distinct from its test results: we raise a work order, settle the lab's fee, the **supplier** ships samples to the lab, the lab confirms receipt, tests it, and shares the report. Every step is established by an inbound mail — the lab's, or the supplier's dispatch advice relayed onto the same thread. |
+| **Testing fee** | WHL bills for the testing itself — a separate invoice from the test report, issued on booking, payable by our finance team. Nothing to do with the supplier's material payment or the escrow; it is our cost against the order. Priced per process, so the fee is the test list × a rate. |
+| **Advance vs credit** | The two modes the lab bills on, stated on its invoice mail and **never chosen by us** — it's the lab's call per work order. **Advance:** the fee clears before the bench starts, so the lot sits in the lab's store and the fee is a genuine gate. **Credit:** the lab tests on account and bills on terms, so the fee is a parallel track that must block nothing. |
+| **On account** | Credit terms in practice: the lab starts testing before the fee clears, so the physical chain legitimately runs ahead of the payment stage with the invoice still outstanding. Does **not** apply on advance terms. |
+| **Bench-vs-report lag** | Testing finishing and the report arriving are different events, often days apart — the lab is done but the signed report is with its reviewer. Keep them as separate stages so the gap is visible in the timestamps; it does **not** need a "report being written" stage of its own. |
 
 ---
 
@@ -93,20 +104,25 @@ export type NotifyParty = "SUPPLIER" | "BUYER" | "ESCROW" | "WHL" | "FINANCE";
  * move", as opposed to TestProcessStatus which answers "what was tested". Ordered; a lot
  * only ever travels forward through it.
  *
+ * Seven stages, and every one is established by an inbound mail (see §7.3). Two earlier
+ * stages were deliberately dropped:
+ *   - TESTING_STARTED — "in progress" already says the lot is on the bench, and the
+ *     interim mail that reports progress is the same mail that would have said "started".
+ *   - REPORT_PREPARATION — "report shared" already says the write-up finished. The
+ *     bench-vs-report lag that justified it is still visible as the gap between the
+ *     TESTING_COMPLETED and REPORT_SHARED timestamps, which is all it was ever for.
+ *
  * Note the tail order: testing finishing and the report landing are separate events and
- * the gap between them can be days (bench done, write-up still with the reviewer), so
- * TESTING_COMPLETED sits BEFORE report preparation and the chain ends on REPORT_SHARED —
- * the point at which we can actually act.
+ * the gap between them can be days, so TESTING_COMPLETED sits before REPORT_SHARED — the
+ * point at which we can actually act.
  */
 export type TestingStage =
   | "TEST_REQUESTED"
   | "WHL_PAYMENT"
   | "SUPPLIER_DISPATCHING"
   | "COMPONENTS_RECEIVED"
-  | "TESTING_STARTED"
   | "TESTING_IN_PROGRESS"
   | "TESTING_COMPLETED"
-  | "REPORT_PREPARATION"
   | "REPORT_SHARED";
 
 /** One audit row. Every manual test edit and every status change (automated or manual) writes one. */
@@ -215,7 +231,8 @@ export interface LabEmail {
   at: string;
   by: string;                 // "You (demo)" / "WHL Reports"
   status: LabEmailStatus;
-  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE";
+  // DISPATCH = the supplier's advice relayed onto this thread; PAYMENT = WHL's receipt for the fee
+  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE" | "DISPATCH" | "PAYMENT";
   attachments?: string[];
   matchedBy?: string;         // set when an operator resolved it out of the manual-match queue
   matchNote?: string;         // why auto-matching failed
@@ -237,6 +254,16 @@ export interface LotNotification {
 }
 
 /**
+ * How WHL agreed to be paid for this work order, as stated on its invoice mail. Read,
+ * never chosen — which mode applies is the lab's call per work order.
+ *   ADVANCE — the fee clears before the bench starts; the lab holds the lot, so the fee
+ *             is a genuine gate on the lifecycle.
+ *   CREDIT  — the lab tests on account and bills on terms; a parallel track that must
+ *             never block dispatch or results.
+ */
+export type LabPaymentTerms = "ADVANCE" | "CREDIT";
+
+/**
  * WHL's own invoice for the testing service — a different document from the test report,
  * arriving by mail the same way. Per lot, because the lab invoices per work order.
  */
@@ -250,10 +277,14 @@ export interface LabInvoice {
   receivedAt: string;
   dueDate?: string;
   note?: string;
+  terms: LabPaymentTerms;     // ← the mode the lab stated; decides whether unpaid = blocked
+  creditDays?: number;        // ← CREDIT only: days allowed from the invoice date
+  ratePerProcess?: number;    // ← so a test row can show its own price
+  processCount?: number;      // ← amount === processCount × ratePerProcess
   accessLog: { at: string; by: string; action: "VIEW" | "DOWNLOAD" }[];
 }
 
-/** How far the fee has got. Distinct from the stage: the stage says settled or not. */
+/** How far the fee has got. Distinct from the terms: terms say whether unpaid blocks. */
 export type LabPaymentStatus = "NOT_REQUESTED" | "REQUESTED" | "INVOICE_RECEIVED" | "SENT_TO_FINANCE" | "PAID";
 
 export interface LabPayment {
@@ -284,9 +315,10 @@ export interface TestingStageEvent {
 
 /**
  * The supplier → lab shipment. The lab cannot tell us a shipment exists until it lands, so
- * this is the one lifecycle input that must come from us. Everything except the fact of
- * dispatch is optional — chasing a supplier for an AWB must not block the chain from
- * showing the lot as on its way.
+ * this stage comes from the SUPPLIER's own dispatch advice, relayed onto the lot's thread
+ * (`kind: "DISPATCH"`), with a manual modal as the phone-call fallback. Everything except
+ * the fact of dispatch is optional — chasing a supplier for an AWB must not block the
+ * chain from showing the lot as on its way.
  */
 export interface LotDispatch {
   courier?: string;
@@ -396,8 +428,8 @@ Order matters and is the single source of truth; nothing may hardcode which stag
 
 ```ts
 export const TESTING_STAGES: readonly TestingStage[] = [
-  "TEST_REQUESTED", "WHL_PAYMENT", "SUPPLIER_DISPATCHING", "COMPONENTS_RECEIVED", "TESTING_STARTED",
-  "TESTING_IN_PROGRESS", "TESTING_COMPLETED", "REPORT_PREPARATION", "REPORT_SHARED",
+  "TEST_REQUESTED", "WHL_PAYMENT", "SUPPLIER_DISPATCHING", "COMPONENTS_RECEIVED",
+  "TESTING_IN_PROGRESS", "TESTING_COMPLETED", "REPORT_SHARED",
 ] as const;
 
 export const TESTING_TERMINAL_STAGE = TESTING_STAGES[TESTING_STAGES.length - 1]; // REPORT_SHARED
@@ -408,17 +440,15 @@ export const stageIdx   = (s?: TestingStage) => (s ? TESTING_STAGES.indexOf(s) :
 export const stageLabel = (s?: TestingStage) => (s ? TESTING_STAGE_META[s].label : "Not started");
 ```
 
-| # | Stage | Label | Description (verbatim) | Owner | Moved by |
+| # | Stage | Label | Description (verbatim) | Owner | Moved by (always a mail) |
 |---|---|---|---|---|---|
 | 1 | `TEST_REQUESTED` | Test Requested | Testing request has been initiated. | 1Buy | Work order raised with WHL for this lot. |
-| 2 | `WHL_PAYMENT` | Payment to WHL | WHL's testing invoice has been received and settled. | 1Buy | Invoice received from WHL, passed to finance, and confirmed paid. |
-| 3 | `SUPPLIER_DISPATCHING` | Supplier Dispatching Components | Supplier is preparing and shipping the components to WHL. | Supplier | Supplier confirms dispatch — record it with courier / AWB. |
+| 2 | `WHL_PAYMENT` | Payment to WHL | WHL's testing invoice has been received and settled — on advance terms this is what frees the bench. | 1Buy | Invoice mail states the terms; WHL's payment acknowledgement closes it. |
+| 3 | `SUPPLIER_DISPATCHING` | Supplier Dispatching Components | Supplier is preparing and shipping the components to WHL. | Supplier | Supplier's dispatch advice mail (courier / AWB) — or record it by hand. |
 | 4 | `COMPONENTS_RECEIVED` | Components Received by WHL | WHL has confirmed receipt of the components. | WHL | Receipt confirmation mail from WHL. |
-| 5 | `TESTING_STARTED` | Testing Started | Laboratory testing has commenced. | WHL | WHL mails to say the lot is on the bench. |
-| 6 | `TESTING_IN_PROGRESS` | Testing In Progress | WHL is actively conducting the required tests and sharing progress updates. | WHL | Interim progress mails from WHL — each one updates the test tracker. |
-| 7 | `TESTING_COMPLETED` | Testing Completed | Testing process has been successfully completed. | WHL | WHL confirms every process in the agreed test plan has been run. |
-| 8 | `REPORT_PREPARATION` | Report Preparation | Testing is complete and the final report is being compiled. | WHL | WHL confirms the report is being written / with its reviewer — this can lag the bench work by days. |
-| 9 | `REPORT_SHARED` | Test Report Shared | WHL has shared the completed test report and results. | WHL | Report received and parsed onto the lot. |
+| 5 | `TESTING_IN_PROGRESS` | Testing In Progress | The lot is on the bench — WHL is conducting the required tests and mailing progress. | WHL | Interim progress mails from WHL — each one updates the test tracker. |
+| 6 | `TESTING_COMPLETED` | Testing Completed | Every process in the agreed test plan has been run; the write-up is with WHL's reviewer. | WHL | WHL confirms the bench work is finished. |
+| 7 | `REPORT_SHARED` | Test Report Shared | WHL has shared the completed test report and results. | WHL | Report received and parsed onto the lot. |
 
 ### The lab's testing fee (exact values)
 
@@ -431,12 +461,27 @@ export const LAB_PAYMENT_LABEL: Record<LabPaymentStatus, string> = {
 export const LAB_PAYMENT_TONE = { NOT_REQUESTED: "neutral", REQUESTED: "warn",
   INVOICE_RECEIVED: "warn", SENT_TO_FINANCE: "active", PAID: "ok" };
 
+// ---- the two modes the lab bills on (read off its invoice mail, never chosen by us) ----
+export const LAB_TERMS: readonly LabPaymentTerms[] = ["ADVANCE", "CREDIT"] as const;
+export const LAB_TERMS_LABEL = { ADVANCE: "Advance", CREDIT: "Credit" };
+export const LAB_TERMS_TONE  = { ADVANCE: "warn", CREDIT: "info" };
+export const LAB_TERMS_HINT  = {
+  ADVANCE: "Payable before testing — WHL holds the lot until the transfer clears.",
+  CREDIT: "WHL tests on account and bills on terms — the fee never blocks the bench.",
+};
+
+/** On advance terms an unpaid fee is a hard stop at the bench, not just an amber flag. */
+export const labFeeGates = (terms?: LabPaymentTerms, status?: LabPaymentStatus) =>
+  terms === "ADVANCE" && status !== "PAID";
+
 export const FINANCE_CONTACT = "finance@sharpbuy.example";
 export const WHL_TEST_FEE_PER_PROCESS = 145;   // USD per process — drives the mock invoice
 export const WHL_INVOICE_TAX_PCT = 0.06;       // lab-site service tax
+export const WHL_CREDIT_DAYS = 15;             // days the lab allows on CREDIT terms
 ```
 
-Anything short of `PAID` means the fee is outstanding — including `SENT_TO_FINANCE`.
+Anything short of `PAID` means the fee is outstanding — including `SENT_TO_FINANCE`. What that
+*means* depends on the terms: on `CREDIT` it owes money, on `ADVANCE` it stops the bench.
 
 `owner` drives the "waiting on X" pill: the owner of the stage **after** the current one, or
 `null` once the chain is complete.
@@ -460,6 +505,14 @@ lotTestProgress(lot)               → { total, settled, far, failed, open, notC
 
 currentReport(lot)                 → the report with current === true, else highest revision
 
+lotTestRows(lot)                   → LotTestRow[] — the ONE per-test table's rows:
+//   { key, name, test?, acceptQty?, rejectQty?, report? { reportNo, result, note } }
+// One row per lot test, with the current report's matching process folded in. This is what
+// lets the report section stop re-listing the processes: fetching a report already rolls
+// every result onto lot.tests[].status, so the only thing the second table added was the
+// process note. A process on the report with NO tracker row still gets a row (test:
+// undefined, rendered "report only") — dropping it would hide a process the lab ran.
+
 // ---- lifecycle ----
 lotStage(lot)                      → TestingStage | undefined
 // max(recorded stage, derivedStage(lot)) — the DISPLAYED stage. The derived value is a
@@ -474,8 +527,6 @@ derivedStage(lot)                  → TestingStage | undefined   (internal)
 //   labPayment.status === "PAID"               → WHL_PAYMENT
 //   lot.workOrderNo                           → TEST_REQUESTED
 //   else                                      → undefined  ("not started")
-// REPORT_PREPARATION is deliberately NOT derivable — it is a state inside the lab that
-// nothing on our side of the wire implies. It only ever arrives by WHL telling us.
 
 lotStageProgress(lot)              → { stage, idx, total, complete, done, pct, next,
                                        waitingOn, lastEvent, eventFor(stage) }
@@ -489,9 +540,24 @@ stageWaiting(bundle)               → rows for every lot whose chain is not com
 // ---- the lab's fee ----
 labPaymentOf(lot)                  → LabPayment  (defaults to { status: "NOT_REQUESTED" })
 labFeeUnpaid(lot)                  → status !== "PAID"
-outstandingLabFees(bundle)         → unpaid rows, worst first:
+labTerms(lot)                      → LabPaymentTerms | undefined  (invoice.terms; undefined pre-invoice)
+labFeeGross(lot)                   → amount + taxAmount, 0 with no invoice
+labFeeBlocking(lot)                → labFeeGates(labTerms, status) — advance + unpaid, i.e. the lab
+                                     is holding this lot and the bench is stopped
+
+outstandingLabFees(bundle)         → unpaid rows { lot, status, terms, blocking, invoiceNo, gross,
+                                     currency, dueDate }, worst first: a BLOCKING row sorts above
+                                     everything regardless of status (it stops the bench; the rest
+                                     only owe money), then
                                      SENT_TO_FINANCE > INVOICE_RECEIVED > REQUESTED > NOT_REQUESTED
-labFeeOutstandingTotal(bundle)     → { count, gross, currency }  — invoiced-but-unpaid only
+labFeeOutstandingTotal(bundle)     → { count, gross, currency, blocking: lotCode[] }
+                                     — invoiced-but-unpaid only; `blocking` drives its own alert
+
+mpnFeeRollup(bundle, mpn)          → what testing this MPN costs and how it's paid, across its lots:
+//   { lots, invoiced, gross, currency, terms[], ratePerProcess?, unpaid, unpaidGross, blocked[] }
+// terms is an array because lots of one MPN are separate work orders with separate invoices and
+// can legitimately differ — report "mixed terms" rather than picking one. ratePerProcess is
+// undefined unless every invoice agrees on it.
 
 // testingSummary also gains: feesUnpaid, feesToPay (INVOICE_RECEIVED and not yet with finance)
 
@@ -544,15 +610,15 @@ where the spec says so. `stamp()` = `"YYYY-MM-DD HH:mm"`, `today()` = `"YYYY-MM-
 | **addMpnTest** | `(orderId, mpn, { name, standard? })` | Manual override. Ignore duplicates (case-insensitive). Push `TestRequirement` with `source: "MANUAL"`, `addedBy`, `addedAt`. Append `ADD` audit row noting "Manual override of the auto-filled list." If spec was `FAILED`, move it to `PENDING` (a human has now reviewed it). Propagate to every lot of that MPN. |
 | **removeMpnTest** | `(orderId, mpn, testId)` | Remove from spec, append `DELETE` audit row (before = "auto-filled test"/"manual test", after = "—"), remove the matching row from every lot of that MPN. |
 | **setLotTestStatus** | `(orderId, lotId, lotTestId, status, note?)` | No-op if unchanged. Set status + `updatedAt`, append `STATUS` history row (before → after, by = operator). |
-| **recordSupplierDispatch** | `(orderId, lotId, { courier?, awb?, dispatchedOn?, expectedArrival?, note? })` | Store `lot.dispatch` (+ `recordedBy`/`recordedAt`), move the stage to `SUPPLIER_DISPATCHING` with the courier/AWB/date summarised into the history note, and write an order event. The one lifecycle input the lab can't supply. |
+| **recordSupplierDispatch** | `(orderId, lotId, { courier?, awb?, dispatchedOn?, expectedArrival?, note? })` | Store `lot.dispatch` (+ `recordedBy`/`recordedAt`), move the stage to `SUPPLIER_DISPATCHING` with the courier/AWB/date summarised into the history note, and write an order event. **The by-hand fallback** — normally the supplier's `DISPATCH` mail does this on the next sync. |
 | **requestWhlInvoice** | `(orderId, lotId)` | Send the `INVOICE_REQUEST` template (same source as the compose modal) and move the fee to `REQUESTED` + stamp `requestedAt`. Never walks a received/paid invoice backwards. |
-| **markLabFeePaid** | `(orderId, lotId, { paidRef?, paidAt?, note? })` | Finance confirms the transfer: status → `PAID`, stamp `paidAt`/`paidRef`, `moveStage(WHL_PAYMENT)`, and write an order event. **This is the only thing that closes the payment stage.** |
+| **markLabFeePaid** | `(orderId, lotId, { paidRef?, paidAt?, note? })` | Finance confirms the transfer out of band: status → `PAID`, stamp `paidAt`/`paidRef`, `moveStage(WHL_PAYMENT)`, and write an order event. **The by-hand fallback** — normally WHL's own `PAYMENT_ACK` mail closes the stage on the next sync. Either way, a recorded payment is the only thing that closes it; receiving an invoice never does. |
 | **logInvoiceAccess** | `(orderId, lotId, "VIEW" \| "DOWNLOAD")` | Unshift onto the invoice's `accessLog`, mirroring the report's. The per-lot download button goes through this. |
 | **setLotStage** | `(orderId, lotId, stage, note?)` | Manual correction — a phone call, or fixing a mis-step. Bypasses the forward-only rule (an operator may go back) and always writes a history row with `manual: true`, noting whether it was a correction backwards. Note the display floor still applies: you cannot make a lot with a report *read* as pre-report. |
 | **fetchWhlReport** | `(orderId, lotId)` | Guard: needs `workOrderNo`. `revision = max(existing revisions) + 1` → calling it again fetches the **next revision**. On success: mark all existing reports `current: false`, push the new one as current, set `lot.reportNo`/`testedAt`, set `lot.testStatus = conclusionToLotStatus(...)`, roll the process matrix onto `lot.tests` (create missing rows; append a `REPORT` history row per process citing the report no), append a `REPORT_DELIVERED` inbound email to the thread, add a `WHL_REPORT` document to the order's document vault, clear `lastUpdateRequestAt`, flip any `AWAITING_RESPONSE` outbound mails on that lot to `UPDATE_RECEIVED`. Add reconciliation `parseFlags` when the report MPN ≠ lot MPN, or report client PO ≠ the PO on file. **Lifecycle: move the stage to `REPORT_SHARED`** (the end of the chain) with the report no + conclusion as the note. |
 | **requestWhlUpdate** | `(orderId, lotId)` | Send the `STATUS_REQUEST` template (same source as the compose modal) and set `lot.lastUpdateRequestAt = today()` (starts the SLA clock). |
 | **sendLabEmail** | `(orderId, { lotId?, subject, body })` | Unshift an OUT email with `status: "AWAITING_RESPONSE"`, `kind = subject.startsWith("Status request") ? "REQUEST_UPDATE" : "CUSTOM"`, then call the mail adapter. On failure mark that email `ESCALATED` with a retry note. |
-| **syncWhlInbox** | `(orderId)` | Poll the lab mailbox for all lots that have a work order. For each message: route by `lotCode` then `workOrderNo`. Matched ⇒ apply its per-test interim statuses (**never downgrade a test already `PASSED`/`FAILED` by a report**), status `UPDATE_RECEIVED`/`REPORT_DELIVERED`, and flip that lot's awaiting outbound mails to `UPDATE_RECEIVED`. Unmatched ⇒ store with `lotId: undefined` + `matchNote` (“Subject line carries no work order, lot or report number — match it manually.”). **Lifecycle: pass each lot's current `lotStage` into the adapter, and when a returned message carries a `stage`, `moveStage` the lot to it citing the mail's subject + id.** Toast the stage advances when any happened (`"LOT-C → Testing Completed"`), else `"N update(s) applied · M need manual matching"`. |
+| **syncWhlInbox** | `(orderId)` | **The lifecycle's single driver.** Poll the mailbox for all lots that have a work order, passing each lot's `lotStage` plus its fee state (`hasInvoice`, `feePaid`, `feeWithFinance`, `terms`) so the adapter can answer with the mail that plausibly comes next. For each message: route by `lotCode` then `workOrderNo`. Matched ⇒ apply its per-test interim statuses (**never downgrade a test already `PASSED`/`FAILED` by a report**), set status `UPDATE_RECEIVED`/`REPORT_DELIVERED`, flip that lot's awaiting outbound mails to `UPDATE_RECEIVED`, and apply whichever payload the mail carries: `invoice` ⇒ store the invoice **including its `terms`/`creditDays`/`ratePerProcess`**, set `INVOICE_RECEIVED` (never over `PAID`), file the PDF in the vault; `dispatch` ⇒ set `lot.dispatch` with `recordedBy: "Supplier (mail)"` (only if absent); `payment` ⇒ status → `PAID` with the mail's `paidRef`/`paidAt` + an order event. `by` is set from the kind (`Supplier (relayed)` / `WHL Accounts` / `WHL Reports`). Unmatched ⇒ store with `lotId: undefined` + `matchNote` (“Subject line carries no work order, lot or report number — match it manually.”). Then `moveStage` to the message's `stage` citing its subject + id. Toast priority: fees settled > invoices received > stage advances > `"N update(s) applied · M need manual matching"`. |
 | **matchLabEmail** | `(orderId, emailId, lotId)` | Attach the email to the lot (copy lotCode/mpn/workOrderNo/poNo), set `matchedBy`, clear `matchNote`, set status by kind, and append an `EMAIL` audit row on that MPN's spec. |
 | **escalateLabEmail** | `(orderId, emailId)` | Set status `ESCALATED`. |
 | **logReportAccess** | `(orderId, lotId, reportId, "VIEW" \| "DOWNLOAD")` | Unshift `{ at, by, action }` onto the report's `accessLog` (NDA requirement). |
@@ -572,26 +638,51 @@ processToTestStatus(result): TestProcessStatus =
   result === "FAR" ? "FAR" : "NOT_CONDUCTED";
 ```
 
-Lifecycle mutation helper — every automatic stage move goes through it:
+Lifecycle mutation helpers — every automatic stage move goes through one of these:
 
 ```ts
 /** Forward-only. Returns true if the stage actually moved. */
-function moveStage(lot, stage, by, { note?, sourceEmailId?, manual? }) {
+function moveStage(lot, stage, by, o) {
   const from = stageIdx(lot.stage);      // ← the RECORDED stage, not lotStage(lot)
   const to   = stageIdx(stage);
   if (to <= from) return false;          // stale mail can't rewind; re-poll is a no-op, not a dupe row
   lot.stage = stage;
-  (lot.stageHistory ??= []).push({ id: uid(), stage, at: stamp(), by, note, sourceEmailId, manual });
+  recordStageEvent(lot, stage, by, o);
   return true;
+}
+
+/** Append a history row WITHOUT touching the cursor. */
+function recordStageEvent(lot, stage, by, { note?, sourceEmailId?, manual? }) {
+  (lot.stageHistory ??= []).push({ id: uid(), stage, at: stamp(), by, note, sourceEmailId, manual });
+}
+
+/** For a stage that may already be behind the cursor. Used ONLY by WHL_PAYMENT. */
+function settleStage(lot, stage, by, o) {
+  if (moveStage(lot, stage, by, o)) return true;
+  if ((lot.stageHistory ?? []).some((e) => e.stage === stage)) return false;  // already recorded
+  recordStageEvent(lot, stage, by, o);   // keep the audit row, leave the cursor alone
+  return false;
 }
 ```
 
+**`WHL_PAYMENT` must go through `settleStage`, not `moveStage`** — both from `markLabFeePaid` and from
+the `PAYMENT_ACK` branch of `syncWhlInbox`. The fee is a parallel track, so it routinely settles *after*
+the cursor has passed index 1: on credit because the lab tests on account, and on advance because the
+lot ships and books in before the transfer clears (the hold bites at the bench, not at the loading
+dock). `moveStage` sees a backwards move and no-ops, which silently drops the payment's timestamp,
+author and source mail — the exact bug the note below warns about, on the stage most likely to hit it.
+Found by driving a fresh lot end to end: the fee showed as paid, and its history row did not exist.
+
+**A consequence worth knowing before you write a test:** the displayed cursor legitimately steps *over*
+`Payment to WHL` on most lots, so "every stage is visited in order" holds for the other six only. The
+payment stage's presence is asserted through its **history row**, not the cursor's path.
+
 **Compare against `lot.stage`, never `lotStage(lot)`.** The displayed stage is floored by what
 the tests/report imply, and that floor can run *ahead* of what the lab has actually told us —
-applying a mail's per-test updates implies "in progress" before the same mail's "testing has
-started" is recorded. Using the floor here silently swallows those rows, so a stage the lab
-genuinely reported never gets a timestamp. (This was a real bug: `TESTING_STARTED` was
-dropped on 3 of 3 runs.)
+applying a mail's per-test updates implies "in progress" before that same mail's own stage is
+recorded. Using the floor here silently swallows those rows, so a stage the lab genuinely reported
+never gets a timestamp. (This was a real bug, found on the since-removed `TESTING_STARTED` stage,
+which was dropped on 3 of 3 runs. The trap is still live for any stage a mail's payload implies.)
 
 ---
 
@@ -631,41 +722,43 @@ Builds a realistic report:
   `riskClass "ERAI Low Risk"`, `msl "MSL 3"`, `packageType "LQFP-100"`, the confidentiality note, and for
   `revision > 1`: `revisionNote = "Revision N — supersedes <wo>.<N-1> (electrical re-test on the flagged units)."`
 
-### 7.3 `whlPollInbox({ workOrders: [{ workOrderNo, lotCode, mpn, testNames, stage? }] })`
+### 7.3 `whlPollInbox({ workOrders: [{ workOrderNo, lotCode, mpn, testNames, stage?, hasInvoice?, feePaid?, feeWithFinance?, terms? }] })`
 Latency 500–1500 ms · no injected failure beyond chaos.
 
-Message kinds: `STATUS_UPDATE | REPORT | DELAY | AMBIGUOUS | RECEIPT | INVOICE`. Each message may carry
-`stage?: TestingStage` — the lifecycle position it moves the lot to (absent ⇒ no stage change).
+Message kinds: `STATUS_UPDATE | REPORT | DELAY | AMBIGUOUS | RECEIPT | INVOICE | DISPATCH | PAYMENT_ACK`.
+Each message may carry `stage?: TestingStage` — the lifecycle position it moves the lot to (absent ⇒ no
+stage change) — plus one optional payload: `invoice`, `dispatch` or `payment`.
 
-**The adapter is stage-aware**: it answers with the mail that plausibly comes *next* for that lot,
-given the `stage` passed in. This is what makes the lifecycle demoable — polling repeatedly walks a
-lot along the chain one step at a time instead of firing a random status mail at a lot that already
-has its report. Independently of stage, **~15% of polls return an `AMBIGUOUS` mail** (subject
-`"RE: Testing update"`, no routing keys) so the manual-match queue keeps getting exercised.
+**The adapter is stage- and fee-aware**: it answers with the mail that plausibly comes *next* for that
+lot. This is what makes the lifecycle demoable — polling repeatedly walks a lot along the whole chain one
+step at a time instead of firing a random status mail at a lot that already has its report. Independently
+of stage, **~15% of polls return an `AMBIGUOUS` mail** (subject `"RE: Testing update"`, no routing keys)
+so the manual-match queue keeps getting exercised.
 
-Two request flags beyond `stage` keep the fee mails sane: `hasInvoice` (issue it once) and
-`feePaid` (chase it while it's owed).
+Branches are evaluated **in this order** — the order is the contract:
 
-| Lot is at | Reply | Kind | → stage |
-|---|---|---|---|
-| **no invoice yet** | `"Invoice <no> — testing services — …"` — N processes × USD 145 + 6% tax, due in 15 days, PDF attached, carrying an `invoice` payload | `INVOICE` | **— none.** An invoice is a bill, not progress; only `markLabFeePaid` moves the stage |
-| invoice out, unpaid (20%) | `"Payment reminder — invoice … still outstanding"` | `INVOICE` | — |
-| before `SUPPLIER_DISPATCHING` | `"Awaiting samples — WO x / Lot y"` — *we have your work order but the samples have not reached us; please share dispatch details* | `STATUS_UPDATE` | — (the lab **cannot** confirm a receipt that hasn't happened) |
-| before `COMPONENTS_RECEIVED` | `"Receipt confirmation — …"` — quantity and packaging match, lot booked in and queued | `RECEIPT` | `COMPONENTS_RECEIVED` |
-| before `TESTING_STARTED` | `"Testing commenced — …"` | `STATUS_UPDATE` | `TESTING_STARTED` |
-| before `TESTING_IN_PROGRESS` | first interim update (20% a delay notice instead) | `STATUS_UPDATE` / `DELAY` | `TESTING_IN_PROGRESS` |
-| before `TESTING_COMPLETED` | weighted **interim 30 / delay 10 / done 60**; "done" = `"Testing complete — all processes conducted, results with our reviewer"` | `STATUS_UPDATE` / `DELAY` | `TESTING_IN_PROGRESS` (no-op) or `TESTING_COMPLETED` |
-| before `REPORT_PREPARATION` | `"Report in preparation — with our laboratory manager for sign-off"` | `STATUS_UPDATE` | `REPORT_PREPARATION` |
-| before `REPORT_SHARED` | `"WHL Report <wo> — <mpn> (Lot <lot>)"`, attachment `"WHL-<wo>.1.pdf"` | `REPORT` | `REPORT_SHARED` |
-| at `REPORT_SHARED` | `null` — nothing further unless we ask (re-test, F.A.R. follow-up) | — | — |
+| # | Lot is at | Reply | Kind | → stage |
+|---|---|---|---|---|
+| 1 | **no invoice yet** | `"Invoice <no> — testing services (advance\|credit) — …"` — N processes × USD 145 + 6% tax, PDF attached, carrying an `invoice` payload whose **`terms` is weighted CREDIT 55 / ADVANCE 45**. Advance ⇒ due in 3 days + *"the lot will be held in our bonded store until the transfer clears"*; credit ⇒ due in `WHL_CREDIT_DAYS` + *"testing proceeds on account"* | `INVOICE` | **— none.** An invoice is a bill, not progress |
+| 2 | fee unpaid **and with finance** | `"Payment received — invoice <no> — …"` — settled in full, receipt attached, `payment` payload `{ invoiceNo, paidRef, paidAt }`; on advance terms adds *"the lot is released from hold"* | `PAYMENT_ACK` | `WHL_PAYMENT` |
+| 3 | before `SUPPLIER_DISPATCHING` | **25%:** `"Awaiting samples — …"` — the lab chases *us* (no stage: it cannot confirm a receipt that hasn't happened). **Else:** `"Dispatch advice — samples to WHL — …"` from `logistics@supplier.example`, carrying a `dispatch` payload (courier, AWB, dispatched, ETA) | `STATUS_UPDATE` / `DISPATCH` | — / `SUPPLIER_DISPATCHING` |
+| 4 | before `COMPONENTS_RECEIVED` | `"Receipt confirmation — …"` — quantity and packaging match, lot booked in and queued; on an unpaid advance it adds that the lot is held and unscheduled | `RECEIPT` | `COMPONENTS_RECEIVED` |
+| 5 | **advance terms, unpaid** | `"Lot held — advance payment pending — …"` — booked in but on hold; testing will not be scheduled until the transfer clears | `INVOICE` | **— none.** This is the gate: nothing downstream fires until a `PAYMENT_ACK` lands |
+| 6 | credit terms, unpaid (20%) | `"Payment reminder — invoice … still outstanding"` | `INVOICE` | — |
+| 7 | before `TESTING_IN_PROGRESS` | first interim update (20% a delay notice instead) | `STATUS_UPDATE` / `DELAY` | `TESTING_IN_PROGRESS` |
+| 8 | before `TESTING_COMPLETED` | weighted **interim 30 / delay 10 / done 60**; "done" = `"Testing complete — all processes conducted, results with our reviewer"` | `STATUS_UPDATE` / `DELAY` | `TESTING_IN_PROGRESS` (no-op) or `TESTING_COMPLETED` |
+| 9 | before `REPORT_SHARED` | `"WHL Report <wo> — <mpn> (Lot <lot>)"`, attachment `"WHL-<wo>.1.pdf"` | `REPORT` | `REPORT_SHARED` |
+| 10 | at `REPORT_SHARED` | `null` — nothing further unless we ask (re-test, F.A.R. follow-up) | — | — |
 
-Two ordering rules that must not be dropped, both found by testing:
+Ordering rules that must not be dropped:
 
-1. **The "testing commenced" mail carries NO `testUpdates`.** Marking a test `IN_PROGRESS` there
-   implies `TESTING_IN_PROGRESS` via the derived floor and collapses the distinct "Testing Started"
-   step the lab actually reports. Per-test progress arrives with the interim mails that follow.
-2. **The first interim update always lands before report preparation** (its own branch, not part of
-   the weighted pick), otherwise a lot can jump from "started" straight to "report prep" and
+1. **The advance gate (5) sits after receipt (4) and before the bench (7).** The supplier can still ship
+   and the lab can still book the lot in on an unpaid advance — what it won't do is test. Putting the
+   gate earlier would wrongly freeze the shipping legs too.
+2. **The payment acknowledgement (2) outranks everything except issuing the invoice.** Otherwise an
+   advance-held lot deadlocks: branch 5 keeps firing and the mail that would release it never comes.
+3. **The first interim update always lands before the "done" pick** (branch 7 is its own branch, not part
+   of branch 8's weighting), otherwise a lot can jump straight to "testing completed" and
    `TESTING_IN_PROGRESS` is never visited.
 
 Interim mails set the first 2 test names to `IN_PROGRESS`; delay notices set them to `PENDING` with
@@ -725,14 +818,21 @@ Shared: `verdictWord` = `Acceptable` / `Acceptable (with one process flagged F.A
 | `ESCROW` | Notify escrow provider · *Release-trigger evidence to HKIN* · `ops@hkin.example` | “Sent by the masking entity only — counterparties are referenced by escrow token.” | `Escrow {escrowRef} — release trigger evidence — Lot {lotCode} {verdictWord}` | `Dear HKIN team,\n\nRe escrow {escrowRef} for {orderNo}:\n\n{lotRef}\n\n` + **if ACCEPTABLE** `The release trigger (independent lab PASS) is satisfied for this lot.{ Note one process is flagged F.A.R.; we are proceeding on the overall Acceptable conclusion.} Please treat the attached report as the supporting evidence for the tranche release of up to {currency} {releasable}.` **else** `The lab result is {verdictWord} — the release trigger is NOT satisfied. Please hold the funds; a refund instruction may follow once the return is agreed with the seller.` + `\n\nRegards,\nSourcing Ops\n{entity}` |
 | `WHL` | Acknowledge to WHL · *Confirm receipt of the report to the lab* · `{WHL_CONTACT}` | — | `Report received — {reportNo} / WO {workOrderNo} / Lot {lotCode}` | `Hi WHL team,\n\nThank you — report {reportNo} for the lot below is received and logged.\n\n{lotRef}\n\n{One process is flagged F.A.R. — we will revert separately on the further analysis.\n\n}Please retain the samples until we confirm disposition.\n\nThanks,\nSourcing Ops\n{entity}` |
 
-| `FINANCE` | Send to finance — initiate payment · *Forward WHL's invoice so finance can pay the testing fee* · `finance@sharpbuy.example` | "Internal mail. The client's identity and sell prices are not needed to pay a lab fee — leave them out." | `Payment request — WHL invoice {invoiceNo} — {mpn} / Lot {lotCode}` | `Hi Finance,\n\nPlease initiate payment of the independent testing fee below. The invoice is attached.\n\n{lotRef}\n· Laboratory: {lab}\n· Invoice: {invoiceNo} · due {invoiceDueDate}\n· Amount: {cur} {invoiceAmount} + tax {invoiceTax}\n\nPlease quote work order {workOrderNo} and lot {lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against {supplierPoNo} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n{entity}` |
+| `FINANCE` | Send to finance — initiate payment · *Forward WHL's invoice so finance can pay the testing fee* · `finance@sharpbuy.example` | "Internal mail. The client's identity and sell prices are not needed to pay a lab fee — leave them out." | `Payment request{ (ADVANCE — lot held)} — WHL invoice {invoiceNo} — {mpn} / Lot {lotCode}` | `Hi Finance,\n\nPlease initiate payment of the independent testing fee below. The invoice is attached.\n\n{lotRef}\n· Laboratory: {lab}\n· Invoice: {invoiceNo} · due {invoiceDueDate}\n· Amount: {cur} {invoiceAmount} + tax {invoiceTax}\n· Terms: {ADVANCE — payable before testing \| CREDIT — testing is running on account}\n\n{if ADVANCE: This work order is on advance terms, so the laboratory is holding the lot and has not started testing. The order is waiting on this transfer — please treat it as priority.\n\n}Please quote work order {workOrderNo} and lot {lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against {supplierPoNo} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n{entity}` |
+
+The terms line goes near the top and into the subject: on advance terms this mail is the thing standing
+between us and a test result, and finance cannot infer that from an amount and a due date.
 
 Default `attachReport` = **true** for supplier/buyer/escrow/finance, **false** for WHL (they wrote it).
 For `FINANCE` the flag attaches the **invoice** PDF, not the report.
 
 ### 8.3 Digest templates (many lots, 1 mail)
 
-The `FINANCE` digest is a **payment run**: one line per invoiced lot (`MPN · Lot · WO · invoice (due) — amount + tax`), a currency total, the payment-reference instruction, and an explicit note naming any selected lot with no invoice yet as excluded.
+The `FINANCE` digest is a **payment run**: one line per invoiced lot
+(`MPN · Lot · WO · invoice (due) — amount + tax · advance|credit`), a currency total, the
+payment-reference instruction, and an explicit note naming any selected lot with no invoice yet as
+excluded. Advance-terms lots are called out twice — in the subject (`(N ADVANCE — lots held)`) and as
+their own paragraph naming the codes and asking for priority, because those lots are not being tested.
 
 Per-lot line: `{i+1}. {mpn} (DC {dateCode}) · Lot {lotCode} · qty {qty} · report {reportNo} ({reportDate}) — {verdict}`
 where verdict ∈ `Acceptable` / `Acceptable (one process F.A.R.)` / `Not Acceptable` / `Suspect Counterfeit` / `result pending`.
@@ -762,7 +862,7 @@ Result still pending: {codes}.
 
 ```
 ┌ Panel: "WHL testing — MPN × lot × test" ──────────────────────────────────────────┐
-│ actions: [lot scope ▾] [Sync WHL inbox] [Auto-fill tests from PO] [+ Add lot]      │
+│ actions: [lot scope ▾] [Check mail] [Auto-fill tests from PO] [+ Add lot]          │
 │                                                                                    │
 │ scope banner   ─ "All lots" → "Order total across N lot(s) — pick a lot above…"    │
 │                ─ lot chosen → pill "viewing LOT-B" · mpn · lab · WO · qty/sample   │
@@ -780,18 +880,30 @@ Result still pending: {codes}.
 │                        day(s) (SLA 3)."  [Chase again] [Escalate]                  │
 │   • autofill gaps   ⚠ "Auto-fill failed / incomplete for X, Y" [Review MPNs]       │
 │   • unmatched mail  ✉ "N inbound WHL email(s) couldn't be matched" [Open queue]    │
+│   • fee HELD (bad)  🔒 "ADV-2 held at the lab — invoiced on advance terms and      │
+│                        unpaid, so testing hasn't started." [Open lots]             │
+│   • fee owed (warn) 🧾 "N WHL invoice(s) unpaid — {cur} {total} owed to the lab on │
+│                        credit terms, so nothing is blocked." [Open lots]           │
+│     → two separate alerts on purpose: one stops the bench, the other only owes     │
+│       money, and collapsing them hides which is which                              │
 │                                                                                    │
 │ bulk bar   "Select lots: all (N) · with report (n) · acceptable (n) ·              │
 │             not acceptable (n) · F.A.R. (n) · clear      N selected                │
 │             [Next actions (N) ▾]"                                                  │
 │                                                                                    │
-│ lot-wise results table (always visible)                                            │
-│   ☑ | Lot (+lab/WO) | MPN | Verdict | Tests n/m + bar | F.A.R. | Not acc. |        │
-│     Current report (no + conclusion pill + "k rev.") | Outstanding (blocker,       │
-│     "chase Nd overdue", "awaiting reply") | Progress                               │
+│ lot-wise results table (always visible) — 9 columns                                │
+│   ☑ | Lot (+lab/WO) | MPN | Verdict | Tests n/m + bar (+ "k F.A.R. · k not acc. ·  │
+│     k not cond." beneath) | Lab fee | Current report (no + conclusion pill +        │
+│     "k rev.") | Outstanding (blocker, "chase Nd overdue", "awaiting reply") |       │
+│     Progress                                                                       │
+│   → F.A.R. and Not-acceptable used to own a column each; folding them under Tests  │
+│     as coloured counts freed the width for the fee, which nothing else showed      │
+│   → Lab fee cell = {cur} gross · terms pill (Advance/Credit) · state pill:         │
+│     🔒 held (bad) when advance+unpaid · "with finance"/"unpaid" (warn) · ✓ paid;   │
+│     "not invoiced" / "invoice requested" before the invoice mail lands             │
 │   → clicking a row scopes to that lot (click again clears); the checkbox cell      │
 │     stops propagation so ticking never changes scope                               │
-│   → Progress cell = [▸ <current stage>  n/8] "track progress". Clicking expands    │
+│   → Progress cell = [▸ <current stage>  n/7] "track progress". Clicking expands    │
 │     the lifecycle stepper as a full-width row directly beneath (§9.3a), so the     │
 │     stages are reachable without leaving the roll-up. One lot open at a time;      │
 │     the cell stops propagation so tracking never changes scope.                    │
@@ -800,27 +912,45 @@ Result still pending: {codes}.
 │   tranche" + [Extend window] [Release escrow]; footnote about PASS/FAIL + refund   │
 └────────────────────────────────────────────────────────────────────────────────────┘
 
-sub-tabs:  [MPNs & tests (gapBadge)] [Lots · status · reports] [WHL correspondence (unmatchedBadge)]
+sub-tabs:  [MPNs · tests · fee (gapBadge)] [Lots · status · reports]
+           [Mail (drives every stage) (unmatchedBadge)]
 ```
 
 Default sub-tab: **Lots · status · reports**. Badges are small warn-coloured counts.
 
-### 9.2 Sub-tab — MPNs & tests
+### 9.2 Sub-tab — MPNs · tests · fee
 
 Intro line: *"Test requirements are **parsed off the PO**, never typed — the PO already carries the test
-table. Manual edits are allowed as an override and every one is logged (who · when · before → after)."*
+table. Manual edits are allowed as an override and every one is logged (who · when · before → after).
+Each MPN shows what the lab charges to run that list and how it wants paying — both read off its
+invoice mail."*
 
 One **collapsed-by-default** card per order line (filtered to the scoped lot's MPN when a lot is
 selected) — see §9.7 for the collapse rules:
 - title (always visible): `MPN` (mono) · testing-mode pill · `make · qty N · k lot(s)`
 - summary (always visible): state pill (`auto-filled` / `auto-fill failed` / `not parsed`) ·
-  `k tests` · `m manual` when a human overrode anything
+  `k tests` · `m manual` when a human overrode anything · **`{cur} {gross}` · terms pill (or
+  `mixed terms`) · `N lot(s) held` (bad) or `fee unpaid` (warn)** — so the money is triageable
+  without opening the card
 - actions (only when expanded): `[🕘 auditCount]` toggle · `[✎ Edit tests | Done]` (role-gated)
 - `auto-fill failed` ⇒ red notice with the reason + `[Retry parse]`
 - no spec at all (and mode ≠ NONE) ⇒ amber notice + `[Auto-fill now]`
 - meta row: `source: <PO>` · `parsed: <ts>` · `confidence: n%` · `k auto · m manual`
-- test list rows: name · standard pill · source pill (`from PO` / `manual`) · `addedBy · addedAt` for
-  manual · trash icon in edit mode
+- **fee strip** (`MpnFeeStrip`): `🧾 TESTING FEE  {cur} {gross} · {cur} {rate} per process ·
+  <terms pill> · settled | {cur} {unpaidGross} unpaid across N lot(s) · 🔒 <codes> held for advance
+  payment · k lot(s) not invoiced yet`. Before any invoice: *"No WHL invoice for this MPN yet — the
+  amount and the payment mode both arrive on the lab's invoice mail."* It sits with the tests because
+  the bill **is** the test list priced: amount = processes × rate.
+- **test matrix** (`MpnTestMatrix`), not a flat list — rows are the requirements, columns are the
+  lots of this MPN:
+  `Required test (+standard) | Source (from PO / manual + addedBy·addedAt) | Rate | <one column per
+  lot> | 🗑 (edit mode only)`
+  - each lot column header: `LOT-x` over `{cur} {gross} · advance|credit · <payment status>`
+  - cells: that lot's `StatusPill` for that test, or amber `not on lot` when the requirement never
+    reached it (a real gap worth seeing, and invisible in a flat list)
+  - `Rate` column only when every invoice on the MPN agrees on `ratePerProcess`
+  - footer row: `passed / tracked` with each lot's `settled/total`, green when complete
+  - no lots yet ⇒ a single `Lots` column reading `no lots yet`
 - edit mode footer: process `<select>` (from `WHL_PROCESSES`) + standard `<select>` + `[+ Add]`,
   caption *"Adds to this MPN's list and to every lot of it. Logged as a manual override."*
 - audit panel (toggle): newest-first rows — action pill (`ADD` warn / `DELETE` bad / else neutral),
@@ -835,19 +965,31 @@ the filter) — see §9.7 for the collapse rules:
 
 - **title** (always visible): flask icon · lot code · MPN (mono) · `lab · WO n · qty N / sample M · DC x`
 - **summary** (always visible — enough to spot the lot that needs attention among a hundred):
-  verdict pill · `n/m tests` · current lifecycle stage + `n/9` (green when complete) · report no
-  (or amber `no report`) · blocker pill (`not acceptable` / `F.A.R.` / `not conducted`) · **`fee unpaid`
-  / `fee with finance` pill when the lab fee is outstanding** · clock icon when a WHL reply is outstanding
+  verdict pill · `n/m tests` · current lifecycle stage + `n/7` (green when complete) · report no
+  (or amber `no report`) · blocker pill (`not acceptable` / `F.A.R.` / `not conducted`) · **fee pill
+  when the fee is outstanding: `🔒 held — advance fee` (bad) when the lab is holding the lot, else
+  `fee unpaid` / `fee with finance` (warn)** · clock icon when a WHL reply is outstanding
 - **actions** (only when expanded): `[⚡ Next actions ▾]` (disabled until a report exists) ·
   `[Fetch report | Fetch revision]` · `[Email WHL]`
 - **lifecycle stepper** (§9.3a) — first thing in the body, above the test tracker: where the parts
   physically are comes before what was tested
 - **WHL invoice & payment** block (§9.3b) — the lab's fee, inside the stepper card
 - **status tracker** header: `Test status tracker  n/m passed · k F.A.R. · k not acceptable · k not conducted · k open`
-- **tracker table**: `Test | Std | Source | Status | Accept / Reject | Updated | Set`
+- **tracker table** (`LotTestTable`, rows from `lotTestRows`) — **the only per-test table on the
+  screen**: `Test | Status | Accept / Reject | Per the report | Updated | Set`
+  - `Test` carries the standard and `· manual` / `· report only` as faint suffixes instead of owning
+    a `Std` and a `Source` column — two columns of one-word values weren't worth the width
+  - `Per the report` = result pill (`F.A.R.` spelled out) · report no (mono) · the process note.
+    **This is the report's process matrix**, which is why §9.4 no longer repeats it. `not reported
+    yet` before a report lands.
   - the test name is a disclosure toggle; expanded row shows **Status history** newest-first:
     `at · before → after (pills) · by · note · "from inbound email"`
-  - `Set` is a `<select>` over `TEST_PROCESS_STATUSES` (role-gated), labels title-cased, `FAR` → `F.A.R.`
+  - `Set` is a `<select>` over `TEST_PROCESS_STATUSES` (role-gated), labels title-cased, `FAR` →
+    `F.A.R.`; a report-only row has no tracker entry to set, so it reads `not on the PO`
+  - caption: with a report, *"Results are from report X, process by process — a report can be
+    Acceptable overall while one process is F.A.R., so these rows are the source of truth, not the
+    headline conclusion."* Without one: *"Statuses come from WHL's interim mails until the report
+    lands and settles them."*
   - empty: *"No tests on this lot — the MPN's test list is empty or failed to auto-fill (see MPNs & tests)."*
 - **report repository** (§9.4)
 - **result circulated** block (only when a report exists): party pills
@@ -866,23 +1008,29 @@ Deliberately the **same visual shape as the order's Journey stepper**, so the tw
 different scales: reuse the host's stepper markup rather than inventing a second treatment.
 
 ```
-┌ Testing lifecycle · 6/8 stages                          [◉ At: Testing Completed ·  ┐
+┌ Testing lifecycle · 6/7 stages                          [◉ At: Testing Completed ·  ┐
 │                                                             waiting on WHL]         │
-│   ✓────✓────✓────✓────✓────◉────⑦────⑧                                              │
-│  Test  Supp  Comp  Test  Test  Test  Rep   Test                                     │
-│  Req   Disp  Recd  Strt  InPr  Cmpl  Prep  RepShared                                │
-│  07-19 07-19 07-21 07-21 07-23 07-24                                                │
+│   ✓────✓────✓────✓────✓────◉────⑦                                                   │
+│  Test  Pay   Supp  Comp  Test  Test  Test                                           │
+│  Req   WHL   Disp  Recd  InPr  Cmpl  RepShared                                      │
+│  07-19 07-19 07-19 07-21 07-21 07-24                                                │
 │ ─────────────────────────────────────────────────────────────────────────────────── │
-│  Testing Completed — Testing process has been successfully completed.               │
-│    · 2026-07-24 09:05 · WHL inbox (auto)                                            │
+│  Testing Completed — Every process in the agreed test plan has been run; the         │
+│    write-up is with WHL's reviewer. · 2026-07-24 09:05 · WHL inbox (auto)            │
 │  Testing complete — all six processes conducted; results with the reviewer.         │
-│  Next: Report Preparation — WHL confirms the report is being written / with its      │
-│        reviewer — this can lag the bench work by days.                              │
-│  [🚚 Record supplier dispatch]  [↻ Check WHL for updates]  mark report preparation… │
-│  ┌ 🚚 Supplier → WHL Shenzhen · recorded by A. Sharma · 2026-07-19 15:10 ─────────┐  │
+│  Next: Test Report Shared — Report received and parsed onto the lot.                │
+│  [↻ Check mail for updates]  [🚚 Record dispatch by hand]  mark test report shared… │
+│  ┌ 🧾 WHL INVOICE & PAYMENT  [Credit · 15d] [Paid]  WHL-INV-352146  USD 923 ──────┐  │
+│  └───────────────────────────────────────────────────────────────────────────────┘  │
+│  ┌ 🚚 Supplier → WHL Shenzhen · recorded by Supplier (mail) · 2026-07-19 15:10 ───┐  │
 │  │ DHL Express · AWB 4471-9920-11 · dispatched 2026-07-19 · ETA 2026-07-21        │  │
 │  └───────────────────────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────────────┘
+
+held on an unpaid advance instead of the "At:" pill:
+  [🔒 Held — advance fee unpaid]   (bad tone; tooltip names the invoice)
+  "Held at the lab: invoice X is on advance terms and unpaid, so nothing moves until the
+   transfer clears. Settle the fee below — WHL's payment acknowledgement releases the lot."
 ```
 
 - **Nodes**: done = filled primary with ✓ · current = primary ring + the stage's icon · future =
@@ -892,53 +1040,69 @@ different scales: reuse the host's stepper markup rather than inventing a second
 - **Tooltip per node**: the stage description, plus either `at · by — note` when recorded, or
   `↳ <trigger>` when not yet reached. This is where the per-stage detail lives — the stepper itself
   stays one line tall.
-- **Header pill**: `✓ Report received` when complete, else `◉ At: <stage> · waiting on <owner>`, or
-  `⏳ Not requested yet` before a work order exists.
+- **Header pill**: `✓ Report received` when complete; else `🔒 Held — advance fee unpaid` (bad) when
+  `labFeeBlocking(lot)`, because nothing else on the chain is true while the lab is holding the lot;
+  else `◉ At: <stage> · waiting on <owner>`, or `⏳ Not requested yet` before a work order exists.
 - **Below the rail**: the current stage in words + its recorded `at · by` (`(recorded manually)` when
-  applicable) + note, then `Next: <stage> — <trigger>`.
-- **Actions**: `[Record supplier dispatch]` only while the chain is short of `SUPPLIER_DISPATCHING`;
-  `[Check WHL for updates]` (= `syncWhlInbox`) until complete; a `mark <next stage> done` text link
+  applicable) + note, then `Next: <stage> — <trigger>` — or, when blocked, the held sentence instead
+  of `Next:` (there is no next until the money moves).
+- **Actions**: `[Check mail for updates]` (= `syncWhlInbox`) first and until complete — it is the
+  primary driver of every stage, not a refresh; then the fallbacks: `[Record dispatch by hand]`
+  (ghost, only while short of `SUPPLIER_DISPATCHING`) and a `mark <next stage> done` text link
   (role-gated) for the phone-call case.
-- **Dispatch block** rendered whenever `lot.dispatch` exists.
+- **Dispatch block** rendered whenever `lot.dispatch` exists; `recordedBy` reads `Supplier (mail)`
+  when the dispatch advice supplied it, or the operator's name when typed in.
 - Stages before the current one read as **done even without a history row** — a lot can arrive
   mid-chain (report fetched before anyone recorded the dispatch), and pretending those steps never
   happened misleads more than showing them done without a timestamp.
-- **One deliberate exception: the `WHL_PAYMENT` node reads the payment record, not its index.** The
-  lab tests on account, so the chain routinely runs past the payment stage with the fee still owed;
-  index alone would paint that node "done" — a lie. While `labFeeUnpaid(lot)` it renders amber with
-  its own icon and a tooltip naming the fee state, wherever the current stage happens to be. This is
-  the only node whose truth is not positional.
+- **One deliberate exception: the `WHL_PAYMENT` node reads the payment record, not its index.** On
+  credit terms the lab tests on account, so the chain routinely runs past the payment stage with the
+  fee still owed; index alone would paint that node "done" — a lie. While `labFeeUnpaid(lot)` it
+  renders amber (or **red when `labFeeBlocking(lot)`**) with its own icon and a tooltip naming the fee
+  state and the terms, wherever the current stage happens to be. This is the only node whose truth is
+  not positional.
 
-**Compact variant** (`TestingStageBar`) — 8 thin segments + `<stage label> n/8 · waiting on <owner>`.
+**Compact variant** (`TestingStageBar`) — 7 thin segments + `<stage label> n/7 · waiting on <owner>`.
 Used in the scope banner and on the cross-order testing board, one row per lot.
 
 ### 9.3b WHL invoice & payment (per lot)
 
 Rendered inside the stepper card, below the actions, and only once a work order exists — there is
-nothing to bill before that. Amber-tinted while the fee is outstanding.
+nothing to bill before that. Amber-tinted while the fee is outstanding, **red-tinted while it blocks**.
 
 ```
-┌ 🧾 WHL INVOICE & PAYMENT   [With finance for payment]  WHL-INV-352151  USD 615  due 2026-08-10 ┐
-│ USD 580 net + tax 35 · received 2026-07-26 10:15 · to finance 2026-07-27 09:40 · A. Sharma     │
-│ 4 process(es) billed against WO 352151.                                                        │
-│ [⬇ Download invoice] [🏦 Re-send to finance] [✓ Mark paid]   1 access entry                    │
-└────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ 🧾 WHL INVOICE & PAYMENT  [Credit · 15d] [With finance for payment]  WHL-INV-352151  USD 615  due … ┐
+│ USD 580 net + tax 35 (4 × 145) · received 2026-07-26 10:15 · to finance 2026-07-27 09:40 · A. Sharma│
+│ Credit terms — the lab is testing on account, so this owes money but blocks nothing.                │
+│ [⬇ Download invoice] [🏦 Re-send to finance] [✓ Mark paid by hand]   1 access entry                 │
+└────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+on an unpaid advance the second line becomes, in bad tone:
+  🔒 Advance terms: WHL holds the lot until this clears — testing has not been scheduled.
+and [Send to finance] is promoted to the primary button.
 ```
 
+- **Terms pill first**, before the status pill: it is what makes an unpaid fee urgent or not. Reads
+  `Advance` (warn) or `Credit · {creditDays}d` (info), tooltip = `LAB_TERMS_HINT`.
 - **No invoice yet** → the copy says so and offers `[✉ Request invoice]`; if already requested it
-  states *"it arrives on the WHL thread, so **Check WHL for updates** pulls it in"*.
+  states *"it arrives on the WHL thread, so **Check mail for updates** pulls it in, terms and all"*.
+  Otherwise: *"…that mail is what tells us whether this work order is advance or credit."*
+- The amount line shows `({processCount} × {ratePerProcess})` so the fee reads as the priced test list.
 - **`[Download invoice]`** writes a `DOWNLOAD` row to the invoice's `accessLog`, like the report's.
   The access count is shown with the full log in its tooltip.
 - **`[Send to finance]`** opens the notify modal for `FINANCE` with the invoice attached; the label
   becomes **Re-send to finance** once it has gone once.
-- **`[Mark paid]`** opens the payment modal — reference, date, note — and closes the payment stage.
+- **`[Mark paid by hand]`** (ghost) opens the payment modal — reference, date, note — and closes the
+  payment stage. Named "by hand" because WHL's `PAYMENT_ACK` mail normally does this on the next sync.
 - Buttons that mutate are role-gated (`canEditTests`); **Download is not** — reading your own
   invoice is not an override.
 
 ### 9.4 Report repository + parsed summary (per lot)
 
 No reports ⇒ dashed block: **"WHL report — Not Available"**, *"Nothing received by email for WO n yet.
-Update requested <date>."*, `[✉ Request Update]` (role-gated, tooltip names the lab address).
+Update requested <date>. Use **Request update** below to chase <lab address>."* — **no button here**:
+the card footer already carries `[Request update]` while there's no report, and two buttons firing the
+same mail two inches apart is just a second thing to read.
 
 With reports ⇒ bordered block:
 - header: `WHL report repository · k version(s)` + one button per version, newest first, current marked
@@ -952,24 +1116,34 @@ With reports ⇒ bordered block:
   - field grid (2-col): Report no · date | Work order | Part number (MPN — **red when ≠ lot MPN**) |
     Manufacturer | Lot qty (+ *"(lot on file N)"* when different) | Client | Client P/O (**amber when
     “PO Unknown”**) | Approved by + title | Standards | Risk classification | MSL | Package type
-  - **process-level results** table: `Process | Result (pill) | Acceptable qty | Not-acceptable qty | Note`
-    with caption *"A report can be **Acceptable** overall while one process is **F.A.R.** — the matrix is
-    the source of truth, not the headline conclusion."*
+  - **process roll-up strip** — *not* a table: `N process(es) reported` + one count pill per distinct
+    result (`6 acceptable`, `1 F.A.R.`, …) + *"per-process results, quantities and notes are on the test
+    tracker above"*. The full matrix used to be repeated here; fetching a report rolls every process
+    onto the tracker, so the tracker **is** the matrix (§9.3) and this only says how many and how they
+    split. See invariant 25.
   - access log (toggle): `at · by · action`
   - NDA footer with a lock icon
 
-### 9.5 Sub-tab — WHL correspondence
+### 9.5 Sub-tab — Mail (drives every stage)
+
+Named for what it does: this thread is the lifecycle's driver, not an archive.
 
 1. **Panel "Compose from a template — subject & body pre-filled"** — a chip per WHL template (tooltip =
    hint) opening the compose modal for that template; caption explains the auto-fill; role note when gated.
-2. **Panel "WHL inbox — manual match queue"** — `[Sync inbox]` `[Compose]`; each unmatched mail in an
+2. **Panel "WHL inbox — manual match queue"** — `[Check mail]` `[Compose]`; each unmatched mail in an
    amber card: subject, `by · at · attachments`, body, the match note, `[Match to lot]`. Empty: *"Nothing
    waiting — every inbound WHL email is matched to a lot."* Caption: *"Unroutable mail is held here rather
    than dropped or applied to the wrong lot. Matching it applies its updates to that lot's tracker."*
 3. **Panel "Correspondence & tracking history"** — lot filter `<select>` (defaults to the header's scope,
    still overridable); newest-first thread with a dot (primary = sent, ok = received), `sent`/`received`
-   pill, status pill, timestamp, `lotCode · mpn · WO`, subject, body (pre-wrapped), then
+   pill, **kind pill** (`invoice` warn · `payment` ok · `dispatch` info · `report` ok — the kinds that
+   moved a stage; `STATUS_UPDATE` and the outbound kinds are left unlabelled because the subject already
+   says it), status pill, timestamp, `lotCode · mpn · WO`, subject, body (pre-wrapped), then
    `by · attachments · matched by · [Mark escalated]` for awaiting outbound mail.
+   Caption: *"This thread is what drives the lifecycle. Everything to and from `<lab>` lands here against
+   its lot — the invoice and its payment terms, the supplier's dispatch advice, receipt confirmations,
+   interim updates, the payment acknowledgement and the report — and each one moves the stage it
+   establishes."*
 
    **Only the 2 most recent messages render.** The rest sit behind
    `▸ Show N earlier message(s)` / `▾ Hide the earlier N message(s)`, and the panel footer states the
@@ -1051,8 +1225,8 @@ unreachable, so **every repeated card starts collapsed** and the operator opens 
 
 | Surface | Collapsed by default | Always-visible summary |
 |---|---|---|
-| MPN card (§9.2) | test list, meta row, edit controls, audit trail | MPN · mode · make/qty/lots · state pill · `k tests` · `m manual` |
-| Lot card (§9.3) | stepper, test tracker, report repository, notifications, verdict footer | lot · MPN · lab/WO/qty/DC · verdict · `n/m tests` · stage + `n/8` · report no · blocker · awaiting-reply clock |
+| MPN card (§9.2) | test matrix, fee strip, meta row, edit controls, audit trail | MPN · mode · make/qty/lots · state pill · `k tests` · `m manual` · fee gross · terms · unpaid/held |
+| Lot card (§9.3) | stepper, test tracker, report repository, notifications, verdict footer | lot · MPN · lab/WO/qty/DC · verdict · `n/m tests` · stage + `n/7` · report no · blocker · fee pill · awaiting-reply clock |
 | Result circulated (§9.3) | the per-notification log | the party pills |
 | Correspondence (§9.5) | everything older than the 2 most recent; each body clamped to 2 lines | the 2 most recent messages |
 
@@ -1128,12 +1302,17 @@ If the host route is statically pre-rendered, wrap the search-param reader in a 
     display-only: stage *writes* compare against the recorded stage (see `moveStage`).
 18. **Stage and test status are separate axes.** Neither is derived from the other's vocabulary; a lot can
     be `TESTING_COMPLETED` with tests still `IN_PROGRESS`. Don't collapse them into one field.
-19. **The lab can't report what hasn't happened.** No inbound mail may establish `SUPPLIER_DISPATCHING` —
-    the lab learns of a shipment only when it lands, so that stage is an operator input. Before it,
-    the lab chases *us* for the samples.
-20. **The lab's fee is a parallel track, not a gate.** Testing proceeds on account, so an unpaid
-    invoice must never block recording dispatch or applying results. It surfaces as an amber node, a
-    lot-summary pill and an order-level alert — never as a hard stop.
+19. **The lab can't report what hasn't happened.** No mail *from the lab* may establish
+    `SUPPLIER_DISPATCHING` — it learns of a shipment only when it lands. That stage comes from the
+    **supplier's** dispatch advice relayed onto the same thread, with a manual modal as the fallback;
+    before either, the lab chases *us* for the samples.
+20. **What an unpaid fee means depends on the terms, and the terms come off the mail.**
+    On `CREDIT` the fee is a parallel track: testing proceeds on account, so it must never block
+    recording dispatch or applying results — amber node, lot pill, order alert, no hard stop. On
+    `ADVANCE` it is a real gate: the lab holds the lot, so the chain stops after
+    `COMPONENTS_RECEIVED` until a payment acknowledgement lands, and that state renders red and says
+    so. Never let the UI present one as the other, and never let the app *choose* the terms — they
+    are the lab's call per work order and are only ever read off its invoice.
 21. **An invoice is a bill, not progress.** Receiving one does not advance the chain; only a recorded
     payment does. And the payment node reports the fee record rather than its position, so a lot can
     never *display* a settled fee it hasn't settled.
@@ -1145,6 +1324,18 @@ If the host route is statically pre-rendered, wrap the search-param reader in a 
 24. **Reaching the last stage ≠ a good result.** `REPORT_SHARED` means the report is in hand; whether the
     lot is acceptable is `testStatus` + the blocker, and an F.A.R. still needs follow-up on a chain that
     reads complete.
+25. **The test list is rendered twice, and only twice.** Once per lot (the tracker, with the report's
+    process result folded into each row) and once per MPN (requirements × lots). A third rendering is
+    always a duplicate, because the requirements propagate into `lot.tests` at lot creation and the
+    report's processes roll onto `lot.tests` on fetch — so all three views read from the same names.
+    If a new surface needs per-test data, join it into one of the two tables rather than adding a
+    third; and if you drop a rendering, keep whatever it *uniquely* carried (the process note and
+    report number moved into the tracker's `Per the report` column, not into the bin).
+26. **Every stage has a mail behind it.** `syncWhlInbox` is the primary driver of the whole chain,
+    including the two stages that don't originate with the lab — the supplier's dispatch advice and
+    the lab's payment acknowledgement are relayed onto the same thread. The operator actions
+    (`recordSupplierDispatch`, `markLabFeePaid`, `setLotStage`) are fallbacks for the phone-call case
+    and must be labelled as such, never presented as the normal path.
 
 ---
 
@@ -1181,8 +1372,9 @@ the reference repo; this table is what a target repo should expect to end up wit
 | `src/integrations/notify.ts` | §7.5 | 35 |
 | `src/store/store.ts` | actions §6 + the `moveStage` helper | +480 |
 | `src/store/selectors.ts` | derived state §5 incl. the lifecycle selectors | +180 |
-| `src/components/order/testing-tab.tsx` | the whole screen §9.1–9.7 + both menus + `CollapsibleCard` / `ExpandBar` / `MailRow` / `LotProgressToggle` | 1100 |
-| `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel` | 300 |
+| `src/components/order/testing-tab.tsx` | the whole screen §9.1–9.7 + both menus + `CollapsibleCard` / `ExpandBar` / `MailRow` / `LotProgressToggle` / `LotFeeCell` | 1100 |
+| `src/components/order/test-tables.tsx` | the two — and only two — per-test tables: `LotTestTable` (§9.3 tracker, report folded in) + `MpnTestMatrix` / `MpnFeeStrip` (§9.2) | 290 |
+| `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel` | 330 |
 | `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / shipment-prefill | +450 |
 | `src/app/fulfilment/logistics/page.tsx` | §9.8 hand-off | +90 |
 | `src/app/fulfilment/testing/page.tsx` | cross-order board — one `TestingStageBar` per lot | +10 |
@@ -1196,32 +1388,42 @@ Seed **one order** with three lots that between them exercise everything:
 
 | Lot | MPN | State | Demonstrates |
 |---|---|---|---|
-| **LOT-A** | MCU, qty 300, sample 20, WO `352146` | `PASS`, two reports: `352146.1` Not Acceptable (electrical 18/2, die analysis Not Conducted) superseded by **`352146.2` Acceptable** (all six processes acceptable, revision note). Lifecycle **`REPORT_SHARED`** — full 8-row history | revision history · superseded vs current · a settled lot · full test history including a FAILED → IN_PROGRESS → PASSED progression · a **completed** lifecycle |
-| **LOT-B** | power IC, qty 150, sample 20, WO `352147` | `MAYBE`, report `352147.1` **Acceptable with X-Ray F.A.R.** (19/1) and `clientPo: "PO Unknown"`. Lifecycle **`REPORT_SHARED`** | the Acceptable-but-F.A.R. nuance · reconciliation alert + one-click fix · blocker text "F.A.R. — needs follow-up" · a chain that is complete while the *result* still needs follow-up |
-| **LOT-C** | same MPN as B, qty 100, sample 15, WO `352151` | `PENDING`, **no report**, `lastUpdateRequestAt` ≈ 4 business days ago, tests `IN_PROGRESS`/`PENDING`. Lifecycle **`TESTING_IN_PROGRESS`** (5 rows) | "Not Available" + Request Update · SLA-overdue banner with Chase/Escalate · an open lot in the roll-up · a chain **mid-flight**, so "Check WHL for updates" visibly advances it |
+| **LOT-A** | MCU, qty 300, sample 20, WO `352146` | `PASS`, two reports: `352146.1` Not Acceptable (electrical 18/2, die analysis Not Conducted) superseded by **`352146.2` Acceptable** (all six processes acceptable, revision note). Lifecycle **`REPORT_SHARED`** — full 6-row history | revision history · superseded vs current · a settled lot · full test history including a FAILED → IN_PROGRESS → PASSED progression · a **completed** lifecycle |
+| **LOT-B** | power IC, qty 150, sample 20, WO `352147` | `MAYBE`, report `352147.1` **Acceptable with X-Ray F.A.R.** (19/1) and `clientPo: "PO Unknown"`. Lifecycle **`REPORT_SHARED`** | the Acceptable-but-F.A.R. nuance · reconciliation alert + one-click fix · blocker text "F.A.R. — needs follow-up" · a chain that is complete while the *result* still needs follow-up · **a settled ADVANCE fee** |
+| **LOT-C** | same MPN as B, qty 100, sample 15, WO `352151` | `PENDING`, **no report**, `lastUpdateRequestAt` ≈ 4 business days ago, tests `IN_PROGRESS`/`PENDING`. Lifecycle **`TESTING_IN_PROGRESS`** | "Not Available" + Request Update · SLA-overdue banner with Chase/Escalate · an open lot in the roll-up · a chain **mid-flight**, so "Check mail" visibly advances it |
 
-**Lab-fee seed** — three states, so every payment path is visible without clicking:
+**Lab-fee seed** — both terms and three payment states, so every path is visible without clicking:
 
 | Lot | Fee state | Shows off |
 |---|---|---|
-| LOT-A | `PAID` — invoice `WHL-INV-352146`, USD 870 + 53 tax, requested → finance → paid `UTR-7741930`, 1 download logged | the settled path end-to-end, incl. the access log |
-| LOT-B | `PAID` — invoice `WHL-INV-352147`, USD 580 + 35 tax, `UTR-7742118` | a second closed fee |
-| LOT-C | **`SENT_TO_FINANCE`** — invoice `WHL-INV-352151`, USD 580 + 35, due 2026-08-10, **unpaid** | the amber payment node on a chain that has run *past* it, the order-level fee alert, the `fee with finance` summary pill, and the `Mark paid` path |
+| LOT-A | **`CREDIT` · 15d**, `PAID` — invoice `WHL-INV-352146`, USD 870 + 53 tax (6 × 145), requested → finance → paid `UTR-7741930`, 1 download logged | the settled credit path end-to-end, incl. the access log |
+| LOT-B | **`ADVANCE`**, `PAID` — invoice `WHL-INV-352147`, USD 580 + 35 tax (4 × 145), `UTR-7742118`, due 3 days after issue | the advance path *completed*: its `WHL_PAYMENT` row sits **before** the dispatch row, because the lab held the lot until the transfer cleared |
+| LOT-C | **`CREDIT` · 15d**, **`SENT_TO_FINANCE`** — invoice `WHL-INV-352151`, USD 580 + 35, due 2026-08-10, **unpaid** | the amber payment node on a chain that has run *past* it (only legal on credit terms), the order-level "nothing is blocked" fee alert, the `fee with finance` pill, the `Mark paid` path — and, because it sits at `SENT_TO_FINANCE`, it makes WHL's **payment acknowledgement** the next mail to arrive, so one sync demoes the mail-driven settlement |
 
-Also seed the three **invoice mails** (`kind: "INVOICE"`, from "WHL Accounts", PDF attached) dated on
-each work order's booking day, so the thread shows the fee arriving before any report. Give LOT-A and
-LOT-B a `WHL_PAYMENT` stage row; LOT-C deliberately has none.
+Between LOT-B and LOT-C the *same MPN* carries different terms, which is what exercises the
+`mixed terms` pill on the MPN card. **Do not seed an advance+unpaid lot on a chain that has passed
+`COMPONENTS_RECEIVED`** — that contradicts invariant 20; reach the held state by adding a fresh lot
+and syncing (the mock issues advance terms ~45% of the time).
+
+Also seed, so the thread reads as the driver it is: the three **invoice mails** (`kind: "INVOICE"`,
+from "WHL Accounts", PDF attached, terms stated in the body) dated on each work order's booking day;
+LOT-B's **payment acknowledgement** (`kind: "PAYMENT"`, receipt attached, quoting `UTR-7742118`); and
+LOT-C's **dispatch advice** (`kind: "DISPATCH"`, from "Supplier (relayed)", courier/AWB/ETA). Give
+LOT-A and LOT-B a `WHL_PAYMENT` stage row; LOT-C deliberately has none.
 
 **Lifecycle seed rules** (get these wrong and the tab contradicts itself):
 
 - Every lot gets a `stageHistory` **consistent with its own test tracker**. LOT-C's tracker already has a
-  test `IN_PROGRESS`, so its history must reach `TESTING_IN_PROGRESS` — stopping at `TESTING_STARTED`
-  makes the derived floor override the seed and the two disagree.
+  test `IN_PROGRESS`, so its history must reach `TESTING_IN_PROGRESS`, or the derived floor overrides the
+  seed and the two disagree.
 - Give LOT-A a **visible gap between `TESTING_COMPLETED` (24th 09:05) and `REPORT_SHARED` (25th 16:05)**.
-  That gap is the reason the two are separate stages; a seed where they share a timestamp hides the point.
-- Seed `lot.dispatch` (courier · AWB · dates) on all three, and point the `REPORT_SHARED` /
-  `TESTING_IN_PROGRESS` rows at the matching seeded `LabEmail` via `sourceEmailId` so "which mail moved
-  this?" resolves in the demo.
+  That gap is the reason the two are separate stages — and the reason no third stage sits between them.
+  A seed where they share a timestamp hides the point.
+- Seed `lot.dispatch` (courier · AWB · dates) on all three. Where a mail supplied it, `recordedBy` is
+  `Supplier (mail)`, not an operator name.
+- Point every mail-driven row at its seeded `LabEmail` via `sourceEmailId` — the `REPORT_SHARED`,
+  `TESTING_IN_PROGRESS`, `SUPPLIER_DISPATCHING` and `WHL_PAYMENT` rows — so "which mail moved this?"
+  resolves in the demo. A mail-driven row must **not** carry `manual: true`.
 
 Also seed:
 - **MPN specs**: MCU = auto-filled OK (5 from the PO + 1 manual `Decapsulation & Die Analysis` with a real
@@ -1252,44 +1454,68 @@ Data & auto-fill
 
 Tracker
 - [ ] Every lot shows every required test with status, accept/reject qty and last-updated.
+- [ ] **The tracker is the only per-test table on the lot card** — its `Per the report` column carries the
+      process result, report number and process note, and the report block below does not repeat them.
+- [ ] A process on the report that was never on the PO's list still gets a row, marked `report only`.
+- [ ] The MPN card shows requirements × lots, flags a requirement missing from a lot, and totals
+      `passed / tracked` per lot — it is not a second flat list of the same names.
 - [ ] Expanding a test shows the full timestamped progression, naming the automation and source email.
-- [ ] `Sync WHL inbox` applies interim statuses; a report never gets downgraded by a later interim note.
+- [ ] `Check mail` applies interim statuses; a report never gets downgraded by a later interim note.
 - [ ] Unroutable inbound mail lands in the manual-match queue; matching applies its updates.
 
 Reports
 - [ ] Fetching twice produces `.1` and `.2`; both stay openable; exactly one is current.
-- [ ] The parsed summary shows every §9.4 field plus the full process matrix — no PDF needed.
+- [ ] The parsed summary shows every §9.4 header field — no PDF needed — plus the process roll-up strip.
 - [ ] An Acceptable report with one F.A.R. process is flagged, sets the lot to MAYBE, and blocks "clear".
 - [ ] `PO Unknown` / MPN mismatch raise reconciliation alerts; the fix is one click and audited.
 - [ ] Views and downloads are access-logged; the NDA note is visible.
 
 Lifecycle
-- [ ] Every lot shows the 8-stage chain with the current stage, `n/8`, and who the next step is waiting on.
-- [ ] A fresh lot walks the whole chain in order: work order → dispatch recorded → receipt → started →
-      in progress → testing completed → report preparation → report shared. No stage is skipped.
+- [ ] Every lot shows the 7-stage chain with the current stage, `n/7`, and who the next step is waiting on.
+- [ ] Neither "Testing Started" nor "Report Preparation" appears anywhere — label, icon, meta or seed.
+- [ ] A fresh lot walks the whole chain **on mail alone**: work order → invoice (with terms) → dispatch
+      advice → receipt → [advance: pay, then the acknowledgement] → in progress → testing completed →
+      report shared. No operator input is required, and the cursor skips no stage **except
+      `Payment to WHL`**, which the fee settles out of band (see §6) — assert its history row instead.
 - [ ] `Testing Completed` and `Test Report Shared` are separate rows with separate timestamps — the bench
       can finish days before the report lands.
-- [ ] Polling the inbox repeatedly advances one step at a time; a completed lot is left untouched.
-- [ ] Before dispatch is recorded, the lab chases us for the samples instead of confirming a receipt.
+- [ ] Polling repeatedly advances one step at a time; a completed lot is left untouched.
+- [ ] Before dispatch, the lab sometimes chases us for the samples; the stage itself only ever comes from
+      the supplier's dispatch advice (or the manual modal), never from a lab mail.
 - [ ] A stale interim mail can't rewind a lot; re-polling the same stage adds no duplicate row.
-- [ ] Mail-driven history rows cite a `sourceEmailId` that exists on the lot's thread.
-- [ ] Manual `mark … done` and the dispatch modal both write rows attributed to the operator.
+- [ ] Mail-driven history rows cite a `sourceEmailId` that exists on the lot's thread and are **not**
+      flagged `manual`.
+- [ ] A fee that settles after the lot has shipped still writes its `WHL_PAYMENT` history row (timestamp,
+      author, source mail) — `settleStage`, not `moveStage`. This was a real dropped-row bug.
+- [ ] Manual `mark … done`, the dispatch modal and `Mark paid by hand` write rows attributed to the
+      operator, and each is presented as a fallback rather than the primary action.
 
-Lab fee
+Lab fee — amount, terms, settlement
 - [ ] The lab's invoice arrives by mail on booking — before any report — and is filed in the document vault.
+- [ ] The invoice mail is the **only** source of the terms: advance vs credit is never chosen in the UI.
+- [ ] The amount reads as the priced test list: `processCount × ratePerProcess`, with the rate shown on
+      the MPN matrix and the per-MPN fee strip.
 - [ ] It is downloadable per lot and the download is access-logged.
 - [ ] `Request invoice` uses the same template source as the compose modal.
 - [ ] Sending to finance attaches the **invoice** (not the report) and marks the fee "with finance".
-- [ ] `Mark paid` records the reference and is the only thing that closes the Payment-to-WHL stage.
-- [ ] An unpaid fee never blocks dispatch or results — it shows as an amber node, a lot pill and an alert.
-- [ ] The payment node reads amber while unpaid even when the chain has moved past it.
+- [ ] WHL's payment acknowledgement closes the Payment-to-WHL stage on the next sync, carrying its own
+      `paidRef`; `Mark paid by hand` does the same out of band. Receiving an invoice never closes it.
+- [ ] **On credit terms** an unpaid fee never blocks dispatch or results — amber node, lot pill, alert
+      that says nothing is blocked.
+- [ ] **On advance terms** an unpaid fee *does* block: the lot reads `Held — advance fee unpaid`, the
+      chain stops after `COMPONENTS_RECEIVED`, the node is red, and a separate bad-tone alert names the
+      held lots. Paying it releases the lot on the next sync.
+- [ ] The payment node reads amber (or red) while unpaid even when the chain has moved past it.
+- [ ] One MPN whose lots came back on different terms reads `mixed terms`, not one of them.
 - [ ] Bulk `Send invoices to finance` sends one payment run, totals the currency, names excluded lots,
-      and moves every covered lot to "with finance".
+      flags advance lots as held/priority in the subject and body, and moves every covered lot to
+      "with finance".
 
 Roll-up & filter
 - [ ] The lot selector scopes tiles, progress, alerts and all three sub-tabs; "All lots" restores the total.
-- [ ] The lot-wise table shows verdict, tests n/m, F.A.R., not-acceptable, current report, the blocker and
-      the lifecycle stage.
+- [ ] The lot-wise table shows verdict, tests n/m with F.A.R./not-acceptable/not-conducted counts folded
+      into that cell, the lab fee (amount · terms · state), current report, the blocker and the
+      lifecycle stage.
 - [ ] Clicking a row scopes; clicking again clears; ticking a checkbox never changes scope.
 - [ ] The Progress cell expands the stepper in place without changing the scope.
 

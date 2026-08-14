@@ -22,7 +22,7 @@ import {
   conclusionToLotStatus, processToTestStatus,
 } from "@/integrations/lab-whl";
 import { extractPoTestRequirements } from "@/integrations/doc-extract";
-import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx } from "@/data/enums";
+import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx, LAB_TERMS_LABEL } from "@/data/enums";
 import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure } from "@/integrations/escrow-agent";
 import { bankInitiateTransfer, bankGetTransferStatus } from "@/integrations/banking";
 import { generateIrn } from "@/integrations/einvoice-irp";
@@ -86,11 +86,47 @@ function moveStage(
   const to = stageIdx(stage);
   if (to <= from) return false;
   lot.stage = stage;
+  recordStageEvent(lot, stage, by, o);
+  return true;
+}
+
+/**
+ * Append a lifecycle history row WITHOUT moving the cursor. For the one stage whose truth
+ * is a record rather than a position: `WHL_PAYMENT`.
+ *
+ * The fee is a parallel track, so it routinely settles *after* the chain has moved past
+ * index 1 — on credit terms because the lab tests on account, and on advance terms because
+ * the lot ships and books in before the transfer clears (the hold bites at the bench, not
+ * at the loading dock). By then `moveStage(WHL_PAYMENT)` is a backwards move and no-ops,
+ * which silently dropped the payment's timestamp, author and source mail — the very bug the
+ * comment above warns about, on the one stage most likely to hit it.
+ *
+ * So: record the event either way, and only advance the cursor if it's genuinely forward.
+ */
+function recordStageEvent(
+  lot: Lot,
+  stage: TestingStage,
+  by: string,
+  o: { note?: string; sourceEmailId?: string; manual?: boolean } = {},
+): void {
   (lot.stageHistory ??= []).push({
     id: uid("stg"), stage, at: stamp(), by,
     note: o.note, sourceEmailId: o.sourceEmailId, manual: o.manual,
   });
-  return true;
+}
+
+/** Settle a stage that may already be behind the cursor — see `recordStageEvent`. */
+function settleStage(
+  lot: Lot,
+  stage: TestingStage,
+  by: string,
+  o: { note?: string; sourceEmailId?: string; manual?: boolean } = {},
+): boolean {
+  if (moveStage(lot, stage, by, o)) return true;
+  // already past it: keep the audit row, leave the cursor where the lab has actually got to
+  if ((lot.stageHistory ?? []).some((e) => e.stage === stage)) return false;
+  recordStageEvent(lot, stage, by, o);
+  return false;
 }
 
 
@@ -938,7 +974,9 @@ export const useStore = create<Store>()(
           lot.labPayment.paidAt = d.paidAt ?? stamp();
           lot.labPayment.paidRef = d.paidRef;
           if (d.note) lot.labPayment.note = d.note;
-          moved = moveStage(lot, "WHL_PAYMENT", ME, {
+          // settleStage, not moveStage: the fee often clears after the chain has moved past
+          // the payment node, and the row must survive that (see recordStageEvent)
+          moved = settleStage(lot, "WHL_PAYMENT", ME, {
             note: `Testing fee paid${inv ? ` — invoice ${inv.invoiceNo}, ${inv.currency} ${(inv.amount + (inv.taxAmount ?? 0)).toLocaleString()}` : ""}${d.paidRef ? ` · ref ${d.paidRef}` : ""}.`,
             manual: true,
           });
@@ -1098,9 +1136,12 @@ export const useStore = create<Store>()(
         const wos = b0.lots.filter((l) => !!l.workOrderNo).map((l) => ({
           workOrderNo: l.workOrderNo!, lotCode: l.lotCode, mpn: l.orderLineMpn, testNames: (l.tests ?? []).map((t) => t.name),
           stage: lotStage(l),
-          // so the lab issues its invoice once and can chase it while it's unpaid
+          // the money thread: issue the invoice once, acknowledge a transfer that's with
+          // finance, chase it while it's owed, and hold the bench on unpaid advance terms
           hasInvoice: !!l.labPayment?.invoice,
           feePaid: l.labPayment?.status === "PAID",
+          feeWithFinance: l.labPayment?.status === "SENT_TO_FINANCE",
+          terms: l.labPayment?.invoice?.terms,
         }));
         if (wos.length === 0) { toast.error("No WHL work orders on this order yet."); return; }
         toast.message("Checking the WHL mailbox…");
@@ -1110,6 +1151,7 @@ export const useStore = create<Store>()(
             let matched = 0, unmatched = 0;
             const advanced: string[] = [];
             const invoiced: string[] = [];
+            const settled: string[] = [];
             set((s) => {
               const b = s.orders[orderId]; if (!b) return;
               b.labEmails ??= [];
@@ -1119,9 +1161,16 @@ export const useStore = create<Store>()(
                 const em: LabEmail = {
                   id: uid("em"), direction: "IN", lotId: lot?.id, lotCode: lot?.lotCode, mpn: lot?.orderLineMpn,
                   workOrderNo: msg.workOrderNo, poNo: lot?.clientPoNo, subject: msg.subject, body: msg.body,
-                  at: msg.receivedAt, by: "WHL Reports",
+                  at: msg.receivedAt,
+                  by: msg.kind === "DISPATCH" ? SUPPLIER_RELAY
+                    : msg.kind === "INVOICE" || msg.kind === "PAYMENT_ACK" ? "WHL Accounts"
+                    : "WHL Reports",
                   status: !lot ? "AWAITING_RESPONSE" : msg.kind === "REPORT" ? "REPORT_DELIVERED" : "UPDATE_RECEIVED",
-                  kind: msg.kind === "REPORT" ? "REPORT" : msg.kind === "INVOICE" ? "INVOICE" : "STATUS_UPDATE",
+                  kind: msg.kind === "REPORT" ? "REPORT"
+                    : msg.kind === "INVOICE" ? "INVOICE"
+                    : msg.kind === "PAYMENT_ACK" ? "PAYMENT"
+                    : msg.kind === "DISPATCH" ? "DISPATCH"
+                    : "STATUS_UPDATE",
                   attachments: msg.attachments,
                   matchNote: lot ? undefined : "Subject line carries no work order, lot or report number — match it manually.",
                 };
@@ -1139,7 +1188,9 @@ export const useStore = create<Store>()(
                   t.history.push(auditRow({ by: WHL_BOT, action: "STATUS", target: u.name, before, after: u.status, note: u.note ?? msg.subject, sourceEmailId: em.id }));
                 }
                 if (msg.kind === "REPORT") lot.lastUpdateRequestAt = undefined;
-                // the lab's own invoice for the testing service — store it and file the PDF
+                // the lab's own invoice for the testing service — store it and file the
+                // PDF. The mail is also where the payment mode comes from: advance or
+                // credit is the lab's call per work order, so it's read, never chosen.
                 if (msg.invoice) {
                   lot.labPayment ??= { status: "NOT_REQUESTED" };
                   if (!lot.labPayment.invoice) {
@@ -1148,7 +1199,9 @@ export const useStore = create<Store>()(
                       taxAmount: msg.invoice.taxAmount, currency: msg.invoice.currency,
                       fileName: msg.invoice.fileName, receivedAt: msg.receivedAt,
                       dueDate: msg.invoice.dueDate,
-                      note: `${msg.invoice.processCount} process(es) billed against WO ${msg.workOrderNo ?? "—"}.`,
+                      terms: msg.invoice.terms, creditDays: msg.invoice.creditDays,
+                      ratePerProcess: msg.invoice.ratePerProcess, processCount: msg.invoice.processCount,
+                      note: `${msg.invoice.processCount} process(es) billed against WO ${msg.workOrderNo ?? "—"} at ${msg.invoice.currency} ${msg.invoice.ratePerProcess} each.`,
                       accessLog: [],
                     };
                     // a paid fee stays paid; otherwise the invoice is now ours to settle
@@ -1157,20 +1210,43 @@ export const useStore = create<Store>()(
                       id: uid("doc"), subjectType: "LOT", docType: "WHL_INVOICE",
                       fileName: msg.invoice.fileName, uploadedBy: "WHL (email)", uploadedAt: today(),
                     });
-                    invoiced.push(`${lot.lotCode} → invoice ${msg.invoice.invoiceNo}`);
+                    invoiced.push(`${lot.lotCode} → ${LAB_TERMS_LABEL[msg.invoice.terms].toLowerCase()} invoice ${msg.invoice.invoiceNo}`);
                   }
                 }
-                // lifecycle: the mail says where the lot now is (receipt / started / in
-                // progress / report being written). Forward-only, so a late-arriving
-                // interim mail can't drag a finished lot back down the chain.
-                if (msg.stage && moveStage(lot, msg.stage, WHL_BOT, { note: msg.subject, sourceEmailId: em.id })) {
-                  advanced.push(`${lot.lotCode} → ${TESTING_STAGE_META[msg.stage].label}`);
+                // the supplier's dispatch advice, relayed onto this thread — the lab can't
+                // report a shipment it hasn't received, so this is where the stage comes from
+                if (msg.dispatch && !lot.dispatch) {
+                  lot.dispatch = { ...msg.dispatch, recordedBy: "Supplier (mail)", recordedAt: msg.receivedAt };
+                }
+                // WHL confirming our transfer landed — the only mail that closes the fee
+                if (msg.payment && lot.labPayment?.status !== "PAID") {
+                  lot.labPayment ??= { status: "NOT_REQUESTED" };
+                  lot.labPayment.status = "PAID";
+                  lot.labPayment.paidAt = msg.payment.paidAt;
+                  lot.labPayment.paidRef = msg.payment.paidRef;
+                  settled.push(`${lot.lotCode} → fee paid · ref ${msg.payment.paidRef}`);
+                  b.events.unshift({
+                    id: uid("ev"), eventType: "GENERAL",
+                    message: `WHL confirmed payment of invoice ${msg.payment.invoiceNo} for ${lot.lotCode} (${lot.orderLineMpn}) — ref ${msg.payment.paidRef}.`,
+                    source: "WHL", occurredAt: today(), recordedBy: WHL_BOT,
+                  });
+                }
+                // lifecycle: the mail says where the lot now is (receipt / progress /
+                // report). Forward-only, so a late-arriving interim mail can't drag a
+                // finished lot back down the chain — except the payment stage, which is a
+                // record rather than a position and must keep its row either way.
+                if (msg.stage) {
+                  const advance = msg.stage === "WHL_PAYMENT" ? settleStage : moveStage;
+                  if (advance(lot, msg.stage, WHL_BOT, { note: msg.subject, sourceEmailId: em.id })) {
+                    advanced.push(`${lot.lotCode} → ${TESTING_STAGE_META[msg.stage].label}`);
+                  }
                 }
                 b.labEmails.filter((x) => x.lotId === lot.id && x.direction === "OUT" && x.status === "AWAITING_RESPONSE")
                   .forEach((x) => { x.status = "UPDATE_RECEIVED"; });
               }
             });
-            if (invoiced.length) toast.success(invoiced.join(" · "));
+            if (settled.length) toast.success(settled.join(" · "));
+            else if (invoiced.length) toast.success(invoiced.join(" · "));
             else if (advanced.length) toast.success(advanced.join(" · "));
             else toast.success(`${matched} update(s) applied${unmatched ? ` · ${unmatched} need manual matching` : ""}`);
           } catch (e) { toast.error(`WHL inbox: ${errMsg(e)}`); }
@@ -2498,8 +2574,10 @@ export const useStore = create<Store>()(
       // 2 = 3-entity model · 3 = WHL testing · 4 = full hardcoded seed on every order ·
       // 5-11 = escrow rebuild (8-state machine, milestones, checkEscrowInbox) · 12 = merged with the WHL testing module ·
       // 13 = merged with the RFQ module (client intake → PO, PI-gated approvals) ·
-      // 14 = added ord-201/202 demo orders + Escrow.hkinRpaStartedAt
-      version: 17,
+      // 14 = added ord-201/202 demo orders + Escrow.hkinRpaStartedAt · 15-17 = escrow real-HKin-evidence rework ·
+      // 18 = merged with WHL testing rework: 7-stage lifecycle (started / report-prep dropped),
+      //      advance-vs-credit lab payment terms on the invoice, all-mail-driven stages
+      version: 18,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

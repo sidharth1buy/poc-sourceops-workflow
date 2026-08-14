@@ -63,10 +63,11 @@ export function Panel({
 }
 
 export function Pill({
-  children, tone = "neutral", className,
-}: { children: React.ReactNode; tone?: Tone; className?: string }) {
+  children, tone = "neutral", className, title,
+}: { children: React.ReactNode; tone?: Tone; className?: string; title?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium", toneClass[tone], className)}>
+    <span title={title}
+      className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium", toneClass[tone], className)}>
       {children}
     </span>
   );

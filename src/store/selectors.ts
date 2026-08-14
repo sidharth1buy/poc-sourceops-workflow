@@ -1,10 +1,13 @@
 import type {
-  OrderBundle, JourneyStep, ClientPO, SupplierPO, Lot, LotTest, WhlReport, TestingStage,
+  OrderBundle, JourneyStep, ClientPO, SupplierPO, Lot, LotTest, WhlReport, WhlProcessResult, TestingStage,
   EscrowFeeBreakdown, EscrowOrderStatus,
-  LabPayment, LabPaymentStatus,
+  LabPayment, LabPaymentStatus, LabPaymentTerms,
 } from "@/types";
 import { toUSD } from "@/lib/fx";
-import { WHL_SLA_BUSINESS_DAYS, TESTING_STAGES, TESTING_STAGE_META, TESTING_TERMINAL_STAGE, stageIdx, ESCROW_STATUS_ORDER } from "@/data/enums";
+import {
+  WHL_SLA_BUSINESS_DAYS, TESTING_STAGES, TESTING_STAGE_META, TESTING_TERMINAL_STAGE, stageIdx,
+  ESCROW_STATUS_ORDER, labFeeGates,
+} from "@/data/enums";
 
 export type OrdersMap = Record<string, OrderBundle>;
 
@@ -154,15 +157,59 @@ export function lotTestProgress(lot: Lot) {
 export const currentReport = (lot: Lot): WhlReport | undefined =>
   (lot.reports ?? []).find((r) => r.current) ?? (lot.reports ?? []).slice().sort((a, c) => c.revision - a.revision)[0];
 
+/**
+ * One row per test on a lot, with the current report's process result folded in.
+ *
+ * The tracker and the report's process matrix were the same list rendered twice — the
+ * report's result is already rolled onto `lot.tests[].status` when it's fetched, so the
+ * only thing the second table added was the process note. This joins them so there is
+ * exactly one per-test table on screen, and the report row is what cites its provenance.
+ *
+ * A process on the report with no tracker row still gets a row (report-only): dropping it
+ * would hide a process the lab actually ran.
+ */
+export interface LotTestRow {
+  key: string;
+  name: string;
+  /** absent on a process the report carries but the tracker never had */
+  test?: LotTest;
+  acceptQty?: number;
+  rejectQty?: number;
+  report?: { reportNo: string; result: WhlProcessResult; note?: string };
+}
+
+export function lotTestRows(lot: Lot): LotTestRow[] {
+  const rep = currentReport(lot);
+  const tests = lot.tests ?? [];
+  const rows: LotTestRow[] = tests.map((test) => {
+    const proc = rep?.processes.find((p) => p.name === test.name);
+    return {
+      key: test.id,
+      name: test.name,
+      test,
+      acceptQty: test.acceptQty,
+      rejectQty: test.rejectQty,
+      report: proc ? { reportNo: rep!.reportNo, result: proc.result, note: proc.note } : undefined,
+    };
+  });
+  const extra: LotTestRow[] = (rep?.processes ?? [])
+    .filter((p) => !tests.some((t) => t.name === p.name))
+    .map((p) => ({
+      key: `rep-${p.name}`,
+      name: p.name,
+      acceptQty: p.acceptQty,
+      rejectQty: p.rejectQty,
+      report: { reportNo: rep!.reportNo, result: p.result, note: p.note },
+    }));
+  return [...rows, ...extra];
+}
+
 // ---- testing lifecycle -------------------------------------------------------------
 
 /**
  * Stage inferred purely from what's on the lot. Used as a floor under the stored
  * stage so a lot that already has a report can never *display* as "awaiting
  * dispatch" — and so lots created before the chain existed still read correctly.
- *
- * Report preparation is deliberately not derivable: it's a state inside the lab that
- * nothing on our side of the wire implies. It only ever comes from WHL telling us.
  */
 function derivedStage(lot: Lot): TestingStage | undefined {
   const p = lotTestProgress(lot);
@@ -178,16 +225,62 @@ function derivedStage(lot: Lot): TestingStage | undefined {
 }
 
 // ---- WHL's testing fee ----
-// The fee is a parallel track: the lab works on account, so testing proceeds whether or
-// not we've paid. That means the chain can legitimately run past the payment stage with
-// the fee still outstanding — which is why the stepper reads the record below for that
-// one node instead of trusting its index, and why this is surfaced as its own alert.
+// Which of two things an unpaid fee means depends on the terms the lab stated on its
+// invoice mail:
+//   CREDIT  — a parallel track. The lab tests on account, so the chain legitimately runs
+//             past the payment stage with the fee outstanding. That's why the stepper
+//             reads the record below for that one node instead of trusting its index.
+//   ADVANCE — a real gate. The lab holds the lot until the transfer clears, so nothing
+//             downstream of "components received" can move.
 
 export const labPaymentOf = (lot: Lot): LabPayment => lot.labPayment ?? { status: "NOT_REQUESTED" };
 
 export const labFeeUnpaid = (lot: Lot) => labPaymentOf(lot).status !== "PAID";
 
-/** Lots whose lab invoice is still unpaid, worst first (received > requested > not asked). */
+/** The terms the lab stated on its invoice — undefined until the invoice mail lands. */
+export const labTerms = (lot: Lot): LabPaymentTerms | undefined => labPaymentOf(lot).invoice?.terms;
+
+/** Gross fee on a lot (net + tax), 0 when no invoice has arrived. */
+export function labFeeGross(lot: Lot) {
+  const inv = labPaymentOf(lot).invoice;
+  return inv ? inv.amount + (inv.taxAmount ?? 0) : 0;
+}
+
+/** True while an advance-terms lot is unpaid — the lab is holding it, so the bench is blocked. */
+export const labFeeBlocking = (lot: Lot) => labFeeGates(labTerms(lot), labPaymentOf(lot).status);
+
+/**
+ * The lab fee across every lot of one MPN — what the MPN's testing actually costs and
+ * how it's being paid. Lots of the same MPN can sit on different terms (separate work
+ * orders, separate invoices), so mixed terms are reported as such rather than picked.
+ */
+export function mpnFeeRollup(b: OrderBundle, mpn: string) {
+  const lots = b.lots.filter((l) => l.orderLineMpn === mpn);
+  const invoiced = lots.filter((l) => !!labPaymentOf(l).invoice);
+  const terms = Array.from(new Set(invoiced.map((l) => labTerms(l)!)));
+  const gross = invoiced.reduce((s, l) => s + labFeeGross(l), 0);
+  const rates = Array.from(new Set(invoiced.map((l) => labPaymentOf(l).invoice!.ratePerProcess).filter((r): r is number => r !== undefined)));
+  return {
+    lots: lots.length,
+    invoiced: invoiced.length,
+    gross,
+    currency: labPaymentOf(invoiced[0] ?? lots[0] ?? ({} as Lot)).invoice?.currency ?? "USD",
+    /** one entry unless the MPN's lots came back on different terms */
+    terms,
+    /** single rate per process when every invoice agrees, else undefined */
+    ratePerProcess: rates.length === 1 ? rates[0] : undefined,
+    unpaid: invoiced.filter((l) => labFeeUnpaid(l)).length,
+    unpaidGross: invoiced.filter((l) => labFeeUnpaid(l)).reduce((s, l) => s + labFeeGross(l), 0),
+    /** lots the lab is holding for an unpaid advance — testing can't start on these */
+    blocked: lots.filter((l) => labFeeBlocking(l)).map((l) => l.lotCode),
+  };
+}
+
+/**
+ * Lots whose lab invoice is still unpaid, worst first. An unpaid advance sorts above
+ * everything else regardless of its status: that one is holding up the bench, the rest
+ * are just money owed.
+ */
 export function outstandingLabFees(b: OrderBundle) {
   const rank: Record<LabPaymentStatus, number> = {
     SENT_TO_FINANCE: 0, INVOICE_RECEIVED: 1, REQUESTED: 2, NOT_REQUESTED: 3, PAID: 4,
@@ -199,19 +292,27 @@ export function outstandingLabFees(b: OrderBundle) {
       return {
         lot,
         status: p.status,
+        terms: p.invoice?.terms,
+        blocking: labFeeBlocking(lot),
         invoiceNo: p.invoice?.invoiceNo,
-        gross: (p.invoice?.amount ?? 0) + (p.invoice?.taxAmount ?? 0),
+        gross: labFeeGross(lot),
         currency: p.invoice?.currency ?? "USD",
         dueDate: p.invoice?.dueDate,
       };
     })
-    .sort((a, c) => rank[a.status] - rank[c.status]);
+    .sort((a, c) => Number(c.blocking) - Number(a.blocking) || rank[a.status] - rank[c.status]);
 }
 
 /** Total lab fee still owed on an order, by currency (mock only ever issues one). */
 export function labFeeOutstandingTotal(b: OrderBundle) {
   const rows = outstandingLabFees(b).filter((r) => !!r.invoiceNo);
-  return { count: rows.length, gross: rows.reduce((s, r) => s + r.gross, 0), currency: rows[0]?.currency ?? "USD" };
+  return {
+    count: rows.length,
+    gross: rows.reduce((s, r) => s + r.gross, 0),
+    currency: rows[0]?.currency ?? "USD",
+    /** lots the lab is holding for an unpaid advance — these block testing, not just the ledger */
+    blocking: rows.filter((r) => r.blocking).map((r) => r.lot.lotCode),
+  };
 }
 
 /** The stage to show for a lot: the furthest of what's stored and what's implied. */
