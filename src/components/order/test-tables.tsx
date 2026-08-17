@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Trash2, Receipt, Lock } from "lucide-react";
+import { ChevronDown, ChevronRight, Trash2, Receipt, Lock, Check } from "lucide-react";
 import type { OrderBundle, Lot, TestProcessStatus, MpnTestSpec } from "@/types";
 import {
   TEST_PROCESS_STATUSES, statusTone,
@@ -12,6 +12,7 @@ import { Select } from "@/components/ui/form";
 import { useStore } from "@/store/store";
 import {
   lotTestRows, lotTestProgress, currentReport, mpnFeeRollup, labPaymentOf, labTerms, labFeeBlocking, labFeeGross,
+  labFeeUnpaid,
 } from "@/store/selectors";
 import { cn } from "@/lib/utils";
 
@@ -147,6 +148,35 @@ function TestRow({
         </tr>
       )}
     </>
+  );
+}
+
+/**
+ * The lab's fee for one lot in a table cell: amount, the mode the lab stated on its
+ * invoice, and whether that mode makes an unpaid fee a stop sign or just a ledger item.
+ * Pure display — shared by the order's read-only testing dashboard and the workspace
+ * roll-up, so the same cell reads identically in both.
+ */
+export function LotFeeCell({ lot }: { lot: Lot }) {
+  const pay = labPaymentOf(lot);
+  const terms = labTerms(lot);
+  if (!lot.workOrderNo) return <span className="text-faint">—</span>;
+  if (!pay.invoice) {
+    return <span className="text-faint">{pay.status === "REQUESTED" ? "invoice requested" : "not invoiced"}</span>;
+  }
+  const blocked = labFeeBlocking(lot);
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span className="tnum">{pay.invoice.currency} {labFeeGross(lot).toLocaleString()}</span>
+      {terms && (
+        <Pill tone={LAB_TERMS_TONE[terms]} title={LAB_TERMS_HINT[terms]}>{LAB_TERMS_LABEL[terms]}</Pill>
+      )}
+      {blocked
+        ? <Pill tone="bad"><Lock className="h-3 w-3" /> held</Pill>
+        : labFeeUnpaid(lot)
+        ? <Pill tone={LAB_PAYMENT_TONE[pay.status]}>{pay.status === "SENT_TO_FINANCE" ? "with finance" : "unpaid"}</Pill>
+        : <Pill tone="ok"><Check className="h-3 w-3" /> paid</Pill>}
+    </span>
   );
 }
 

@@ -61,12 +61,14 @@ export function TestingStageBar({ lot, className }: { lot: Lot; className?: stri
  * than showing them done without a timestamp.
  */
 export function TestingStageChain({
-  orderId, lot, canEdit, onRecordDispatch, onSendToFinance, onMarkPaid,
+  orderId, lot, canEdit, readOnly, onRecordDispatch, onSendToFinance, onMarkPaid,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
-  onRecordDispatch: () => void;
-  onSendToFinance: () => void;
-  onMarkPaid: () => void;
+  /** view-only rendering (the order workspace's Testing tab) — no action row at all */
+  readOnly?: boolean;
+  onRecordDispatch?: () => void;
+  onSendToFinance?: () => void;
+  onMarkPaid?: () => void;
 }) {
   const syncWhlInbox = useStore((s) => s.syncWhlInbox);
   const setLotStage = useStore((s) => s.setLotStage);
@@ -175,7 +177,9 @@ export function TestingStageChain({
           </p>
         )}
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        {/* Nothing in this row belongs on a view-only page: every control here either
+            sends mail or moves the stage. The workspace under Testing owns them. */}
+        {!readOnly && <div className="mt-2 flex flex-wrap items-center gap-2">
           {/* mail is the primary driver of every stage; the rest of this row is fallback */}
           {!complete && (
             <Button variant="outline" onClick={() => syncWhlInbox(orderId)}
@@ -196,11 +200,11 @@ export function TestingStageChain({
               mark {TESTING_STAGE_META[nextStage].label.toLowerCase()} done
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* the lab's own bill — a different document from the report, on its own track */}
-      <LabFeePanel orderId={orderId} lot={lot} canEdit={canEdit}
+      <LabFeePanel orderId={orderId} lot={lot} canEdit={canEdit} readOnly={readOnly}
         onSendToFinance={onSendToFinance} onMarkPaid={onMarkPaid} />
 
       {lot.dispatch && (
@@ -233,11 +237,13 @@ export function TestingStageChain({
  * fee is a ledger item (credit) or a stop sign (advance).
  */
 export function LabFeePanel({
-  orderId, lot, canEdit, onSendToFinance, onMarkPaid,
+  orderId, lot, canEdit, readOnly, onSendToFinance, onMarkPaid,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
-  onSendToFinance: () => void;
-  onMarkPaid: () => void;
+  /** view-only: the invoice and its terms still show, the settlement controls don't */
+  readOnly?: boolean;
+  onSendToFinance?: () => void;
+  onMarkPaid?: () => void;
 }) {
   const requestWhlInvoice = useStore((s) => s.requestWhlInvoice);
   const logInvoiceAccess = useStore((s) => s.logInvoiceAccess);
@@ -299,25 +305,25 @@ export function LabFeePanel({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {!inv && (
+        {!readOnly && !inv && (
           <Button variant="outline" disabled={!canEdit} onClick={() => requestWhlInvoice(orderId, lot.id)}
             title={canEdit ? "Email WHL for the testing invoice" : "Only SC / Mgmt may email WHL"}>
             <Mail className="h-4 w-4" /> Request invoice
           </Button>
         )}
-        {inv && (
+        {!readOnly && inv && (
           <Button variant="outline" onClick={() => logInvoiceAccess(orderId, lot.id, "DOWNLOAD")}
             title={`Download ${inv.fileName} — access is logged`}>
             <Download className="h-4 w-4" /> Download invoice
           </Button>
         )}
-        {inv && unpaid && (
+        {!readOnly && inv && unpaid && (
           <Button variant={blocked ? "default" : "outline"} disabled={!canEdit} onClick={onSendToFinance}
             title={canEdit ? "Email finance with the invoice attached to initiate payment" : "Only SC / Mgmt may send this"}>
             <Landmark className="h-4 w-4" /> {pay.status === "SENT_TO_FINANCE" ? "Re-send to finance" : "Send to finance"}
           </Button>
         )}
-        {inv && unpaid && (
+        {!readOnly && inv && unpaid && (
           <Button variant="ghost" disabled={!canEdit} onClick={onMarkPaid}
             title="Record the transfer finance released by hand — normally WHL's payment acknowledgement does this on the next mail sync">
             <Check className="h-4 w-4" /> Mark paid by hand
