@@ -15,8 +15,9 @@ import { remainingToShipLeg, remainingToAllocate, gateReason, sourcedForClientLi
 import type { OrdersMap } from "@/store/selectors";
 import { ESCROW_STATUS_ORDER } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
-import { fileBillOfEntry, getAssessment, getClearanceStatus } from "@/integrations/customs-icegate";
+import { fileBillOfEntry, getAssessment, getClearanceStatus, getIgmEntry } from "@/integrations/customs-icegate";
 import { bookShipment, getTracking, type Carrier } from "@/integrations/logistics";
+import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyFinanceToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
 import { weClearImportCustoms } from "@/lib/incoterm";
 import {
   whlSubmitTestJob, whlPollTestReport, mapVerdict, whlFetchReport, whlSendMail, whlPollInbox,
@@ -63,6 +64,14 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " "); // 
 const auditRow = (a: Omit<TestAuditEntry, "id" | "at">): TestAuditEntry => ({ id: uid("aud"), at: stamp(), ...a });
 
 const ME = "You (demo)";
+
+// Real-world API provider names per carrier — shown in the "calling …" loading popups so the
+// mock booking/tracking reads like a live integration (swap for real endpoints in production).
+const CARRIER_API: Record<string, string> = {
+  DHL: "DHL Global Forwarding",
+  FEDEX: "FedEx Web Services",
+  DELHIVERY: "Delhivery Ship API",
+};
 const WHL_BOT = "WHL inbox (auto)";
 const SUPPLIER_RELAY = "Supplier (relayed)";
 
@@ -443,12 +452,17 @@ interface Store {
   setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus) => void;
   initiatePaymentTransfer: (orderId: string, payId: string) => void; // banking adapter - T/T
 
-  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string }) => string | null;
+  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string; dimensions?: string; goodsDescription?: string; hsCode?: string; declaredValue?: number; declaredCurrency?: string; pickupReadyDate?: string; bookingDocs?: string[]; notifyFinanceBoe?: boolean }) => string | null;
+  // Pre-booking: ask the supplier for the Packing List / Commercial Invoice / COO, then parse the reply.
+  requestShippingDocs: (orderId: string, body?: string) => void;
+  receiveShippingDocs: (orderId: string) => void;
   setShipmentStatus: (orderId: string, shipId: string, status: ShipmentStatus) => void;
   pollShipmentTracking: (orderId: string, shipId: string) => void; // logistics adapter - advance from carrier tracking
 
   // ICEGATE core clearance stepper: file → assess → pay duty → out-of-charge.
-  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL" }) => void;
+  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[] }) => void;
+  sendAwbToCha: (orderId: string, customsId: string) => void;
+  linkIgm: (orderId: string, customsId: string) => void;
   assessCustoms: (orderId: string, customsId: string) => void;
   respondCustomsQuery: (orderId: string, customsId: string) => void;
   payCustomsDuty: (orderId: string, customsId: string) => void;
@@ -1819,6 +1833,35 @@ export const useStore = create<Store>()(
         })();
       },
 
+      // Pre-booking step 1 — email the supplier for the Packing List / Commercial Invoice (+ COO if intl).
+      requestShippingDocs: (orderId, body) => {
+        const b0 = get().orders[orderId]; if (!b0) return;
+        const international = b0.tradeType === "INTERNATIONAL";
+        set((s) => { const b = s.orders[orderId]; if (b) b.shippingDocs = { status: "REQUESTED", requestedAt: today(), requested: shippingDocList(international), requestBody: body }; });
+        const tid = toast.loading("📡 Calling Supplier Mail — request Packing List / Commercial Invoice…");
+        void (async () => {
+          try {
+            const r = await requestSupplierShippingDocs({ to: b0.supplier.name, orderNo: b0.orderNo, international });
+            toast.success(`✓ Docs requested from ${b0.supplier.name} — ${r.requested.join(", ")}`, { id: tid });
+          } catch (e) { toast.error(`Supplier Mail — request failed: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+      // Pre-booking step 2 — parse the supplier's reply into booking particulars (weight/dims/HS/value).
+      receiveShippingDocs: (orderId) => {
+        const b0 = get().orders[orderId]; if (!b0) return;
+        if (b0.shippingDocs?.status !== "REQUESTED") { toast.error("Request the documents from the supplier first."); return; }
+        const totalQty = b0.lines.reduce((a, l) => a + remainingToShipLeg(b0, l.mpn, "INBOUND"), 0);
+        const international = b0.tradeType === "INTERNATIONAL";
+        const tid = toast.loading("📡 Calling Document Extraction — parsing supplier packing list & invoice…");
+        void (async () => {
+          try {
+            const x = await extractSupplierShippingDocs({ totalQty, buyTotal: b0.buyTotal, currency: b0.currency, international });
+            set((s) => { const b = s.orders[orderId]; if (b) b.shippingDocs = { status: "RECEIVED", requestedAt: b.shippingDocs?.requestedAt, receivedAt: today(), requested: b.shippingDocs?.requested ?? shippingDocList(international), pieces: x.pieces, grossWeightKg: x.grossWeightKg, dimensions: x.dimensions, hsCode: x.hsCode, goodsDescription: x.goodsDescription, declaredValue: x.declaredValue, declaredCurrency: x.declaredCurrency, docs: x.docs }; });
+            toast.success(`✓ Supplier replied — ${x.pieces} pcs · ${x.grossWeightKg} kg · ${x.docs.join(", ")}`, { id: tid });
+          } catch (e) { toast.error(`Document Extraction failed: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+
       createShipment: (orderId, input) => {
         const b = get().orders[orderId]; if (!b) return null;
         const lines = input.lines.map((l) => ({ mpn: l.mpn, qty: Math.min(l.qty, remainingToShipLeg(b, l.mpn, input.leg)) })).filter((l) => l.qty > 0);
@@ -1832,22 +1875,43 @@ export const useStore = create<Store>()(
         set((s) => {
           const bb = s.orders[orderId]; if (!bb) return;
           bb.shipments.push({ id, shipmentNo, leg: input.leg, awb: prebooked ? input.awb!.trim() : "booking…", carrier: input.carrier, fromLocation: input.fromLocation, toLocation: input.toLocation,
-            boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines });
+            boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines,
+            dimensions: input.dimensions, goodsDescription: input.goodsDescription, hsCode: input.hsCode,
+            declaredValue: input.declaredValue, declaredCurrency: input.declaredCurrency,
+            pickupReadyDate: input.pickupReadyDate, bookingDocs: input.bookingDocs });
         });
+        // Logistics → Finance: queue a (prior) BoE now — create the customs entry so it shows on the
+        // Customs desk immediately, and mail Finance to file it (no need to wait for arrival at port).
+        if (input.notifyFinanceBoe && input.leg === "INBOUND" && weClearImportCustoms(b)) {
+          const sd = b.shippingDocs;
+          set((s) => {
+            const bb = s.orders[orderId]; if (!bb) return;
+            if (!bb.customs.some((c) => c.shipmentNo === shipmentNo)) {
+              bb.customs.push({ id: uid("ce"), shipmentNo, portCode: "INDEL4", chaName: "Speedwing CHA", currency: "INR", assessableValue: sd?.declaredValue, docs: sd?.docs });
+            }
+          });
+          const ftid = toast.loading("📡 Calling Mail — notify Finance to file the BoE (Prior)…");
+          void (async () => {
+            try {
+              await notifyFinanceToFileBoe({ orderNo: b.orderNo, shipmentNo });
+              toast.success(`✓ Finance notified to file the BoE for ${shipmentNo} — queued on the Customs desk`, { id: ftid });
+            } catch (e) { toast.error(`Mail — notify failed: ${errMsg(e)}`, { id: ftid }); }
+          })();
+        }
         if (prebooked) {
           toast.success(`Inbound shipment recorded · supplier AWB ${input.awb!.trim()}`);
           return id;
         }
-        toast.message("Booking AWB with carrier…");
+        const bookProvider = CARRIER_API[input.carrier] ?? input.carrier;
+        const bookTid = toast.loading(`📡 Calling ${bookProvider} — Book Shipment API…`);
         // Logistics adapter: the carrier assigns the real AWB + tracking URL asynchronously
         void (async () => {
           try {
             const booked = await bookShipment({ carrier: (input.carrier as Carrier) || "DHL", leg: input.leg, reference: shipmentNo, from: input.fromLocation, to: input.toLocation, pieces: input.boxCount, weightKg: input.grossWeightKg });
             set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; } });
-            toast.success(`AWB booked: ${booked.awb}`);
-          } catch (e) { set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) sh.awb = "booking failed"; }); toast.error(`Logistics: ${errMsg(e)}`); }
+            toast.success(`✓ ${bookProvider} — AWB ${booked.awb} booked`, { id: bookTid });
+          } catch (e) { set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) sh.awb = "booking failed"; }); toast.error(`${bookProvider} — booking failed: ${errMsg(e)}`, { id: bookTid }); }
         })();
-        toast.success("Shipment created");
         return id;
       },
       setShipmentStatus: (orderId, shipId, status) => {
@@ -1868,13 +1932,14 @@ export const useStore = create<Store>()(
         }
         const trackSeq: ShipmentStatus[] = ["DISPATCHED", "IN_TRANSIT", "AT_CUSTOMS", "ARRIVED", "DELIVERED"];
         const hopsDone = trackSeq.indexOf(sh.status) + 1; // PLANNED → 0 → first checkpoint
-        toast.message("Polling carrier tracking…");
+        const trackProvider = CARRIER_API[sh.carrier] ?? sh.carrier;
+        const trackTid = toast.loading(`📡 Calling ${trackProvider} — Track Shipment API…`);
         void (async () => {
           try {
             const t = await getTracking(sh.awb, hopsDone, sh.fromLocation, sh.toLocation);
             set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) { x.status = t.mappedStatus; x.lastLocation = t.lastLocation; if (t.mappedStatus === "DISPATCHED") x.dispatchDate = today(); if (t.mappedStatus === "DELIVERED" || t.mappedStatus === "ARRIVED") x.deliveryDate = today(); } });
-            toast.success(`Tracking: ${t.mappedStatus} · ${t.lastLocation}`);
-          } catch (e) { toast.error(`Logistics: ${errMsg(e)}`); }
+            toast.success(`📦 ${trackProvider} — ${t.mappedStatus} · ${t.lastLocation}`, { id: trackTid });
+          } catch (e) { toast.error(`${trackProvider} — tracking failed: ${errMsg(e)}`, { id: trackTid }); }
         })();
       },
 
@@ -1887,30 +1952,64 @@ export const useStore = create<Store>()(
         set((s) => {
           const b = s.orders[orderId]; if (!b) return;
           const existing = b.customs.find((c) => c.shipmentNo === e.shipmentNo);
-          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
+          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, docs: e.docs ?? b0.shippingDocs?.docs, awbSentToChaAt: existing?.awbSentToChaAt, igmStatus: "AWAITING" as const, igmNo: undefined, igmItemNo: undefined, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
           if (existing) Object.assign(existing, entry); else b.customs.push(entry);
         });
-        toast.message("Filing BOE with ICEGATE…");
+        const fileTid = toast.loading("📡 Calling ICEGATE — File Bill of Entry API…");
         void (async () => {
           try {
             const filed = await fileBillOfEntry({ orderId, shipmentNo: e.shipmentNo, portCode: e.portCode, chaName: e.chaName, assessableValue: e.assessableValue });
             set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo); if (c) { c.beNo = filed.beNo; c.beDate = filed.beDate; c.icegateAckNo = filed.icegateAckNo; c.stage = "FILED"; } });
-            toast.success(`BOE filed: ${filed.beNo} (${e.boeType === "PRIOR" ? "Prior" : "on-arrival"})`);
-          } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
+            toast.success(`✓ ICEGATE — BoE ${filed.beNo} filed (${e.boeType === "PRIOR" ? "Prior" : "on-arrival"})`, { id: fileTid });
+          } catch (err) { toast.error(`ICEGATE — filing failed: ${errMsg(err)}`, { id: fileTid }); }
+        })();
+      },
+      // CHA hand-off — send the AWB (+ docs) to the CHA so they can file the BoE and link the IGM.
+      sendAwbToCha: (orderId, customsId) => {
+        const b0 = get().orders[orderId]; if (!b0) return;
+        const c0 = b0.customs.find((x) => x.id === customsId); if (!c0) return;
+        const sh = b0.shipments.find((s) => s.shipmentNo === c0.shipmentNo);
+        if (!sh || sh.awb === "booking…" || sh.awb === "booking failed") { toast.error("No AWB yet — book the shipment (or add the AWB) first."); return; }
+        set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) c.awbSentToChaAt = today(); });
+        const tid = toast.loading(`📡 Calling Mail — send AWB ${sh.awb} + docs to CHA ${c0.chaName ?? ""}…`);
+        void (async () => {
+          try {
+            await sendAwbToChaMail({ cha: c0.chaName ?? "CHA", orderNo: b0.orderNo, shipmentNo: c0.shipmentNo, awb: sh.awb });
+            toast.success(`✓ AWB ${sh.awb} sent to CHA — they can file & link the BoE to the IGM`, { id: tid });
+          } catch (e) { toast.error(`Mail — send failed: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+      // IGM linkage — the BoE can only proceed once the courier's manifest (IGM) lists the AWB, i.e.
+      // the flight has landed. Before that it's "Manifest Not Found" and a Prior BoE stays pending.
+      linkIgm: (orderId, customsId) => {
+        const b0 = get().orders[orderId]; if (!b0) return;
+        const c0 = b0.customs.find((x) => x.id === customsId);
+        if (!c0 || !c0.beNo || c0.beNo === "filing…") { toast.error("File the BoE first."); return; }
+        const sh = b0.shipments.find((s) => s.shipmentNo === c0.shipmentNo);
+        const landed = !!sh && ["AT_CUSTOMS", "ARRIVED", "DELIVERED"].includes(sh.status);
+        if (!landed) { toast.error("Manifest Not Found — the courier hasn't filed the IGM yet (flight not landed). The Prior BoE stays pending until your AWB appears in a filed manifest."); return; }
+        const tid = toast.loading("📡 Calling ICEGATE — matching AWB against filed IGMs…");
+        void (async () => {
+          try {
+            const igm = await getIgmEntry({ awb: sh!.awb, portCode: c0.portCode });
+            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.igmNo = igm.igmNo; c.igmItemNo = igm.itemNo; c.igmStatus = "MATCHED"; c.stage = "IGM_LINKED"; } });
+            toast.success(`✓ Manifest matched — IGM ${igm.igmNo} item ${igm.itemNo} · AWB ${sh!.awb}. BoE linked; assessment can proceed.`, { id: tid });
+          } catch (e) { toast.error(`ICEGATE — IGM lookup failed: ${errMsg(e)}`, { id: tid }); }
         })();
       },
       // ICEGATE step 2 — faceless assessment: computes duty + auto-clears or flags for a query.
       assessCustoms: (orderId, customsId) => {
         const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
         if (!c0 || !c0.beNo || c0.beNo === "filing…") { toast.error("File the BOE first."); return; }
-        toast.message("Running faceless assessment…");
+        if (c0.stage !== "IGM_LINKED") { toast.error("Link the IGM first — the courier's manifest must list your AWB before assessment."); return; }
+        const assessTid = toast.loading("📡 Calling ICEGATE — Faceless Assessment API…");
         void (async () => {
           try {
             const a = await getAssessment(c0.beNo!, c0.assessableValue ?? 0);
             set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.duty = a.duty; c.totalDuty = a.duty.totalDuty; c.assessment = a.review; c.query = a.query; c.stage = "ASSESSED"; } });
-            if (a.review === "FLAGGED") toast.message(`Assessment flagged — ${a.query}`);
-            else toast.success("Auto-cleared by faceless assessment");
-          } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
+            if (a.review === "FLAGGED") toast.warning(`🚩 ICEGATE flagged — ${a.query}`, { id: assessTid });
+            else toast.success("✓ ICEGATE — auto-cleared by faceless assessment", { id: assessTid });
+          } catch (err) { toast.error(`ICEGATE — assessment failed: ${errMsg(err)}`, { id: assessTid }); }
         })();
       },
       // ICEGATE step 2b — respond to a flagged query (valuation/HS/BIS), unblocking duty payment.
@@ -1932,13 +2031,13 @@ export const useStore = create<Store>()(
       clearCustoms: (orderId, customsId) => {
         const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
         if (!c0 || c0.stage !== "DUTY_PAID" || !c0.beNo) { toast.error("Pay the duty first."); return; }
-        toast.message("Requesting Out-of-Charge from ICEGATE…");
+        const oocTid = toast.loading("📡 Calling ICEGATE — Out-of-Charge API…");
         void (async () => {
           try {
             const cleared = await getClearanceStatus(c0.beNo!);
             set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.icegateRef = cleared.icegateRef; c.oocDate = cleared.oocDate; c.filedAt = cleared.oocDate; c.stage = "CLEARED"; } });
-            toast.success(`Out of Charge — ICEGATE ${cleared.icegateRef}. Shipment released from customs.`);
-          } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
+            toast.success(`✓ ICEGATE — Out of Charge ${cleared.icegateRef}. Shipment released from customs.`, { id: oocTid });
+          } catch (err) { toast.error(`ICEGATE — clearance failed: ${errMsg(err)}`, { id: oocTid }); }
         })();
       },
 
@@ -2638,8 +2737,12 @@ export const useStore = create<Store>()(
       // 14 = added ord-201/202 demo orders + Escrow.hkinRpaStartedAt · 15-17 = escrow real-HKin-evidence rework ·
       // 18 = merged with WHL testing rework: 7-stage lifecycle (started / report-prep dropped),
       //      advance-vs-credit lab payment terms on the invoice, all-mail-driven stages ·
-      // 19 = staged customs clearance (file BoE → faceless assessment → duty → out-of-charge) on CustomsEntry
-      version: 19,
+      // 19 = staged customs clearance (file BoE → faceless assessment → duty → out-of-charge) on CustomsEntry ·
+      // 20 = shipment booking particulars (pieces/weight/dims/HS/value/docs) captured at carrier booking ·
+      // 21 = pre-booking supplier document request/receipt (OrderBundle.shippingDocs) ·
+      // 22 = editable request email (shippingDocs.requestBody) + supplier docs forwarded to customs (CustomsEntry.docs) ·
+      // 23 = IGM↔BoE linkage: AWB→CHA + IGM_LINKED stage + igmStatus/igmNo/igmItemNo/awbSentToChaAt
+      version: 23,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

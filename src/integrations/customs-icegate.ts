@@ -40,6 +40,17 @@ export function getAssessment(beNo: string, assessableValue: number) {
     { latencyMs: [1000, 3000] });
 }
 
+export interface IgmEntryRes { igmNo: string; itemNo: string; awb: string; status: "MATCHED" }
+
+// IGM lookup — the courier files the Import General Manifest when the flight lands; the BoE only
+// links (and can be assessed) once the AWB is found inside a filed IGM. The store checks the shipment
+// has actually landed before calling this (otherwise it's a "Manifest Not Found" on ICEGATE's side).
+export function getIgmEntry(req: { awb: string; portCode?: string }) {
+  return mockCall<IgmEntryRes>(SYS, LABEL, "GET /igm/lookup", req,
+    () => ({ igmNo: `IGM-${Math.floor(1000000 + Math.random() * 8999999)}`, itemNo: `${Math.floor(1 + Math.random() * 400)}`, awb: req.awb, status: "MATCHED" }),
+    { latencyMs: [500, 1500] });
+}
+
 export function getClearanceStatus(beNo: string) {
   return mockCall<ClearanceRes>(SYS, LABEL, `GET /bill-of-entry/${beNo}/clearance`, { beNo },
     () => ({ beNo, icegateRef: ref("ICE"), oocDate: today(), status: "OUT_OF_CHARGE" }),

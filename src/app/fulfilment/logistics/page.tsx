@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Truck, FlaskConical } from "lucide-react";
+import { Truck, FlaskConical, Mail } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allShipments, currentReport, remainingToShipLeg } from "@/store/selectors";
+import { incotermPlan } from "@/lib/incoterm";
 import { Panel, Pill, StatusPill, Button, DataTable, PageHeader, type Col } from "@/components/ui/primitives";
-import { CreateShipmentModal } from "@/components/order/modals";
+import { CreateShipmentModal, RequestDocsModal } from "@/components/order/modals";
+import { TrackingTimeline } from "@/components/order/tracking-timeline";
 import { qtyfmt } from "@/lib/utils";
 
 export default function LogisticsBoardPage() {
@@ -21,7 +23,11 @@ export default function LogisticsBoardPage() {
 function LogisticsBoard() {
   const orders = useStore((s) => s.orders);
   const poll = useStore((s) => s.pollShipmentTracking);
+  const receiveDocs = useStore((s) => s.receiveShippingDocs);
+  const [composeFor, setComposeFor] = useState("");
+  const [trackId, setTrackId] = useState<string | null>(null); // row expanded to its tracking timeline
   const rows = allShipments(orders);
+  const tracked = rows.find((r) => r.id === trackId);
   const router = useRouter();
   const params = useSearchParams();
 
@@ -32,14 +38,28 @@ function LogisticsBoard() {
   const lots = (order?.lots ?? []).filter((l) => lotIds.includes(l.id));
   const [modalOpen, setModalOpen] = useState(lots.length > 0);
 
+  // deep link from an order's Shipments tab: ?order=…&book=1 → open the booking form for that order
+  const initialBook = params.get("book") === "1" ? orderId : "";
+  const [bookFor, setBookFor] = useState(initialBook);
+  const bookOrder = orders[bookFor];
+
+  // Pending inbound bookings — the logistics team works from here (no Order-page access): every
+  // active order that still has inbound qty to move and no inbound shipment booked yet.
+  const toBook = Object.values(orders).filter((o) =>
+    !["CLOSED", "CANCELLED"].includes(o.status) &&
+    !o.shipments.some((s) => s.leg === "INBOUND") &&
+    o.lines.some((l) => remainingToShipLeg(o, l.mpn, "INBOUND") > 0),
+  );
+
   const clearLink = () => { setModalOpen(false); router.replace("/fulfilment/logistics"); };
+  const clearBook = () => { setBookFor(""); router.replace("/fulfilment/logistics"); };
 
   const cols: Col<(typeof rows)[number]>[] = [
-    { key: "no", header: "Order", render: (r) => <Link href={`/fulfilment/orders/${r.orderId}`} className="font-mono text-xs text-primary hover:underline">{r.orderNo}</Link> },
+    { key: "no", header: "Order", render: (r) => <Link href={`/fulfilment/orders/${r.orderId}`} onClick={(e) => e.stopPropagation()} className="font-mono text-xs text-primary hover:underline">{r.orderNo}</Link> },
     { key: "leg", header: "Leg", render: (r) => <Pill tone={r.leg === "INBOUND" ? "info" : "neutral"}>{r.leg === "INBOUND" ? "Inbound" : "Outbound"}</Pill> },
     { key: "carrier", header: "Carrier", render: (r) => r.carrier },
     { key: "awb", header: "AWB", render: (r) => r.trackingUrl
-      ? <a href={r.trackingUrl} target="_blank" rel="noreferrer" className="font-mono text-xs text-primary hover:underline">{r.awb}</a>
+      ? <a href={r.trackingUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-mono text-xs text-primary hover:underline">{r.awb}</a>
       : <span className="font-mono text-xs text-muted-foreground">{r.awb}</span> },
     { key: "qty", header: "Qty", align: "right", render: (r) => qtyfmt(r.lines.reduce((a, l) => a + l.qty, 0)) },
     { key: "status", header: "Tracking", render: (r) => <StatusPill status={r.status} /> },
@@ -51,7 +71,7 @@ function LogisticsBoard() {
     { key: "act", header: "", align: "right", render: (r) => {
       const terminal = r.status === "DELIVERED" || r.status === "CANCELLED";
       const booked = r.awb !== "booking…" && r.awb !== "booking failed";
-      return <Button variant="outline" onClick={() => booked && poll(r.orderId, r.id)} disabled={terminal || !booked} title={!booked ? "AWB not booked" : terminal ? "Terminal status" : "Poll carrier"}>Refresh tracking</Button>;
+      return <Button variant="outline" onClick={(e) => { e.stopPropagation(); if (booked) poll(r.orderId, r.id); }} disabled={terminal || !booked} title={!booked ? "AWB not booked" : terminal ? "Terminal status" : "Poll carrier"}>Refresh tracking</Button>;
     } },
   ];
 
@@ -70,7 +90,7 @@ function LogisticsBoard() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Logistics" description={<>Every carrier AWB across orders (inbound &amp; outbound). <b className="text-foreground">Refresh tracking</b> polls the carrier (mock) and advances the checkpoint. Inbound AWBs are hidden from the client; outbound from the supplier.</>} />
+      <PageHeader title="Logistics" description={<><b className="text-foreground">Book pending inbound shipments</b> from the “To book” queue, then track every carrier AWB across orders. <b className="text-foreground">Refresh tracking</b> polls the carrier (mock) and advances the checkpoint. Inbound AWBs are hidden from the client; outbound from the supplier.</>} />
 
       {/* arrived here from the testing screen — book the movement without hunting for the order */}
       {lots.length > 0 && order && (
@@ -128,7 +148,62 @@ function LogisticsBoard() {
         </Panel>
       )}
 
-      <Panel><DataTable columns={cols} rows={rows} empty="No shipments yet — book one from an order's Shipments tab." /></Panel>
+      {/* Pending inbound bookings — the logistics team's work queue (no Order-page access needed) */}
+      {toBook.length > 0 && (
+        <Panel title={`To book · ${toBook.length}`}>
+          <p className="mb-3 text-xs text-muted-foreground">Active orders with inbound goods to move and no AWB booked yet. Book the carrier (or record the supplier&apos;s AWB) right here.</p>
+          <div className="space-y-2">
+            {toBook.map((o) => {
+              const qty = o.lines.reduce((a, l) => a + remainingToShipLeg(o, l.mpn, "INBOUND"), 0);
+              const weBook = incotermPlan(o.incoterm).weBookFreight;
+              const sd = o.shippingDocs;
+              return (
+                <div key={o.id} className="rounded-lg border p-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <Link href={`/fulfilment/orders/${o.id}`} className="font-mono text-xs font-medium text-primary hover:underline">{o.orderNo}</Link>
+                      <Pill tone="neutral">Incoterm {o.incoterm}</Pill>
+                      <span className="text-xs text-muted-foreground">{o.supplier.name} → 1Buy hub · {qtyfmt(qty)} to move</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!weBook ? (
+                        <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Record supplier AWB</Button>
+                      ) : !sd ? (
+                        <Button onClick={() => setComposeFor(o.id)}><Mail className="h-4 w-4" /> Request docs from supplier</Button>
+                      ) : sd.status === "REQUESTED" ? (
+                        <Button variant="outline" onClick={() => receiveDocs(o.id)}>Check supplier reply</Button>
+                      ) : (
+                        <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Book shipment</Button>
+                      )}
+                    </div>
+                  </div>
+                  {weBook && sd && (
+                    <div className="mt-2 rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                      {sd.status === "REQUESTED"
+                        ? <>📧 Requested <b className="text-foreground">{sd.requested.join(", ")}</b> from {o.supplier.name} — awaiting reply. Click <b>Check supplier reply</b>.</>
+                        : <>✓ Supplier replied: <b className="text-foreground">{sd.pieces} pcs · {sd.grossWeightKg} kg · {sd.dimensions}</b> · docs: {sd.docs?.join(", ")}. Weight &amp; dimensions pre-fill the booking form.</>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
+
+      <Panel>
+        <p className="mb-2 text-xs text-muted-foreground">Click a row to see its DHL scan history.</p>
+        <DataTable columns={cols} rows={rows} onRowClick={(r) => setTrackId((prev) => (prev === r.id ? null : r.id))} empty="No shipments yet — pending bookings appear in the “To book” panel above." />
+        {tracked && (
+          <div className="mt-3 rounded-lg border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-medium">{tracked.orderNo} · {tracked.leg === "INBOUND" ? "Inbound" : "Outbound"} · {tracked.shipmentNo}</span>
+              <button className="text-xs text-primary hover:underline" onClick={() => setTrackId(null)}>close</button>
+            </div>
+            <TrackingTimeline s={tracked} isImport={tracked.leg === "INBOUND" && tracked.tradeType === "INTERNATIONAL"} />
+          </div>
+        )}
+      </Panel>
 
       {modalOpen && lots.length > 0 && order && (
         <CreateShipmentModal orderId={order.id}
@@ -138,6 +213,12 @@ function LogisticsBoard() {
             from: origins[0], leg: "INBOUND",
           }}
           onClose={() => setModalOpen(false)} />
+      )}
+
+      {composeFor && <RequestDocsModal orderId={composeFor} onClose={() => setComposeFor("")} />}
+
+      {bookOrder && (
+        <CreateShipmentModal orderId={bookOrder.id} onClose={clearBook} />
       )}
     </div>
   );

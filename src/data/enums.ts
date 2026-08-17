@@ -60,6 +60,7 @@ export const NAV_GROUPS = [
     { href: "/fulfilment/approvals", label: "Approvals", icon: "CheckCircle2" },
     { href: "/fulfilment/testing", label: "Testing", icon: "FlaskConical" },
     { href: "/fulfilment/logistics", label: "Logistics", icon: "Truck" },
+    { href: "/fulfilment/customs", label: "Customs", icon: "Stamp" },
     { href: "/fulfilment/warehouse", label: "Warehouse", icon: "Warehouse" },
     { href: "/fulfilment/delivery", label: "Delivery", icon: "PackageCheck" },
   ] },

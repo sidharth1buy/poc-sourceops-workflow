@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  ArrowLeft, Lock, Check, CircleDot, Circle, Ban, ChevronRight, Upload, Building2, Plus,
+  ArrowLeft, Lock, Check, CircleDot, Circle, Ban, ChevronRight, Upload, Building2, Plus, Truck, Stamp,
 } from "lucide-react";
-import type { OrderBundle, JourneyStep, ShipmentStatus, CustomsStage } from "@/types";
+import type { OrderBundle, JourneyStep, ShipmentStatus } from "@/types";
 import { WORKSPACE_TABS, type WorkspaceTab } from "@/data/enums";
 import { Panel, Pill, StatusPill, Button, Progress, Field, DataTable, type Col } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/form";
@@ -14,14 +15,15 @@ import { usd, toUSD } from "@/lib/fx";
 import { useStore } from "@/store/store";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
 import { incotermPlan, supplierHandlesCustoms, weClearImportCustoms } from "@/lib/incoterm";
-import { trackingTimeline } from "@/integrations/logistics";
+import { TrackingTimeline } from "@/components/order/tracking-timeline";
+import { CustomsEntryCard } from "@/components/order/customs-card";
 import {
-  AddStepModal, AddLotModal, AddPaymentModal, CreateShipmentModal,
-  FileBOEModal, AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
+  AddStepModal, AddLotModal, AddPaymentModal,
+  AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
 } from "@/components/order/modals";
 import { TestingTab } from "@/components/order/testing-tab";
 
-type ModalKey = null | "addStep" | "addLot" | "addPayment" | "shipment" | "boe" | "allocate" | "event" | "doc" | "pi";
+type ModalKey = null | "addStep" | "addLot" | "addPayment" | "allocate" | "event" | "doc" | "pi";
 
 export function OrderWorkspace({ id }: { id: string }) {
   const b = useStore((s) => s.orders[id]);
@@ -108,8 +110,8 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Journey" && <JourneyTab b={b} id={id} onAdd={() => setModal("addStep")} />}
       {tab === "Testing" && <TestingTab b={b} id={id} onAdd={() => setModal("addLot")} />}
       {tab === "Payments" && <PaymentsTab b={b} id={id} onAdd={() => setModal("addPayment")} />}
-      {tab === "Shipments" && <ShipmentsTab b={b} id={id} onAdd={() => setModal("shipment")} />}
-      {tab === "Customs" && <CustomsTab b={b} id={id} onFile={() => setModal("boe")} />}
+      {tab === "Shipments" && <ShipmentsTab b={b} id={id} />}
+      {tab === "Customs" && <CustomsTab b={b} id={id} />}
       {tab === "Delivery" && <DeliveryTab b={b} id={id} onAllocate={() => setModal("allocate")} />}
       {tab === "Documents" && <DocumentsTab b={b} onUpload={() => setModal("doc")} />}
       {tab === "Events" && <EventsTab b={b} onAdd={() => setModal("event")} />}
@@ -118,8 +120,6 @@ export function OrderWorkspace({ id }: { id: string }) {
       {modal === "addStep" && <AddStepModal orderId={id} onClose={close} />}
       {modal === "addLot" && <AddLotModal orderId={id} onClose={close} />}
       {modal === "addPayment" && <AddPaymentModal orderId={id} onClose={close} />}
-      {modal === "shipment" && <CreateShipmentModal orderId={id} onClose={close} />}
-      {modal === "boe" && <FileBOEModal orderId={id} onClose={close} />}
       {modal === "allocate" && <AllocateDeliveryModal orderId={id} onClose={close} />}
       {modal === "event" && <AddEventModal orderId={id} onClose={close} />}
       {modal === "doc" && <UploadDocModal orderId={id} onClose={close} />}
@@ -391,46 +391,11 @@ const SHIP_STATUSES: ShipmentStatus[] = ["PLANNED", "DISPATCHED", "IN_TRANSIT", 
 
 const AT_1BUY = new Set<ShipmentStatus>(["ARRIVED", "DELIVERED"]);
 
-function fmtHop(base: number, hrs: number) {
-  const d = new Date(base + hrs * 3_600_000);
-  return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-}
 
-// DHL-style scan history for a shipment card — a vertical timeline derived from the current status.
-function TrackingTimeline({ s, isImport }: { s: OrderBundle["shipments"][number]; isImport: boolean }) {
-  const hops = trackingTimeline(s.status, s.fromLocation, s.toLocation, isImport);
-  if (hops.length === 0) return <p className="mt-3 text-xs text-muted-foreground">Booked — awaiting carrier pickup scan.</p>;
-  const base = new Date(s.dispatchDate || s.deliveryDate || "2026-08-14T04:00:00Z").getTime();
-  return (
-    <div className="mt-3 border-t pt-3">
-      <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Tracking · {s.carrier}
-        {s.awb && s.awb !== "booking…" && s.awb !== "booking failed" && <span className="font-mono text-[10px] normal-case text-faint">{s.awb}</span>}
-      </div>
-      <ol>
-        {hops.map((h, i) => {
-          const last = i === hops.length - 1;
-          return (
-            <li key={i} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", last ? "bg-primary ring-2 ring-primary/30" : "bg-ok")} />
-                {!last && <span className="min-h-[1.75rem] w-px flex-1 bg-border" />}
-              </div>
-              <div className="pb-2">
-                <div className={cn("text-sm text-foreground", last && "font-medium")}>{h.description}</div>
-                <div className="text-xs text-muted-foreground">{h.location} · {fmtHop(base, h.hrs)} · <span className="font-mono text-[10px]">{h.status}</span></div>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
-}
-
-function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () => void }) {
+function ShipmentsTab({ b, id }: { b: OrderBundle; id: string }) {
   const setShipmentStatus = useStore((s) => s.setShipmentStatus);
   const pollShipmentTracking = useStore((s) => s.pollShipmentTracking);
+  const router = useRouter();
   const plan = incotermPlan(b.incoterm);
   const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
   const atHub = inbound.some((s) => AT_1BUY.has(s.status));
@@ -442,7 +407,12 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
         <span><b>Incoterm {plan.incoterm}</b> · {plan.summary}</span>
         <span className="text-faint">{b.tradeType}</span>
       </div>
-      <div className="flex justify-end"><Button variant="outline" onClick={onAdd}><Plus className="h-4 w-4" /> {plan.weBookFreight ? "Book / create shipment" : "Record supplier AWB"}</Button></div>
+      {/* Booking is done by the Logistics desk (Logistics menu) — hand off with the order context. */}
+      <div className="flex justify-end">
+        <Button variant="outline" onClick={() => router.push(`/fulfilment/logistics?order=${id}&book=1`)}>
+          <Truck className="h-4 w-4" /> {plan.weBookFreight ? "Book at Logistics desk" : "Record AWB at Logistics desk"}
+        </Button>
+      </div>
       {b.shipments.length === 0 ? <Empty text="No shipments yet." /> : b.shipments.map((s) => {
         const trackable = s.leg === "INBOUND" && s.awb !== "booking…" && s.awb !== "booking failed" && s.status !== "DELIVERED";
         // Held at customs: an import we clear can't advance past AT_CUSTOMS until the BoE is cleared in ICEGATE.
@@ -464,6 +434,16 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
               🔒 Held at customs — file the <b>Bill of Entry</b> on the <b>Customs</b> tab. The shipment clears once ICEGATE gives out-of-charge.
             </div>
           )}
+          {(s.hsCode || s.declaredValue || s.bookingDocs?.length || s.goodsDescription) && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {s.goodsDescription && <span>Goods: <span className="text-foreground">{s.goodsDescription}</span></span>}
+              {s.hsCode && <span>HS <span className="font-mono text-foreground">{s.hsCode}</span></span>}
+              {!!s.declaredValue && <span>Value: <span className="text-foreground">{s.declaredCurrency} {s.declaredValue.toLocaleString()}</span></span>}
+              {s.dimensions && <span>Dims {s.dimensions}</span>}
+              {s.pickupReadyDate && <span>Pickup {s.pickupReadyDate}</span>}
+              {s.bookingDocs?.length ? <span>Docs: <span className="text-foreground">{s.bookingDocs.join(", ")}</span></span> : null}
+            </div>
+          )}
           <div className="mt-3 flex flex-wrap gap-1.5">{s.lines.map((l, i) => <Pill key={i} tone="neutral"><span className="font-mono text-[10px]">{l.mpn}</span> ×{qtyfmt(l.qty)}</Pill>)}</div>
           <TrackingTimeline s={s} isImport={s.leg === "INBOUND" && b.tradeType === "INTERNATIONAL"} />
         </Panel>
@@ -477,69 +457,9 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
   );
 }
 
-const CUSTOMS_STAGES: { key: CustomsStage; label: string }[] = [
-  { key: "FILED", label: "BoE filed" },
-  { key: "ASSESSED", label: "Assessment" },
-  { key: "DUTY_PAID", label: "Duty paid" },
-  { key: "CLEARED", label: "Out of charge" },
-];
-const cStageIdx = (s?: CustomsStage) => CUSTOMS_STAGES.findIndex((x) => x.key === s);
 
-// One inbound shipment's ICEGATE clearance stepper: file → assess → pay duty → out-of-charge.
-function CustomsEntryCard({ c, id }: { c: OrderBundle["customs"][number]; id: string }) {
-  const assess = useStore((s) => s.assessCustoms);
-  const respond = useStore((s) => s.respondCustomsQuery);
-  const payDuty = useStore((s) => s.payCustomsDuty);
-  const clear = useStore((s) => s.clearCustoms);
-  const at = cStageIdx(c.stage);
-  const flaggedOpen = c.assessment === "FLAGGED" && !c.queryResolvedAt;
-  return (
-    <div className="space-y-3 rounded-lg border p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
-          <span className="font-mono text-xs">{c.shipmentNo}</span> · BE {c.beNo || "—"}
-          {c.boeType && <Pill tone="neutral">{c.boeType === "PRIOR" ? "Prior BoE" : "On-arrival"}</Pill>}
-        </div>
-        <div className="text-xs text-muted-foreground">Port {c.portCode ?? "—"} · CHA {c.chaName ?? "—"}{c.icegateAckNo ? ` · ack ${c.icegateAckNo}` : ""}</div>
-      </div>
-      {/* stage chips */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {CUSTOMS_STAGES.map((st, i) => (
-          <span key={st.key} className="flex items-center gap-1.5">
-            <Pill tone={at >= i ? "ok" : "neutral"}>{st.label}{at >= i ? " ✓" : ""}</Pill>
-            {i < CUSTOMS_STAGES.length - 1 && <span className="text-faint">→</span>}
-          </span>
-        ))}
-      </div>
-      {/* duty breakdown once assessed */}
-      {c.duty && (
-        <div className="text-xs text-muted-foreground">
-          Duty (BCD {money(c.duty.bcd, c.currency)} + SWS {money(c.duty.sws, c.currency)} + IGST {money(c.duty.igst, c.currency)}) = <b className="text-foreground">{money(c.duty.totalDuty, c.currency)}</b>
-          {c.dutyPaidAt && <span className="text-ok"> · paid {c.dutyPaidAt}</span>}
-        </div>
-      )}
-      {/* flagged query */}
-      {flaggedOpen && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-warn-bg p-2.5 text-xs text-warn">
-          <span>🚩 Flagged in faceless assessment — {c.query}</span>
-          <Button variant="outline" onClick={() => respond(id, c.id)} className="py-1 text-xs">Respond to query</Button>
-        </div>
-      )}
-      {c.assessment === "FLAGGED" && c.queryResolvedAt && <p className="text-xs text-ok">Query responded on {c.queryResolvedAt} — assessment resolved.</p>}
-      {/* current-stage action */}
-      <div className="flex flex-wrap items-center gap-2">
-        {c.stage === "FILED" && <Button variant="outline" onClick={() => assess(id, c.id)}>Run faceless assessment</Button>}
-        {c.stage === "ASSESSED" && !flaggedOpen && <Button variant="outline" onClick={() => payDuty(id, c.id)}>Pay duty on ICEGATE</Button>}
-        {c.stage === "DUTY_PAID" && <Button variant="outline" onClick={() => clear(id, c.id)}>Get Out-of-Charge</Button>}
-        {c.stage === "CLEARED" && (
-          <span className="inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Out of Charge · ICEGATE {c.icegateRef} · {c.oocDate} — shipment released, journey gate satisfied.</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CustomsTab({ b, id, onFile }: { b: OrderBundle; id: string; onFile: () => void }) {
+function CustomsTab({ b, id }: { b: OrderBundle; id: string }) {
+  const router = useRouter();
   if (!customsApplies(b)) return <Panel title="Customs"><Empty text="No customs — domestic order with no lab-abroad testing." /></Panel>;
   // DDP: the supplier delivers duty-paid and clears India customs — 1Buy files no BoE.
   if (supplierHandlesCustoms(b)) return (
@@ -551,20 +471,14 @@ function CustomsTab({ b, id, onFile }: { b: OrderBundle; id: string; onFile: () 
     </Panel>
   );
   const a19 = b.tradeType === "DOMESTIC";
-  const hasInbound = b.shipments.some((s) => s.leg === "INBOUND");
   return (
-    <Panel title="Customs — ICEGATE clearance" actions={<Button variant="outline" onClick={onFile} disabled={!hasInbound}><Plus className="h-4 w-4" /> File BoE</Button>}>
+    <Panel title="Customs — ICEGATE clearance" actions={<Button variant="outline" onClick={() => router.push(`/fulfilment/customs?order=${id}`)}><Stamp className="h-4 w-4" /> Open Customs desk</Button>}>
       <div className="mb-3 rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
-        <b>Incoterm {b.incoterm}</b> — 1Buy clears India import customs. Our CHA files the BoE in ICEGATE, then: faceless assessment → pay duty → Out-of-Charge (which releases the shipment from customs).
+        <b>Incoterm {b.incoterm}</b> — 1Buy clears India import customs. Clearance (file BoE → faceless assessment → pay duty → Out-of-Charge) is worked by the <b>Customs</b> team on the <b>Customs desk</b>; this tab shows status.
       </div>
-      {!hasInbound && (
-        <div className="mb-3 rounded-lg border bg-warn-bg p-2.5 text-xs text-warn">
-          You need an <b>inbound shipment</b> before you can file a BoE. Open the <b>Shipments</b> tab → <b>Create shipment</b> → leg <b>INBOUND</b>, then come back here and <b>File BoE</b>.
-        </div>
-      )}
       {b.customs.length === 0
-        ? <Empty text="No BoE yet — file one against the inbound shipment to start clearance." />
-        : <div className="space-y-3">{b.customs.map((c) => <CustomsEntryCard key={c.id} c={c} id={id} />)}</div>}
+        ? <Empty text="No BoE yet — the Customs desk files it against the inbound shipment to start clearance." />
+        : <div className="space-y-3">{b.customs.map((c) => <CustomsEntryCard key={c.id} c={c} id={id} readOnly />)}</div>}
       {a19 && <p className="mt-3 text-xs text-warn">Domestic order, but testing uses a lab abroad — customs applies on export &amp; re-import (A19).</p>}
     </Panel>
   );

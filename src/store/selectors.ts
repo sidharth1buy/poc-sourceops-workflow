@@ -479,7 +479,7 @@ export const allEscrow = (o: OrdersMap) =>
 
 export const allShipments = (o: OrdersMap) =>
   Object.values(o).flatMap((b) => b.shipments.map((s) => ({
-    ...s, orderId: b.id, orderNo: b.orderNo,
+    ...s, orderId: b.id, orderNo: b.orderNo, tradeType: b.tradeType,
     hasCustoms: b.customs.some((c) => c.shipmentNo === s.shipmentNo && !!c.icegateRef),
     needsCustoms: customsApplies(b), // A19: domestic + WHL-abroad still needs a BOE
   })));
