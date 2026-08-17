@@ -706,14 +706,14 @@ export function CreateShipmentModal({
     const id = createShipment(orderId, {
       leg, carrier, fromLocation: from || "—", toLocation: to || "—",
       boxCount: bookMode ? pieces : 1, grossWeightKg: bookMode ? weightKg : 0, lines,
-      awb: awb.trim() || undefined, // supplier's (record mode) or a manual AWB in book mode; else we book it
+      awb: recordMode ? awb.trim() : undefined, // supplier's AWB (record mode); otherwise we book it
       notifyFinanceBoe: weClear ? notifyFinance : undefined,
       ...(bookMode ? { dimensions: dims.trim() || undefined, goodsDescription: goods.trim(), hsCode: hsCode.trim(), declaredValue, declaredCurrency: declaredCcy, pickupReadyDate: pickupDate || undefined, bookingDocs: docs } : {}),
     });
     if (id) onClose();
   };
   return (
-    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel={recordMode ? "Record inbound AWB" : leg === "INBOUND" ? (awb.trim() ? "Record AWB" : "Book AWB (DHL)") : "Create shipment"} disabled={!canSave} />}>
+    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel={recordMode ? "Record inbound AWB" : leg === "INBOUND" ? "Book AWB (DHL)" : "Create shipment"} disabled={!canSave} />}>
       <div className="space-y-3">
         {leg === "INBOUND" && (
           <div className={cn("rounded-lg border p-2.5 text-xs", recordMode ? "bg-warn-bg text-warn" : "border-primary/40 bg-accent-soft text-primary")}>
@@ -745,13 +745,8 @@ export function CreateShipmentModal({
           }}><option value="INBOUND">INBOUND (supplier → us)</option><option value="OUTBOUND">OUTBOUND (us → client)</option></Select></Labeled>
           <Labeled label={recordMode ? "Carrier (supplier's)" : "Carrier"} hint={recordMode ? "who the supplier shipped with" : "AWB assigned on booking"}><Select value={carrier} onChange={(e) => setCarrier(e.target.value)}><option>DHL</option><option>FEDEX</option><option>DELHIVERY</option></Select></Labeled>
         </div>
-        {leg === "INBOUND" && (
-          <Labeled
-            label={recordMode ? "Supplier's AWB / tracking no." : "AWB (optional)"}
-            hint={recordMode ? "the number on the supplier's dispatch advice" : "if the logistics partner already gave you one — otherwise we book it"}
-          >
-            <Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 12345678" />
-          </Labeled>
+        {recordMode && (
+          <Labeled label="Supplier's AWB / tracking no." hint="the number on the supplier's dispatch advice"><Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 12345678" /></Labeled>
         )}
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="From"><Input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="origin" /></Labeled>

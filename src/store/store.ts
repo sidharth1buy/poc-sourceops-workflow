@@ -72,6 +72,27 @@ const CARRIER_API: Record<string, string> = {
   FEDEX: "FedEx Web Services",
   DELHIVERY: "Delhivery Ship API",
 };
+
+// Operational journey phases that mirror the physical shipment/customs state (as opposed to
+// manual/finance decisions like PAYMENT, TESTING, DELIVERY, CLOSE).
+const OPERATIONAL_PHASES = new Set(["EXPORT", "IMPORT", "CUSTOMS", "RELABEL"]);
+// Advance the journey through operational milestones (ship → customs → received) whose gates are
+// now satisfied by the real shipment/customs state, so the progress bar reflects reality without a
+// manual click. Stops at the first non-operational step or an unsatisfied gate. (Mutates the draft.)
+function autoAdvanceOperational(bb: OrderBundle) {
+  let advanced = false;
+  for (let guard = 0; guard < bb.journey.length + 2; guard++) {
+    const idx = bb.journey.findIndex((x) => x.status === "IN_PROGRESS" || x.status === "BLOCKED");
+    if (idx < 0) break;
+    const step = bb.journey[idx];
+    if (!OPERATIONAL_PHASES.has(step.phase) || gateReason(bb, step)) break;
+    step.status = "DONE";
+    advanced = true;
+    if (idx + 1 < bb.journey.length) bb.journey[idx + 1].status = "IN_PROGRESS";
+    else { bb.status = "CLOSED"; break; }
+  }
+  if (advanced && bb.status === "ON_HOLD") bb.status = "ACTIVE";
+}
 const WHL_BOT = "WHL inbox (auto)";
 const SUPPLIER_RELAY = "Supplier (relayed)";
 
@@ -655,7 +676,10 @@ export const useStore = create<Store>()(
           : spo.lines.some((l) => lineTesting(l) === "SUPPLIER_SELF") ? "SUPPLIER_SELF" : "NONE";
         const buyerAddr = linked.length ? st.clientPos.find((c) => c.clientPoNo === linked[0].clientPoNo)?.deliveryAddress : undefined;
         const id = uid("ord");
-        const no = 156 + Object.keys(st.orders).length;
+        // Next order number = one above the highest existing (seeds run up to 202). The old
+        // `156 + count` collided with seeded numbers (180–202) once the order count landed there,
+        // producing two different orders that print the same ORD-2026-000xxx.
+        const no = Math.max(202, ...Object.values(st.orders).map((o) => parseInt(o.orderNo.match(/(\d+)$/)?.[1] ?? "0", 10) || 0)) + 1;
         const created = today();
         const dispatch = addDays(created, spo.leadTimeDays + spo.testingTimeDays);
         const delivery = addDays(dispatch, spo.deliveryTimeDays);
@@ -743,6 +767,7 @@ export const useStore = create<Store>()(
           if (idx + 1 < bb.journey.length) bb.journey[idx + 1].status = "IN_PROGRESS";
           else bb.status = "CLOSED";
           if (bb.status === "ON_HOLD") bb.status = "ACTIVE";
+          autoAdvanceOperational(bb); // cascade through any now-satisfied operational steps
         });
         toast.success(`Step done: ${step.name}`);
       },
@@ -754,7 +779,7 @@ export const useStore = create<Store>()(
       }); toast.success("Step added"); },
 
       markRelabelled: (orderId) => {
-        set((s) => { const b = s.orders[orderId]; if (b) b.relabelledAt = today(); });
+        set((s) => { const b = s.orders[orderId]; if (b) { b.relabelledAt = today(); autoAdvanceOperational(b); } });
         toast.success("Goods marked as received at 1Buy");
       },
 
@@ -1875,7 +1900,7 @@ export const useStore = create<Store>()(
         set((s) => {
           const bb = s.orders[orderId]; if (!bb) return;
           bb.shipments.push({ id, shipmentNo, leg: input.leg, awb: prebooked ? input.awb!.trim() : "booking…", carrier: input.carrier, fromLocation: input.fromLocation, toLocation: input.toLocation,
-            boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines,
+            boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines, updatedAt: stamp(),
             dimensions: input.dimensions, goodsDescription: input.goodsDescription, hsCode: input.hsCode,
             declaredValue: input.declaredValue, declaredCurrency: input.declaredCurrency,
             pickupReadyDate: input.pickupReadyDate, bookingDocs: input.bookingDocs });
@@ -1908,15 +1933,16 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const booked = await bookShipment({ carrier: (input.carrier as Carrier) || "DHL", leg: input.leg, reference: shipmentNo, from: input.fromLocation, to: input.toLocation, pieces: input.boxCount, weightKg: input.grossWeightKg });
-            set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; } });
+            set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; sh.updatedAt = stamp(); } });
             toast.success(`✓ ${bookProvider} — AWB ${booked.awb} booked`, { id: bookTid });
           } catch (e) { set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) sh.awb = "booking failed"; }); toast.error(`${bookProvider} — booking failed: ${errMsg(e)}`, { id: bookTid }); }
         })();
         return id;
       },
       setShipmentStatus: (orderId, shipId, status) => {
-        set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === shipId);
-          if (sh) { sh.status = status; if (status === "DISPATCHED") sh.dispatchDate = today(); if (status === "DELIVERED" || status === "ARRIVED") sh.deliveryDate = today(); } });
+        set((s) => { const bb = s.orders[orderId]; const sh = bb?.shipments.find((x) => x.id === shipId);
+          if (sh) { sh.status = status; sh.updatedAt = stamp(); if (status === "DISPATCHED") sh.dispatchDate = today(); if (status === "DELIVERED" || status === "ARRIVED") sh.deliveryDate = today(); }
+          if (bb) autoAdvanceOperational(bb); });
       },
       // Logistics adapter: poll the carrier and advance the shipment one checkpoint.
       pollShipmentTracking: (orderId, shipId) => {
@@ -1937,7 +1963,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const t = await getTracking(sh.awb, hopsDone, sh.fromLocation, sh.toLocation);
-            set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) { x.status = t.mappedStatus; x.lastLocation = t.lastLocation; if (t.mappedStatus === "DISPATCHED") x.dispatchDate = today(); if (t.mappedStatus === "DELIVERED" || t.mappedStatus === "ARRIVED") x.deliveryDate = today(); } });
+            set((s) => { const bb = s.orders[orderId]; const x = bb?.shipments.find((y) => y.id === shipId); if (x) { x.status = t.mappedStatus; x.lastLocation = t.lastLocation; x.updatedAt = stamp(); if (t.mappedStatus === "DISPATCHED") x.dispatchDate = today(); if (t.mappedStatus === "DELIVERED" || t.mappedStatus === "ARRIVED") x.deliveryDate = today(); } if (bb) autoAdvanceOperational(bb); });
             toast.success(`📦 ${trackProvider} — ${t.mappedStatus} · ${t.lastLocation}`, { id: trackTid });
           } catch (e) { toast.error(`${trackProvider} — tracking failed: ${errMsg(e)}`, { id: trackTid }); }
         })();
@@ -2035,7 +2061,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const cleared = await getClearanceStatus(c0.beNo!);
-            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.icegateRef = cleared.icegateRef; c.oocDate = cleared.oocDate; c.filedAt = cleared.oocDate; c.stage = "CLEARED"; } });
+            set((s) => { const bb = s.orders[orderId]; const c = bb?.customs.find((x) => x.id === customsId); if (c) { c.icegateRef = cleared.icegateRef; c.oocDate = cleared.oocDate; c.filedAt = cleared.oocDate; c.stage = "CLEARED"; } if (bb) autoAdvanceOperational(bb); });
             toast.success(`✓ ICEGATE — Out of Charge ${cleared.icegateRef}. Shipment released from customs.`, { id: oocTid });
           } catch (err) { toast.error(`ICEGATE — clearance failed: ${errMsg(err)}`, { id: oocTid }); }
         })();
@@ -2741,8 +2767,9 @@ export const useStore = create<Store>()(
       // 20 = shipment booking particulars (pieces/weight/dims/HS/value/docs) captured at carrier booking ·
       // 21 = pre-booking supplier document request/receipt (OrderBundle.shippingDocs) ·
       // 22 = editable request email (shippingDocs.requestBody) + supplier docs forwarded to customs (CustomsEntry.docs) ·
-      // 23 = IGM↔BoE linkage: AWB→CHA + IGM_LINKED stage + igmStatus/igmNo/igmItemNo/awbSentToChaAt
-      version: 23,
+      // 23 = IGM↔BoE linkage: AWB→CHA + IGM_LINKED stage + igmStatus/igmNo/igmItemNo/awbSentToChaAt ·
+      // 24 = Shipment.updatedAt (newest-first sorting on the Logistics/Customs desks)
+      version: 24,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

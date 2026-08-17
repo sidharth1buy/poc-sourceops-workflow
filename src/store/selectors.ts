@@ -135,7 +135,7 @@ export function gateReason(b: OrderBundle, step: JourneyStep): string | null {
   // demand full customs clearance out of order (goods sit AT_CUSTOMS until the BoE is filed).
   if (step.phase === "IMPORT") return b.shipments.some((s) => s.leg === "INBOUND" && s.status !== "PLANNED") ? null : "Inbound shipment not dispatched yet — book it on the Shipments tab (leg INBOUND).";
   if (step.phase === "CUSTOMS") return b.customs.some((c) => !!c.icegateRef) ? null : "BOE not filed in ICEGATE yet.";
-  if (step.phase === "RELABEL") return b.relabelledAt ? null : "Goods not yet marked as received at 1Buy (Journey tab).";
+  if (step.phase === "RELABEL") return (b.relabelledAt || b.shipments.some((s) => s.leg === "INBOUND" && ["ARRIVED", "DELIVERED"].includes(s.status))) ? null : "Goods not yet received at 1Buy — deliver the inbound shipment (or mark received on the Journey tab).";
   if (step.phase === "DELIVERY" && n.includes("dispatch")) { // can't dispatch to client until every line is mapped to demand
     return b.lines.every((l) => unmappedForOrderLine(b, l) === 0) ? null : "Not all order lines are mapped to a client PO yet (Allocations tab).";
   }
