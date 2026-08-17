@@ -645,7 +645,18 @@ export interface Shipment {
   carrierRef?: string;   // carrier booking ref (from the logistics adapter)
   trackingUrl?: string;
   lastLocation?: string; // latest tracking checkpoint location (incl. origin/away country)
+  // ---- booking particulars (captured when 1Buy books the carrier — needed by DHL + customs) ----
+  dimensions?: string;        // L×W×H cm
+  goodsDescription?: string;  // commodity on the AWB / invoice
+  hsCode?: string;            // tariff heading
+  declaredValue?: number;     // customs/insurance value
+  declaredCurrency?: string;
+  pickupReadyDate?: string;   // EXW pickup date
+  bookingDocs?: string[];     // documents confirmed at booking (Commercial Invoice, Packing List, COO, …)
 }
+
+// Core ICEGATE clearance stepper: file BoE → link IGM → faceless assessment → pay duty → out-of-charge.
+export type CustomsStage = "FILED" | "IGM_LINKED" | "ASSESSED" | "DUTY_PAID" | "CLEARED";
 
 export interface CustomsEntry {
   id: string;
@@ -658,6 +669,22 @@ export interface CustomsEntry {
   currency?: string;
   icegateRef?: string;
   filedAt?: string;
+  docs?: string[]; // supporting docs on file for clearance (eSANCHIT) — from the supplier's shipping-doc reply
+  awbSentToChaAt?: string;             // AWB doc handed to the CHA (needed before they can link the IGM)
+  igmStatus?: "AWAITING" | "MATCHED";  // IGM (Import General Manifest) linkage — courier files it when the flight lands
+  igmNo?: string;                      // IGM number the AWB matched to
+  igmItemNo?: string;                  // line/item number within that manifest
+  // ---- core clearance stepper ----
+  stage?: CustomsStage;
+  boeType?: "PRIOR" | "ON_ARRIVAL"; // filed before arrival (prior) or after IGM (on-arrival)
+  icegateAckNo?: string;
+  assessableValue?: number;         // retained to compute duty at the assessment stage
+  assessment?: "AUTO_CLEAR" | "FLAGGED"; // faceless assessment outcome
+  query?: string;                   // if flagged, what customs asked for
+  queryResolvedAt?: string;
+  duty?: { bcd: number; sws: number; igst: number; totalDuty: number };
+  dutyPaidAt?: string;
+  oocDate?: string;
 }
 
 export interface SourcingAllocation {
@@ -737,6 +764,26 @@ export interface OrderBundle extends Order {
   events: OrderEvent[];
   einvoice?: EInvoice;
   relabelledAt?: string; // set when goods are physically received + relabelled to the masking entity at the hub — gates RELABEL
+  shippingDocs?: ShippingDocRequest; // pre-booking doc exchange with the supplier (Packing List / CI / COO)
+}
+
+// Pre-booking: we ask the supplier for shipping documents; their reply gives us the particulars
+// (pieces/weight/dims from the packing list, value/HS from the commercial invoice) needed to book.
+export interface ShippingDocRequest {
+  status: "REQUESTED" | "RECEIVED";
+  requestedAt?: string;
+  receivedAt?: string;
+  requested: string[]; // documents asked for
+  requestBody?: string; // the (editable) email body actually sent
+  // extracted from the reply (present once RECEIVED)
+  pieces?: number;
+  grossWeightKg?: number;
+  dimensions?: string;
+  hsCode?: string;
+  goodsDescription?: string;
+  declaredValue?: number;
+  declaredCurrency?: string;
+  docs?: string[];
 }
 
 // ---- RFQ Module Types ----

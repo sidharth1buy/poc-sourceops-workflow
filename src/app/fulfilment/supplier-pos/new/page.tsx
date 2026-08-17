@@ -7,7 +7,6 @@ import { ArrowLeft, Plus, Trash2, Upload, FileText, Check } from "lucide-react";
 import { Panel, Button, PageHeader, FormTabBar, StickyBar } from "@/components/ui/primitives";
 import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
 import { CURRENCIES, INCOTERMS, PAYMENT_METHODS, DISPATCH_MODES, LAB_LOCATIONS, TEST_FAILURE_BEARERS, CREDIT_DAYS, STANDARD_TNC } from "@/data/enums";
-import { SUPPLIERS } from "@/data/directory";
 import { useStore } from "@/store/store";
 import { sourcedForClientLine } from "@/store/selectors";
 import { extractSupplierPo } from "@/integrations/doc-extract";
@@ -27,25 +26,13 @@ export default function CreateSupplierPoPage() {
   const canLink = clientPos.length > 0;
 
   const [f, setF] = useState({
-    supplierId: "", supplier: "", supplierGstin: "", supplierState: "", tradeType: "INTERNATIONAL", currency: "USD", incoterm: "EXW",
+    supplier: "", supplierGstin: "", supplierState: "", tradeType: "INTERNATIONAL", currency: "USD", incoterm: "EXW",
     sellerPaymentMode: "ADVANCE", creditDays: 30, lead: 1, testDays: 6, delivery: 9, testing: "WHL",
     referenceNo: "", paymentMethod: "Advance via T/T", dispatchedThrough: "", destination: "", destinationPort: "",
     warranty: "1 year", testFailureBearer: "SUPPLIER", labLocation: "WHL Shenzhen & Hong Kong", relabelCost: 0,
     packing: "Packing list + Commercial Invoice; WHSO# on outside box",
   });
   const set = (k: string, v: string | number) => setF((p) => ({ ...p, [k]: v }));
-  const handleSelectSupplier = (supplierId: string) => {
-    const supplier = SUPPLIERS.find((s) => s.id === supplierId);
-    if (supplier) {
-      setF((p) => ({
-        ...p,
-        supplierId: supplier.id,
-        supplier: supplier.name,
-        supplierGstin: supplier.gstin || "",
-        supplierState: supplier.country === "IN" ? "Tamil Nadu" : supplier.country,
-      }));
-    }
-  };
   // Standard T&Cs — tickboxes seeded from STANDARD_TNC defaults + a free-text "additional".
   const [tnc, setTnc] = useState<Record<string, boolean>>(() => Object.fromEntries(STANDARD_TNC.map((t) => [t.id, t.on])));
   const [tncExtra, setTncExtra] = useState("");
@@ -161,13 +148,8 @@ export default function CreateSupplierPoPage() {
       {tab === "supplier" && (
       <Panel title="Supplier & terms">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-          <Labeled label="Supplier (us → supplier)" required>
-            <Select value={f.supplierId} onChange={(e) => handleSelectSupplier(e.target.value)}>
-              <option value="">-- Select a supplier --</option>
-              {SUPPLIERS.map((supplier) => (
-                <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
-              ))}
-            </Select>
+          <Labeled label="Supplier (us → supplier)" required hint="Parsed from the uploaded PO / PI — edit if needed">
+            <Input value={f.supplier} onChange={(e) => set("supplier", e.target.value)} placeholder="Upload a PO to auto-fill, or type the supplier's name" />
           </Labeled>
           <Labeled label="Supplier GSTIN / UIN"><Input value={f.supplierGstin} onChange={(e) => set("supplierGstin", e.target.value)} placeholder="(blank if foreign)" /></Labeled>
           <Labeled label="Supplier state / region"><Input value={f.supplierState} onChange={(e) => set("supplierState", e.target.value)} placeholder="Hong Kong" /></Labeled>

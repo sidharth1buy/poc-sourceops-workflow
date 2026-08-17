@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
-  ArrowLeft, Lock, Check, CircleDot, Circle, Ban, ChevronRight, Upload, Building2, Plus,
+  ArrowLeft, Lock, Check, CircleDot, Circle, Ban, ChevronRight, Upload, Building2, Plus, Truck, Stamp,
 } from "lucide-react";
 import type { OrderBundle, JourneyStep, ShipmentStatus } from "@/types";
 import { WORKSPACE_TABS, type WorkspaceTab } from "@/data/enums";
@@ -13,15 +14,16 @@ import { money, qtyfmt, cn, fmtAddress } from "@/lib/utils";
 import { usd, toUSD } from "@/lib/fx";
 import { useStore } from "@/store/store";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
-import { incotermPlan, supplierHandlesCustoms } from "@/lib/incoterm";
-import { trackingTimeline } from "@/integrations/logistics";
+import { incotermPlan, supplierHandlesCustoms, weClearImportCustoms } from "@/lib/incoterm";
+import { TrackingTimeline } from "@/components/order/tracking-timeline";
+import { CustomsEntryCard } from "@/components/order/customs-card";
 import {
-  AddStepModal, AddLotModal, AddPaymentModal, CreateShipmentModal,
-  FileBOEModal, AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
+  AddStepModal, AddLotModal, AddPaymentModal,
+  AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
 } from "@/components/order/modals";
 import { TestingTab } from "@/components/order/testing-tab";
 
-type ModalKey = null | "addStep" | "addLot" | "addPayment" | "shipment" | "boe" | "allocate" | "event" | "doc" | "pi";
+type ModalKey = null | "addStep" | "addLot" | "addPayment" | "allocate" | "event" | "doc" | "pi";
 
 export function OrderWorkspace({ id }: { id: string }) {
   const b = useStore((s) => s.orders[id]);
@@ -108,8 +110,8 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Journey" && <JourneyTab b={b} id={id} onAdd={() => setModal("addStep")} />}
       {tab === "Testing" && <TestingTab b={b} id={id} onAdd={() => setModal("addLot")} />}
       {tab === "Payments" && <PaymentsTab b={b} id={id} onAdd={() => setModal("addPayment")} />}
-      {tab === "Shipments" && <ShipmentsTab b={b} id={id} onAdd={() => setModal("shipment")} />}
-      {tab === "Customs" && <CustomsTab b={b} onFile={() => setModal("boe")} />}
+      {tab === "Shipments" && <ShipmentsTab b={b} id={id} />}
+      {tab === "Customs" && <CustomsTab b={b} id={id} />}
       {tab === "Delivery" && <DeliveryTab b={b} id={id} onAllocate={() => setModal("allocate")} />}
       {tab === "Documents" && <DocumentsTab b={b} onUpload={() => setModal("doc")} />}
       {tab === "Events" && <EventsTab b={b} onAdd={() => setModal("event")} />}
@@ -118,8 +120,6 @@ export function OrderWorkspace({ id }: { id: string }) {
       {modal === "addStep" && <AddStepModal orderId={id} onClose={close} />}
       {modal === "addLot" && <AddLotModal orderId={id} onClose={close} />}
       {modal === "addPayment" && <AddPaymentModal orderId={id} onClose={close} />}
-      {modal === "shipment" && <CreateShipmentModal orderId={id} onClose={close} />}
-      {modal === "boe" && <FileBOEModal orderId={id} onClose={close} />}
       {modal === "allocate" && <AllocateDeliveryModal orderId={id} onClose={close} />}
       {modal === "event" && <AddEventModal orderId={id} onClose={close} />}
       {modal === "doc" && <UploadDocModal orderId={id} onClose={close} />}
@@ -230,7 +230,7 @@ function OverviewTab({ b, pct, current, onUploadPI }: { b: OrderBundle; pct: num
             <Field label="Sell total (client →)">{money(b.sellTotal, b.currency)}{nonUsd && <span className="ml-1 text-xs text-faint">≈ {usd(toUSD(b.sellTotal, b.currency))}</span>}</Field>
             <Field label="Margin">{money(b.sellTotal - b.buyTotal, b.currency)} · {b.sellTotal > 0 ? Math.round(((b.sellTotal - b.buyTotal) / b.sellTotal) * 100) : 0}%</Field>
             {!!b.relabelCost && <Field label="Relabelling cost (hub)">{money(b.relabelCost, b.currency)} <span className="text-xs text-faint">(landed cost)</span></Field>}
-            <Field label="Relabelled to 1Buy">{b.relabelledAt ? <span className="text-ok">{b.relabelledAt}</span> : <span className="text-faint">not yet</span>}</Field>
+            <Field label="Received at 1Buy">{b.relabelledAt ? <span className="text-ok">{b.relabelledAt}</span> : <span className="text-faint">not yet</span>}</Field>
             <Field label="Currency">{b.currency} <span className="text-xs text-faint">(USD canonical)</span></Field>
           </Panel>
           <Panel title="Where we are">
@@ -337,11 +337,11 @@ function JourneyTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () =>
     <Panel title="Journey — manual state machine"
       actions={<div className="flex gap-2">
         <Button variant="outline" onClick={onAdd}><Plus className="h-4 w-4" /> Add step</Button>
-        {needsRelabel && <Button variant="outline" onClick={() => markRelabelled(id)}>Mark relabelled</Button>}
+        {needsRelabel && <Button variant="outline" onClick={() => markRelabelled(id)}>Mark received at 1Buy</Button>}
         <Button onClick={() => advanceStep(id)} disabled={!current || !!reason}>Mark current done</Button>
       </div>}>
       {reason && <div className="mb-3 inline-flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg px-3 py-2 text-xs text-warn"><Lock className="h-3.5 w-3.5" /> Gate blocked — {reason}</div>}
-      {b.relabelledAt && <div className="mb-3 inline-flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-ok-bg px-3 py-2 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Relabelled to 1Buy on {b.relabelledAt}</div>}
+      {b.relabelledAt && <div className="mb-3 inline-flex items-center gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-ok-bg px-3 py-2 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Received at 1Buy on {b.relabelledAt}</div>}
       <ol className="space-y-1">
         {b.journey.map((s) => {
           const isCurrent = s.id === current?.id;
@@ -391,46 +391,11 @@ const SHIP_STATUSES: ShipmentStatus[] = ["PLANNED", "DISPATCHED", "IN_TRANSIT", 
 
 const AT_1BUY = new Set<ShipmentStatus>(["ARRIVED", "DELIVERED"]);
 
-function fmtHop(base: number, hrs: number) {
-  const d = new Date(base + hrs * 3_600_000);
-  return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
-}
 
-// DHL-style scan history for a shipment card — a vertical timeline derived from the current status.
-function TrackingTimeline({ s, isImport }: { s: OrderBundle["shipments"][number]; isImport: boolean }) {
-  const hops = trackingTimeline(s.status, s.fromLocation, s.toLocation, isImport);
-  if (hops.length === 0) return <p className="mt-3 text-xs text-muted-foreground">Booked — awaiting carrier pickup scan.</p>;
-  const base = new Date(s.dispatchDate || s.deliveryDate || "2026-08-14T04:00:00Z").getTime();
-  return (
-    <div className="mt-3 border-t pt-3">
-      <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Tracking · {s.carrier}
-        {s.awb && s.awb !== "booking…" && s.awb !== "booking failed" && <span className="font-mono text-[10px] normal-case text-faint">{s.awb}</span>}
-      </div>
-      <ol>
-        {hops.map((h, i) => {
-          const last = i === hops.length - 1;
-          return (
-            <li key={i} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", last ? "bg-primary ring-2 ring-primary/30" : "bg-ok")} />
-                {!last && <span className="min-h-[1.75rem] w-px flex-1 bg-border" />}
-              </div>
-              <div className="pb-2">
-                <div className={cn("text-sm text-foreground", last && "font-medium")}>{h.description}</div>
-                <div className="text-xs text-muted-foreground">{h.location} · {fmtHop(base, h.hrs)} · <span className="font-mono text-[10px]">{h.status}</span></div>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
-}
-
-function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () => void }) {
+function ShipmentsTab({ b, id }: { b: OrderBundle; id: string }) {
   const setShipmentStatus = useStore((s) => s.setShipmentStatus);
   const pollShipmentTracking = useStore((s) => s.pollShipmentTracking);
+  const router = useRouter();
   const plan = incotermPlan(b.incoterm);
   const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
   const atHub = inbound.some((s) => AT_1BUY.has(s.status));
@@ -442,13 +407,21 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
         <span><b>Incoterm {plan.incoterm}</b> · {plan.summary}</span>
         <span className="text-faint">{b.tradeType}</span>
       </div>
-      <div className="flex justify-end"><Button variant="outline" onClick={onAdd}><Plus className="h-4 w-4" /> {plan.weBookFreight ? "Book / create shipment" : "Record supplier AWB"}</Button></div>
+      {/* Booking is done by the Logistics desk (Logistics menu) — hand off with the order context. */}
+      <div className="flex justify-end">
+        <Button variant="outline" onClick={() => router.push(`/fulfilment/logistics?order=${id}&book=1`)}>
+          <Truck className="h-4 w-4" /> {plan.weBookFreight ? "Book at Logistics desk" : "Record AWB at Logistics desk"}
+        </Button>
+      </div>
       {b.shipments.length === 0 ? <Empty text="No shipments yet." /> : b.shipments.map((s) => {
         const trackable = s.leg === "INBOUND" && s.awb !== "booking…" && s.awb !== "booking failed" && s.status !== "DELIVERED";
+        // Held at customs: an import we clear can't advance past AT_CUSTOMS until the BoE is cleared in ICEGATE.
+        const heldAtCustoms = s.leg === "INBOUND" && s.status === "AT_CUSTOMS" && weClearImportCustoms(b)
+          && !b.customs.some((c) => c.shipmentNo === s.shipmentNo && !!c.icegateRef);
         return (
         <Panel key={s.id} title={`${s.leg} · ${s.shipmentNo}`}
           actions={<div className="flex items-center gap-2">
-            {trackable && <Button variant="outline" onClick={() => pollShipmentTracking(id, s.id)} className="py-1 text-xs">Refresh tracking</Button>}
+            {trackable && <Button variant="outline" onClick={() => pollShipmentTracking(id, s.id)} disabled={heldAtCustoms} className="py-1 text-xs">Refresh tracking</Button>}
             <Select value={s.status} onChange={(e) => setShipmentStatus(id, s.id, e.target.value as ShipmentStatus)} className="w-40 py-1 text-xs">{SHIP_STATUSES.map((st) => <option key={st}>{st}</option>)}</Select>
           </div>}>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -456,6 +429,21 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
             <MiniStat label="Route" value={`${s.fromLocation} → ${s.toLocation}`} /><MiniStat label="Boxes / wt" value={`${s.boxCount} · ${s.grossWeightKg}kg`} />
           </div>
           {s.lastLocation && <p className="mt-2 text-xs text-muted-foreground">Currently at: <b className="text-foreground">{s.lastLocation}</b></p>}
+          {heldAtCustoms && (
+            <div className="mt-2 rounded-lg border bg-warn-bg p-2.5 text-xs text-warn">
+              🔒 Held at customs — file the <b>Bill of Entry</b> on the <b>Customs</b> tab. The shipment clears once ICEGATE gives out-of-charge.
+            </div>
+          )}
+          {(s.hsCode || s.declaredValue || s.bookingDocs?.length || s.goodsDescription) && (
+            <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {s.goodsDescription && <span>Goods: <span className="text-foreground">{s.goodsDescription}</span></span>}
+              {s.hsCode && <span>HS <span className="font-mono text-foreground">{s.hsCode}</span></span>}
+              {!!s.declaredValue && <span>Value: <span className="text-foreground">{s.declaredCurrency} {s.declaredValue.toLocaleString()}</span></span>}
+              {s.dimensions && <span>Dims {s.dimensions}</span>}
+              {s.pickupReadyDate && <span>Pickup {s.pickupReadyDate}</span>}
+              {s.bookingDocs?.length ? <span>Docs: <span className="text-foreground">{s.bookingDocs.join(", ")}</span></span> : null}
+            </div>
+          )}
           <div className="mt-3 flex flex-wrap gap-1.5">{s.lines.map((l, i) => <Pill key={i} tone="neutral"><span className="font-mono text-[10px]">{l.mpn}</span> ×{qtyfmt(l.qty)}</Pill>)}</div>
           <TrackingTimeline s={s} isImport={s.leg === "INBOUND" && b.tradeType === "INTERNATIONAL"} />
         </Panel>
@@ -469,7 +457,9 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
   );
 }
 
-function CustomsTab({ b, onFile }: { b: OrderBundle; onFile: () => void }) {
+
+function CustomsTab({ b, id }: { b: OrderBundle; id: string }) {
+  const router = useRouter();
   if (!customsApplies(b)) return <Panel title="Customs"><Empty text="No customs — domestic order with no lab-abroad testing." /></Panel>;
   // DDP: the supplier delivers duty-paid and clears India customs — 1Buy files no BoE.
   if (supplierHandlesCustoms(b)) return (
@@ -481,32 +471,15 @@ function CustomsTab({ b, onFile }: { b: OrderBundle; onFile: () => void }) {
     </Panel>
   );
   const a19 = b.tradeType === "DOMESTIC";
-  const hasInbound = b.shipments.some((s) => s.leg === "INBOUND");
-  const filed = b.customs.some((c) => !!c.icegateRef);
-  const filing = b.customs.some((c) => c.beNo === "filing…");
-  const cols: Col<OrderBundle["customs"][number]>[] = [
-    { key: "s", header: "Shipment", render: (c) => <span className="font-mono text-xs">{c.shipmentNo}</span> },
-    { key: "be", header: "BE no", render: (c) => c.beNo || "—" },
-    { key: "port", header: "Port", render: (c) => c.portCode ?? "—" },
-    { key: "cha", header: "CHA", render: (c) => c.chaName ?? "—" },
-    { key: "duty", header: "Duty", align: "right", render: (c) => money(c.totalDuty, c.currency) },
-    { key: "ice", header: "ICEGATE", render: (c) => c.icegateRef ? <Pill tone="ok">filed</Pill> : <Pill tone="warn">pending</Pill> },
-  ];
   return (
-    <Panel title="Customs — BOE / ICEGATE" actions={<Button variant="outline" onClick={onFile} disabled={!hasInbound}><Plus className="h-4 w-4" /> File BOE</Button>}>
+    <Panel title="Customs — ICEGATE clearance" actions={<Button variant="outline" onClick={() => router.push(`/fulfilment/customs?order=${id}`)}><Stamp className="h-4 w-4" /> Open Customs desk</Button>}>
       <div className="mb-3 rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
-        <b>Incoterm {b.incoterm}</b> — 1Buy clears India import customs: our CHA files the Bill of Entry in ICEGATE and duty is assessed.
+        <b>Incoterm {b.incoterm}</b> — 1Buy clears India import customs. Clearance (file BoE → faceless assessment → pay duty → Out-of-Charge) is worked by the <b>Customs</b> team on the <b>Customs desk</b>; this tab shows status.
       </div>
-      {!hasInbound && (
-        <div className="mb-3 rounded-lg border bg-warn-bg p-2.5 text-xs text-warn">
-          You need an <b>inbound shipment</b> before you can file a BOE. Open the <b>Shipments</b> tab → <b>Create shipment</b> → leg <b>INBOUND</b> (books or records an AWB), then come back here and <b>File BOE</b>.
-        </div>
-      )}
-      {b.customs.length === 0 ? <Empty text="No customs entries yet — file a BOE against an inbound shipment." /> : <DataTable columns={cols} rows={b.customs} />}
-      {filing && <p className="mt-3 text-xs text-muted-foreground">Filing with ICEGATE… assessment + clearance in progress (watch the Integrations console).</p>}
-      {filed && <p className="mt-3 inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> ICEGATE ref received — the “Customs — BOE filed in ICEGATE” gate is satisfied. Go to Journey → Advance.</p>}
+      {b.customs.length === 0
+        ? <Empty text="No BoE yet — the Customs desk files it against the inbound shipment to start clearance." />
+        : <div className="space-y-3">{b.customs.map((c) => <CustomsEntryCard key={c.id} c={c} id={id} readOnly />)}</div>}
       {a19 && <p className="mt-3 text-xs text-warn">Domestic order, but testing uses a lab abroad — customs applies on export &amp; re-import (A19).</p>}
-      <p className="mt-3 text-xs text-muted-foreground">The import/FEMA loop closes when the BOE is filed in ICEGATE.</p>
     </Panel>
   );
 }

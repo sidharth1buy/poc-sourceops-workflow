@@ -221,6 +221,12 @@ import { SUPPLIERS } from '@/data/directory';
 <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
   {SUPPLIERS.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
 </select>
+
+// EXCEPTION — client-pos/new & supplier-pos/new: no directory dropdown for the
+// party name. It's a plain text input, prefilled by parse() like every other
+// field on those forms (see Key Patterns in CLAUDE.md).
+const [supplier, setSupplier] = useState('');
+<Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Upload a PO to auto-fill, or type the supplier's name" />
 ```
 
 ---

@@ -382,7 +382,7 @@ function seedSteps(o: Order): Seed[] {
     s.push({ phase: "IMPORT", name: intl ? "Ship to India (inbound AWB)" : "Export to lab → re-import", owner: "SC", isGate: true });
     s.push({ phase: "CUSTOMS", name: "Customs — BOE filed in ICEGATE", owner: "CHA", isGate: true });
   }
-  s.push({ phase: "RELABEL", name: "Receive + relabel to 1Buy", owner: "SC", isGate: true }); // gated: mark relabelled on the Journey tab
+  s.push({ phase: "RELABEL", name: "Received to 1Buy", owner: "SC", isGate: true }); // gated: mark received on the Journey tab
   s.push({ phase: "DELIVERY", name: "e-Invoice + dispatch to client", owner: "SC", isGate: true }); // gated: all lines must be mapped to demand
   s.push({ phase: "DELIVERY", name: "Proof of delivery", owner: "SC", isGate: false });
   s.push({ phase: "CLOSE", name: "Reconcile + close", owner: "Finance", isGate: true }); // gated: every approval on the order must be APPROVED

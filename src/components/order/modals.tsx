@@ -4,15 +4,16 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
-import { Button } from "@/components/ui/primitives";
+import { Button, Pill } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { remainingToShipLeg, remainingToAllocate, sourcedForClientLine, orderSourcedForClient, deliveredForClientLine } from "@/store/selectors";
-import { incotermPlan } from "@/lib/incoterm";
+import { incotermPlan, weClearImportCustoms } from "@/lib/incoterm";
+import { shippingDocList } from "@/integrations/shipping-docs";
 import { computeDuty } from "@/lib/fx";
 import { money, fmtAddress, cn } from "@/lib/utils";
-import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
+import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, CURRENCIES, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
 import type {
-  PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty,
+  PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty, OrderBundle,
 } from "@/types";
 
 const PHASES: JourneyPhase[] = ["KICKOFF", "PAYMENT", "TESTING", "EXPORT", "IMPORT", "CUSTOMS", "RELABEL", "DELIVERY", "CLOSE"];
@@ -661,6 +662,22 @@ export function CreateShipmentModal({
   const [from, setFrom] = useState(prefill?.from ?? b?.supplier.name ?? "");
   const [to, setTo] = useState(fmtAddress(b?.hubAddress) || "1Buy hub");
   const [awb, setAwb] = useState("");
+  // booking particulars (needed when 1Buy books the carrier — for DHL + customs).
+  // Pre-filled from the supplier's packing list / commercial invoice when those docs are on file.
+  const sd = b?.shippingDocs;
+  const [pieces, setPieces] = useState(sd?.pieces ?? 1);
+  const [weightKg, setWeightKg] = useState(sd?.grossWeightKg ?? 0);
+  const [dims, setDims] = useState(sd?.dimensions ?? "");
+  const [goods, setGoods] = useState(sd?.goodsDescription ?? "");
+  const [hsCode, setHsCode] = useState(sd?.hsCode ?? "");
+  const [declaredValue, setDeclaredValue] = useState(sd?.declaredValue ?? 0);
+  const [declaredCcy, setDeclaredCcy] = useState(sd?.declaredCurrency ?? b?.currency ?? "USD");
+  const [pickupDate, setPickupDate] = useState("");
+  const [docInvoice, setDocInvoice] = useState(!!sd?.docs?.includes("Commercial Invoice"));
+  const [docPacking, setDocPacking] = useState(!!sd?.docs?.includes("Packing List"));
+  const [docCoo, setDocCoo] = useState(!!sd?.docs?.includes("Certificate of Origin"));
+  const [docBattery, setDocBattery] = useState(false);
+  const [notifyFinance, setNotifyFinance] = useState(true);
   const [qtys, setQtys] = useState<Record<string, number>>(() => {
     if (!prefill || !b) return {};
     const out: Record<string, number> = {};
@@ -677,14 +694,26 @@ export function CreateShipmentModal({
   // switch to "record the supplier's AWB" mode instead of calling DHL. (Outbound is unaffected.)
   const plan = incotermPlan(b.incoterm);
   const recordMode = leg === "INBOUND" && !plan.weBookFreight;
-  const canSave = anyQty && (!recordMode || awb.trim().length > 0);
+  const bookMode = leg === "INBOUND" && plan.weBookFreight; // we book DHL — collect full particulars
+  const weClear = leg === "INBOUND" && weClearImportCustoms(b); // 1Buy files the India BoE for this order
+  // What a forwarder + Indian customs actually need to move the box.
+  const detailsOk = pieces >= 1 && weightKg > 0 && goods.trim().length > 0 && hsCode.trim().length > 0 && declaredValue > 0;
+  const docsOk = docInvoice && docPacking; // Commercial Invoice + Packing List are mandatory
+  const canSave = anyQty && (recordMode ? awb.trim().length > 0 : bookMode ? detailsOk && docsOk : true);
   const save = () => {
     const lines = Object.entries(qtys).map(([mpn, qty]) => ({ mpn, qty })).filter((l) => l.qty > 0);
-    const id = createShipment(orderId, { leg, carrier, fromLocation: from || "—", toLocation: to || "—", boxCount: 1, grossWeightKg: 0, lines, awb: recordMode ? awb.trim() : undefined });
+    const docs = [docInvoice && "Commercial Invoice", docPacking && "Packing List", docCoo && "Certificate of Origin", docBattery && "Battery/DG declaration"].filter(Boolean) as string[];
+    const id = createShipment(orderId, {
+      leg, carrier, fromLocation: from || "—", toLocation: to || "—",
+      boxCount: bookMode ? pieces : 1, grossWeightKg: bookMode ? weightKg : 0, lines,
+      awb: awb.trim() || undefined, // supplier's (record mode) or a manual AWB in book mode; else we book it
+      notifyFinanceBoe: weClear ? notifyFinance : undefined,
+      ...(bookMode ? { dimensions: dims.trim() || undefined, goodsDescription: goods.trim(), hsCode: hsCode.trim(), declaredValue, declaredCurrency: declaredCcy, pickupReadyDate: pickupDate || undefined, bookingDocs: docs } : {}),
+    });
     if (id) onClose();
   };
   return (
-    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel={recordMode ? "Record inbound AWB" : leg === "INBOUND" ? "Book AWB (DHL)" : "Create shipment"} disabled={!canSave} />}>
+    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel={recordMode ? "Record inbound AWB" : leg === "INBOUND" ? (awb.trim() ? "Record AWB" : "Book AWB (DHL)") : "Create shipment"} disabled={!canSave} />}>
       <div className="space-y-3">
         {leg === "INBOUND" && (
           <div className={cn("rounded-lg border p-2.5 text-xs", recordMode ? "bg-warn-bg text-warn" : "border-primary/40 bg-accent-soft text-primary")}>
@@ -693,6 +722,12 @@ export function CreateShipmentModal({
               ? " Enter the AWB the supplier gave you — we won't book a carrier, but we can still track it."
               : " We book the carrier now and the AWB is assigned on booking."}
           </div>
+        )}
+        {weClear && (
+          <label className="flex cursor-pointer items-start gap-2 rounded-lg border bg-muted/30 p-2.5 text-xs">
+            <input type="checkbox" checked={notifyFinance} onChange={(e) => setNotifyFinance(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
+            <span className="text-muted-foreground"><b className="text-foreground">Notify Finance to file the BoE (Prior)</b> — mails Finance and queues a Bill of Entry on the Customs desk now, so we don&apos;t wait for the shipment to reach port.</span>
+          </label>
         )}
         {prefill && (
           <div className="rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
@@ -710,8 +745,13 @@ export function CreateShipmentModal({
           }}><option value="INBOUND">INBOUND (supplier → us)</option><option value="OUTBOUND">OUTBOUND (us → client)</option></Select></Labeled>
           <Labeled label={recordMode ? "Carrier (supplier's)" : "Carrier"} hint={recordMode ? "who the supplier shipped with" : "AWB assigned on booking"}><Select value={carrier} onChange={(e) => setCarrier(e.target.value)}><option>DHL</option><option>FEDEX</option><option>DELHIVERY</option></Select></Labeled>
         </div>
-        {recordMode && (
-          <Labeled label="Supplier's AWB / tracking no." hint="the number on the supplier's dispatch advice"><Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 12345678" /></Labeled>
+        {leg === "INBOUND" && (
+          <Labeled
+            label={recordMode ? "Supplier's AWB / tracking no." : "AWB (optional)"}
+            hint={recordMode ? "the number on the supplier's dispatch advice" : "if the logistics partner already gave you one — otherwise we book it"}
+          >
+            <Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 12345678" />
+          </Labeled>
         )}
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="From"><Input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="origin" /></Labeled>
@@ -730,6 +770,98 @@ export function CreateShipmentModal({
             ))}
           </div>
         </div>
+
+        {/* Booking particulars + documents — only when WE book the carrier (DHL needs these to price
+            & fly the box, and customs needs them to clear it). */}
+        {bookMode && (
+          <>
+            {sd?.status === "RECEIVED" && (
+              <div className="rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
+                Pre-filled from the supplier&apos;s <b>packing list</b> &amp; <b>commercial invoice</b> — pieces, weight, dimensions, HS code &amp; value came from their reply, and the documents are already on file.
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-3 border-t pt-3">
+              <Labeled label="Pieces"><Input type="number" value={pieces} onChange={(e) => setPieces(Math.max(1, +e.target.value))} /></Labeled>
+              <Labeled label="Gross weight (kg)"><Input type="number" value={weightKg} onChange={(e) => setWeightKg(+e.target.value)} /></Labeled>
+              <Labeled label="Dimensions" hint="L×W×H cm"><Input value={dims} onChange={(e) => setDims(e.target.value)} placeholder="40×30×25" /></Labeled>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Labeled label="Goods description"><Input value={goods} onChange={(e) => setGoods(e.target.value)} placeholder="Electronic components — ICs" /></Labeled>
+              <Labeled label="HS code"><Input value={hsCode} onChange={(e) => setHsCode(e.target.value)} placeholder="8542.31" /></Labeled>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Labeled label="Declared value"><Input type="number" value={declaredValue} onChange={(e) => setDeclaredValue(+e.target.value)} /></Labeled>
+              <Labeled label="Currency"><Select value={declaredCcy} onChange={(e) => setDeclaredCcy(e.target.value)}>{CURRENCIES.map((c) => <option key={c}>{c}</option>)}</Select></Labeled>
+              <Labeled label="Pickup ready" hint="EXW pickup date"><Input type="date" value={pickupDate} onChange={(e) => setPickupDate(e.target.value)} /></Labeled>
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Documents handed to the carrier / CHA</div>
+              <div className="space-y-1.5">
+                <DocCheck label="Commercial Invoice" required checked={docInvoice} onChange={setDocInvoice} />
+                <DocCheck label="Packing List" required checked={docPacking} onChange={setDocPacking} />
+                <DocCheck label="Certificate of Origin (COO)" hint="for preferential duty" checked={docCoo} onChange={setDocCoo} />
+                <DocCheck label="Battery / DG declaration" hint="if the goods contain batteries" checked={docBattery} onChange={setDocBattery} />
+              </div>
+              {!docsOk && <p className="mt-1.5 text-xs text-warn">Commercial Invoice &amp; Packing List are mandatory — customs can&apos;t clear the shipment without them.</p>}
+            </div>
+          </>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+function DocCheck({ label, hint, required, checked, onChange }: { label: string; hint?: string; required?: boolean; checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-sm">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="h-4 w-4 accent-[var(--primary)]" />
+      <span className="text-foreground">{label}{required && <span className="text-bad"> *</span>}</span>
+      {hint && <span className="text-xs text-faint">— {hint}</span>}
+    </label>
+  );
+}
+
+function docRequestTemplate(b: OrderBundle): string {
+  const intl = b.tradeType === "INTERNATIONAL";
+  const items = [
+    "1. Packing List — piece count, gross weight (kg) and box dimensions (L×W×H)",
+    `2. Commercial Invoice — unit values, HS codes and the agreed Incoterm (${b.incoterm})`,
+    ...(intl ? ["3. Certificate of Origin (COO)"] : []),
+  ];
+  return [
+    `Dear ${b.supplier.name},`,
+    ``,
+    `For our order ${b.orderNo} (${b.supplier.name} → 1Buy hub), please share the following shipping documents so we can book the carrier:`,
+    ``,
+    ...items,
+    ``,
+    `We specifically need the gross weight and box dimensions from the packing list to finalise the airway bill. Kindly reply at the earliest.`,
+    ``,
+    `Best regards,`,
+    `1Buy Sourcing`,
+  ].join("\n");
+}
+
+// Editable compose step before we email the supplier for shipping documents (never sent silently).
+export function RequestDocsModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
+  const b = useStore((s) => s.orders[orderId]);
+  const requestShippingDocs = useStore((s) => s.requestShippingDocs);
+  const [body, setBody] = useState(() => (b ? docRequestTemplate(b) : ""));
+  if (!b) return null;
+  const send = () => { requestShippingDocs(orderId, body); onClose(); };
+  return (
+    <Dialog open onClose={onClose} title="Request shipping documents" footer={<Footer onClose={onClose} onSave={send} saveLabel="Send request" disabled={!body.trim()} />}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="To"><Input value={b.supplier.name} readOnly /></Labeled>
+          <Labeled label="Subject"><Input value={`Shipping documents required — ${b.orderNo}`} readOnly /></Labeled>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {shippingDocList(b.tradeType === "INTERNATIONAL").map((d) => <Pill key={d} tone="neutral">{d}</Pill>)}
+        </div>
+        <Labeled label="Message" hint="review / edit before sending">
+          <Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={13} />
+        </Labeled>
       </div>
     </Dialog>
   );
@@ -739,13 +871,25 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const b = useStore((s) => s.orders[orderId]);
   const fileBOE = useStore((s) => s.fileBOE);
   const inbound = (b?.shipments ?? []).filter((s) => s.leg === "INBOUND");
-  const [shipmentNo, setShipmentNo] = useState(inbound[0]?.shipmentNo ?? "");
-  const [portCode, setPortCode] = useState("INDEL4");
-  const [chaName, setChaName] = useState("Speedwing CHA");
-  const [assessable, setAssessable] = useState(0);
+  const firstNo = inbound[0]?.shipmentNo ?? "";
+  const existing0 = b?.customs.find((c) => c.shipmentNo === firstNo);
+  const sdDocs = existing0?.docs ?? b?.shippingDocs?.docs ?? []; // docs collected from the supplier
+  const [shipmentNo, setShipmentNo] = useState(firstNo);
+  const [portCode, setPortCode] = useState(existing0?.portCode ?? "INDEL4");
+  const [chaName, setChaName] = useState(existing0?.chaName ?? "Speedwing CHA");
+  const [assessable, setAssessable] = useState(existing0?.assessableValue ?? b?.shippingDocs?.declaredValue ?? 0);
+  const [boeType, setBoeType] = useState<"PRIOR" | "ON_ARRIVAL">("PRIOR");
+  const [docPL, setDocPL] = useState(sdDocs.includes("Packing List"));
+  const [docCI, setDocCI] = useState(sdDocs.includes("Commercial Invoice"));
+  const [docCOO, setDocCOO] = useState(sdDocs.includes("Certificate of Origin"));
   if (!b) return null;
   const duty = computeDuty(assessable);
-  const save = () => { if (!shipmentNo) return; fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable }); onClose(); };
+  const save = () => {
+    if (!shipmentNo) return;
+    const docs = [docPL && "Packing List", docCI && "Commercial Invoice", docCOO && "Certificate of Origin"].filter(Boolean) as string[];
+    fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType, docs });
+    onClose();
+  };
   return (
     <Dialog open onClose={onClose} title="File Bill of Entry (ICEGATE)" footer={<Footer onClose={onClose} onSave={save} saveLabel="File via ICEGATE" disabled={!shipmentNo} />}>
       <div className="space-y-3">
@@ -756,10 +900,22 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
           </Select>
         </Labeled>
         <div className="grid grid-cols-2 gap-3">
+          <Labeled label="BoE type" hint="Prior = up to 30 days before arrival"><Select value={boeType} onChange={(e) => setBoeType(e.target.value as "PRIOR" | "ON_ARRIVAL")}><option value="ON_ARRIVAL">On-arrival (after IGM)</option><option value="PRIOR">Prior BoE (docs ready early)</option></Select></Labeled>
           <Labeled label="Port code"><Input value={portCode} onChange={(e) => setPortCode(e.target.value)} /></Labeled>
-          <Labeled label="CHA"><Input value={chaName} onChange={(e) => setChaName(e.target.value)} /></Labeled>
         </div>
-        <Labeled label="Assessable value (INR)" hint={`est. duty ≈ ${money(duty, "INR")} — ICEGATE assesses & issues the BE + ref`}><Input type="number" value={assessable} onChange={(e) => setAssessable(+e.target.value)} /></Labeled>
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="CHA"><Input value={chaName} onChange={(e) => setChaName(e.target.value)} /></Labeled>
+          <Labeled label="Assessable value (INR)" hint={`est. duty ≈ ${money(duty, "INR")} at assessment`}><Input type="number" value={assessable} onChange={(e) => setAssessable(+e.target.value)} /></Labeled>
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Attachments (eSANCHIT)</div>
+          <div className="space-y-1.5">
+            <DocCheck label="Packing List" checked={docPL} onChange={setDocPL} />
+            <DocCheck label="Commercial Invoice" checked={docCI} onChange={setDocCI} />
+            <DocCheck label="Certificate of Origin (COO)" checked={docCOO} onChange={setDocCOO} />
+          </div>
+          {sdDocs.length === 0 && <p className="mt-1.5 text-xs text-faint">Tip: collect these from the supplier on the Logistics desk to auto-attach.</p>}
+        </div>
       </div>
     </Dialog>
   );
