@@ -442,7 +442,7 @@ interface Store {
   setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus) => void;
   initiatePaymentTransfer: (orderId: string, payId: string) => void; // banking adapter - T/T
 
-  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[] }) => string | null;
+  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string }) => string | null;
   setShipmentStatus: (orderId: string, shipId: string, status: ShipmentStatus) => void;
   pollShipmentTracking: (orderId: string, shipId: string) => void; // logistics adapter - advance from carrier tracking
 
@@ -1819,11 +1819,19 @@ export const useStore = create<Store>()(
         if (lines.length === 0) { toast.error("Nothing to ship (qty exceeds remaining for this leg)"); return null; }
         const id = uid("shp");
         const shipmentNo = `SHP-${input.leg === "INBOUND" ? "IN" : "OUT"}-${b.shipments.length + 1}`;
+        // Incoterm decides who books the carrier. When it's the supplier's responsibility
+        // (C/D terms) they've already booked, so we don't call the logistics API — we just
+        // record the AWB they gave us (and can still poll tracking, as we have the DHL API).
+        const prebooked = !!(input.awb && input.awb.trim());
         set((s) => {
           const bb = s.orders[orderId]; if (!bb) return;
-          bb.shipments.push({ id, shipmentNo, leg: input.leg, awb: "booking…", carrier: input.carrier, fromLocation: input.fromLocation, toLocation: input.toLocation,
+          bb.shipments.push({ id, shipmentNo, leg: input.leg, awb: prebooked ? input.awb!.trim() : "booking…", carrier: input.carrier, fromLocation: input.fromLocation, toLocation: input.toLocation,
             boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines });
         });
+        if (prebooked) {
+          toast.success(`Inbound shipment recorded · supplier AWB ${input.awb!.trim()}`);
+          return id;
+        }
         toast.message("Booking AWB with carrier…");
         // Logistics adapter: the carrier assigns the real AWB + tracking URL asynchronously
         void (async () => {

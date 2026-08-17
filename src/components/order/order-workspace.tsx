@@ -13,6 +13,8 @@ import { money, qtyfmt, cn, fmtAddress } from "@/lib/utils";
 import { usd, toUSD } from "@/lib/fx";
 import { useStore } from "@/store/store";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
+import { incotermPlan, supplierHandlesCustoms } from "@/lib/incoterm";
+import { trackingTimeline } from "@/integrations/logistics";
 import {
   AddStepModal, AddLotModal, AddPaymentModal, CreateShipmentModal,
   FileBOEModal, AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
@@ -387,22 +389,81 @@ function PaymentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () =
 
 const SHIP_STATUSES: ShipmentStatus[] = ["PLANNED", "DISPATCHED", "IN_TRANSIT", "AT_CUSTOMS", "ARRIVED", "DELIVERED", "CANCELLED"];
 
+const AT_1BUY = new Set<ShipmentStatus>(["ARRIVED", "DELIVERED"]);
+
+function fmtHop(base: number, hrs: number) {
+  const d = new Date(base + hrs * 3_600_000);
+  return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+// DHL-style scan history for a shipment card — a vertical timeline derived from the current status.
+function TrackingTimeline({ s, isImport }: { s: OrderBundle["shipments"][number]; isImport: boolean }) {
+  const hops = trackingTimeline(s.status, s.fromLocation, s.toLocation, isImport);
+  if (hops.length === 0) return <p className="mt-3 text-xs text-muted-foreground">Booked — awaiting carrier pickup scan.</p>;
+  const base = new Date(s.dispatchDate || s.deliveryDate || "2026-08-14T04:00:00Z").getTime();
+  return (
+    <div className="mt-3 border-t pt-3">
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Tracking · {s.carrier}
+        {s.awb && s.awb !== "booking…" && s.awb !== "booking failed" && <span className="font-mono text-[10px] normal-case text-faint">{s.awb}</span>}
+      </div>
+      <ol>
+        {hops.map((h, i) => {
+          const last = i === hops.length - 1;
+          return (
+            <li key={i} className="flex gap-3">
+              <div className="flex flex-col items-center">
+                <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", last ? "bg-primary ring-2 ring-primary/30" : "bg-ok")} />
+                {!last && <span className="min-h-[1.75rem] w-px flex-1 bg-border" />}
+              </div>
+              <div className="pb-2">
+                <div className={cn("text-sm text-foreground", last && "font-medium")}>{h.description}</div>
+                <div className="text-xs text-muted-foreground">{h.location} · {fmtHop(base, h.hrs)} · <span className="font-mono text-[10px]">{h.status}</span></div>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
 function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () => void }) {
   const setShipmentStatus = useStore((s) => s.setShipmentStatus);
+  const pollShipmentTracking = useStore((s) => s.pollShipmentTracking);
+  const plan = incotermPlan(b.incoterm);
+  const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
+  const atHub = inbound.some((s) => AT_1BUY.has(s.status));
   return (
     <div className="space-y-3">
-      <div className="flex justify-end"><Button variant="outline" onClick={onAdd}><Plus className="h-4 w-4" /> Create shipment</Button></div>
-      {b.shipments.length === 0 ? <Empty text="No shipments yet." /> : b.shipments.map((s) => (
+      {/* Incoterm responsibility — who books the carrier for the inbound leg. */}
+      <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5 text-xs",
+        plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
+        <span><b>Incoterm {plan.incoterm}</b> · {plan.summary}</span>
+        <span className="text-faint">{b.tradeType}</span>
+      </div>
+      <div className="flex justify-end"><Button variant="outline" onClick={onAdd}><Plus className="h-4 w-4" /> {plan.weBookFreight ? "Book / create shipment" : "Record supplier AWB"}</Button></div>
+      {b.shipments.length === 0 ? <Empty text="No shipments yet." /> : b.shipments.map((s) => {
+        const trackable = s.leg === "INBOUND" && s.awb !== "booking…" && s.awb !== "booking failed" && s.status !== "DELIVERED";
+        return (
         <Panel key={s.id} title={`${s.leg} · ${s.shipmentNo}`}
-          actions={<Select value={s.status} onChange={(e) => setShipmentStatus(id, s.id, e.target.value as ShipmentStatus)} className="w-40 py-1 text-xs">{SHIP_STATUSES.map((st) => <option key={st}>{st}</option>)}</Select>}>
+          actions={<div className="flex items-center gap-2">
+            {trackable && <Button variant="outline" onClick={() => pollShipmentTracking(id, s.id)} className="py-1 text-xs">Refresh tracking</Button>}
+            <Select value={s.status} onChange={(e) => setShipmentStatus(id, s.id, e.target.value as ShipmentStatus)} className="w-40 py-1 text-xs">{SHIP_STATUSES.map((st) => <option key={st}>{st}</option>)}</Select>
+          </div>}>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <MiniStat label="AWB" value={s.awb} /><MiniStat label="Carrier" value={s.carrier} />
             <MiniStat label="Route" value={`${s.fromLocation} → ${s.toLocation}`} /><MiniStat label="Boxes / wt" value={`${s.boxCount} · ${s.grossWeightKg}kg`} />
           </div>
           {s.lastLocation && <p className="mt-2 text-xs text-muted-foreground">Currently at: <b className="text-foreground">{s.lastLocation}</b></p>}
           <div className="mt-3 flex flex-wrap gap-1.5">{s.lines.map((l, i) => <Pill key={i} tone="neutral"><span className="font-mono text-[10px]">{l.mpn}</span> ×{qtyfmt(l.qty)}</Pill>)}</div>
+          <TrackingTimeline s={s} isImport={s.leg === "INBOUND" && b.tradeType === "INTERNATIONAL"} />
         </Panel>
-      ))}
+        );
+      })}
+      {atHub && (
+        <p className="inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Goods delivered to 1Buy — inbound leg complete.</p>
+      )}
       <p className="text-xs text-muted-foreground">Remaining to ship: {b.lines.map((l) => `${l.mpn} ${remainingToShip(b, l.mpn)}`).join(" · ")}</p>
     </div>
   );
@@ -410,6 +471,15 @@ function ShipmentsTab({ b, id, onAdd }: { b: OrderBundle; id: string; onAdd: () 
 
 function CustomsTab({ b, onFile }: { b: OrderBundle; onFile: () => void }) {
   if (!customsApplies(b)) return <Panel title="Customs"><Empty text="No customs — domestic order with no lab-abroad testing." /></Panel>;
+  // DDP: the supplier delivers duty-paid and clears India customs — 1Buy files no BoE.
+  if (supplierHandlesCustoms(b)) return (
+    <Panel title="Customs — handled by supplier">
+      <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+        <b className="text-foreground">Incoterm {b.incoterm}</b> — the supplier delivers duty-paid and clears India
+        import customs. 1Buy files no Bill of Entry here; we just receive the goods at the hub.
+      </div>
+    </Panel>
+  );
   const a19 = b.tradeType === "DOMESTIC";
   const hasInbound = b.shipments.some((s) => s.leg === "INBOUND");
   const filed = b.customs.some((c) => !!c.icegateRef);
@@ -424,9 +494,12 @@ function CustomsTab({ b, onFile }: { b: OrderBundle; onFile: () => void }) {
   ];
   return (
     <Panel title="Customs — BOE / ICEGATE" actions={<Button variant="outline" onClick={onFile} disabled={!hasInbound}><Plus className="h-4 w-4" /> File BOE</Button>}>
+      <div className="mb-3 rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
+        <b>Incoterm {b.incoterm}</b> — 1Buy clears India import customs: our CHA files the Bill of Entry in ICEGATE and duty is assessed.
+      </div>
       {!hasInbound && (
         <div className="mb-3 rounded-lg border bg-warn-bg p-2.5 text-xs text-warn">
-          You need an <b>inbound shipment</b> before you can file a BOE. Open the <b>Shipments</b> tab → <b>Create shipment</b> → leg <b>INBOUND</b> (this books an AWB), then come back here and <b>File BOE</b>.
+          You need an <b>inbound shipment</b> before you can file a BOE. Open the <b>Shipments</b> tab → <b>Create shipment</b> → leg <b>INBOUND</b> (books or records an AWB), then come back here and <b>File BOE</b>.
         </div>
       )}
       {b.customs.length === 0 ? <Empty text="No customs entries yet — file a BOE against an inbound shipment." /> : <DataTable columns={cols} rows={b.customs} />}
