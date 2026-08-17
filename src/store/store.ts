@@ -481,7 +481,7 @@ interface Store {
   pollShipmentTracking: (orderId: string, shipId: string) => void; // logistics adapter - advance from carrier tracking
 
   // ICEGATE core clearance stepper: file → assess → pay duty → out-of-charge.
-  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[] }) => void;
+  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[]; awb?: string }) => void;
   sendAwbToCha: (orderId: string, customsId: string) => void;
   linkIgm: (orderId: string, customsId: string) => void;
   assessCustoms: (orderId: string, customsId: string) => void;
@@ -1980,6 +1980,8 @@ export const useStore = create<Store>()(
           const existing = b.customs.find((c) => c.shipmentNo === e.shipmentNo);
           const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, docs: e.docs ?? b0.shippingDocs?.docs, awbSentToChaAt: existing?.awbSentToChaAt, igmStatus: "AWAITING" as const, igmNo: undefined, igmItemNo: undefined, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
           if (existing) Object.assign(existing, entry); else b.customs.push(entry);
+          // the CHA can add/correct the AWB here — it's what the IGM match keys on
+          if (e.awb) { const sh = b.shipments.find((x) => x.shipmentNo === e.shipmentNo); if (sh && sh.awb !== e.awb) { sh.awb = e.awb; sh.updatedAt = stamp(); } }
         });
         const fileTid = toast.loading("📡 Calling ICEGATE — File Bill of Entry API…");
         void (async () => {

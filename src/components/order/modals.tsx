@@ -869,7 +869,10 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const firstNo = inbound[0]?.shipmentNo ?? "";
   const existing0 = b?.customs.find((c) => c.shipmentNo === firstNo);
   const sdDocs = existing0?.docs ?? b?.shippingDocs?.docs ?? []; // docs collected from the supplier
+  // AWB auto-fills from the selected shipment (blank if it's still a placeholder) — the CHA can add/correct it.
+  const awbFor = (no: string) => { const a = inbound.find((s) => s.shipmentNo === no)?.awb; return a && a !== "booking…" && a !== "booking failed" ? a : ""; };
   const [shipmentNo, setShipmentNo] = useState(firstNo);
+  const [awb, setAwb] = useState(awbFor(firstNo));
   const [portCode, setPortCode] = useState(existing0?.portCode ?? "INDEL4");
   const [chaName, setChaName] = useState(existing0?.chaName ?? "Speedwing CHA");
   const [assessable, setAssessable] = useState(existing0?.assessableValue ?? b?.shippingDocs?.declaredValue ?? 0);
@@ -882,17 +885,20 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const save = () => {
     if (!shipmentNo) return;
     const docs = [docPL && "Packing List", docCI && "Commercial Invoice", docCOO && "Certificate of Origin"].filter(Boolean) as string[];
-    fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType, docs });
+    fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType, docs, awb: awb.trim() || undefined });
     onClose();
   };
   return (
     <Dialog open onClose={onClose} title="File Bill of Entry (ICEGATE)" footer={<Footer onClose={onClose} onSave={save} saveLabel="File via ICEGATE" disabled={!shipmentNo} />}>
       <div className="space-y-3">
         <Labeled label="Shipment">
-          <Select value={shipmentNo} onChange={(e) => setShipmentNo(e.target.value)}>
+          <Select value={shipmentNo} onChange={(e) => { const no = e.target.value; setShipmentNo(no); setAwb(awbFor(no)); }}>
             {inbound.length === 0 && <option value="">— create an inbound shipment first —</option>}
             {inbound.map((s) => <option key={s.id} value={s.shipmentNo}>{s.shipmentNo} · {s.awb}</option>)}
           </Select>
+        </Labeled>
+        <Labeled label="AWB" hint="auto-filled from the shipment — add / correct it (the IGM match keys on this)">
+          <Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 89072093" />
         </Labeled>
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="BoE type" hint="Prior = up to 30 days before arrival"><Select value={boeType} onChange={(e) => setBoeType(e.target.value as "PRIOR" | "ON_ARRIVAL")}><option value="ON_ARRIVAL">On-arrival (after IGM)</option><option value="PRIOR">Prior BoE (docs ready early)</option></Select></Labeled>
