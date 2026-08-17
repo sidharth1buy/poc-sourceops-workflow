@@ -6,7 +6,14 @@ const LABEL = "ICEGATE Customs";
 
 export interface FileBeReq { orderId: string; shipmentNo: string; portCode: string; chaName: string; assessableValue: number; awb?: string; }
 export interface FileBeRes { jobId: string; beNo: string; beDate: string; status: "ASSESSMENT_PENDING"; icegateAckNo: string; }
-export interface AssessmentRes { beNo: string; duty: { bcd: number; sws: number; igst: number; totalDuty: number }; status: "ASSESSED"; }
+export interface AssessmentRes { beNo: string; duty: { bcd: number; sws: number; igst: number; totalDuty: number }; status: "ASSESSED"; review: "AUTO_CLEAR" | "FLAGGED"; query?: string; }
+
+// Faceless-assessment risk-engine queries (shown when a BoE is flagged for manual review).
+const FACELESS_QUERIES = [
+  "Valuation query — share the PO / contract to support the declared value.",
+  "HS-code justification requested for the classified tariff heading.",
+  "BIS / WPC certificate proof requested for the electronics line.",
+];
 export interface ClearanceRes { beNo: string; icegateRef: string; oocDate: string; status: "OUT_OF_CHARGE"; }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -25,7 +32,10 @@ export function getAssessment(beNo: string, assessableValue: number) {
       const bcd = Math.round(assessableValue * 0.1);
       const sws = Math.round(bcd * 0.1);
       const igst = Math.max(0, totalDuty - bcd - sws);
-      return { beNo, duty: { bcd, sws, igst, totalDuty }, status: "ASSESSED" };
+      // Faceless assessment: risk engine auto-clears most, flags ~1 in 3 for a query.
+      const flagged = Math.random() < 0.35;
+      const query = flagged ? FACELESS_QUERIES[Math.floor(Math.random() * FACELESS_QUERIES.length)] : undefined;
+      return { beNo, duty: { bcd, sws, igst, totalDuty }, status: "ASSESSED", review: flagged ? "FLAGGED" : "AUTO_CLEAR", query };
     },
     { latencyMs: [1000, 3000] });
 }

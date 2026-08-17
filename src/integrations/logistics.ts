@@ -74,10 +74,9 @@ function trackHops(from: string, to: string, isImport: boolean): TrackHop[] {
   ];
   if (isImport) hops.push(
     { status: "AT_CUSTOMS", hrs: 24, location: `${dest} — import customs`, description: "Arrived at destination; held for customs clearance" },
-    { status: "AT_CUSTOMS", hrs: 28, location: `${dest} — import customs`, description: "Customs clearance in progress (CHA / Bill of Entry)" },
   );
   hops.push(
-    { status: "ARRIVED", hrs: 32, location: dest, description: isImport ? "Customs cleared; arrived at destination facility" : "Arrived at destination facility" },
+    { status: "ARRIVED", hrs: 32, location: dest, description: isImport ? "Customs cleared (Bill of Entry / CHA); arrived at destination facility" : "Arrived at destination facility" },
     { status: "DELIVERED", hrs: 36, location: dest, description: "Delivered" },
   );
   return hops;

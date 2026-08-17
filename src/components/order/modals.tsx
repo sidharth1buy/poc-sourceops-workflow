@@ -743,9 +743,10 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const [portCode, setPortCode] = useState("INDEL4");
   const [chaName, setChaName] = useState("Speedwing CHA");
   const [assessable, setAssessable] = useState(0);
+  const [boeType, setBoeType] = useState<"PRIOR" | "ON_ARRIVAL">("ON_ARRIVAL");
   if (!b) return null;
   const duty = computeDuty(assessable);
-  const save = () => { if (!shipmentNo) return; fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable }); onClose(); };
+  const save = () => { if (!shipmentNo) return; fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType }); onClose(); };
   return (
     <Dialog open onClose={onClose} title="File Bill of Entry (ICEGATE)" footer={<Footer onClose={onClose} onSave={save} saveLabel="File via ICEGATE" disabled={!shipmentNo} />}>
       <div className="space-y-3">
@@ -756,10 +757,13 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
           </Select>
         </Labeled>
         <div className="grid grid-cols-2 gap-3">
+          <Labeled label="BoE type" hint="Prior = up to 30 days before arrival"><Select value={boeType} onChange={(e) => setBoeType(e.target.value as "PRIOR" | "ON_ARRIVAL")}><option value="ON_ARRIVAL">On-arrival (after IGM)</option><option value="PRIOR">Prior BoE (docs ready early)</option></Select></Labeled>
           <Labeled label="Port code"><Input value={portCode} onChange={(e) => setPortCode(e.target.value)} /></Labeled>
-          <Labeled label="CHA"><Input value={chaName} onChange={(e) => setChaName(e.target.value)} /></Labeled>
         </div>
-        <Labeled label="Assessable value (INR)" hint={`est. duty ≈ ${money(duty, "INR")} — ICEGATE assesses & issues the BE + ref`}><Input type="number" value={assessable} onChange={(e) => setAssessable(+e.target.value)} /></Labeled>
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="CHA"><Input value={chaName} onChange={(e) => setChaName(e.target.value)} /></Labeled>
+          <Labeled label="Assessable value (INR)" hint={`est. duty ≈ ${money(duty, "INR")} at assessment`}><Input type="number" value={assessable} onChange={(e) => setAssessable(+e.target.value)} /></Labeled>
+        </div>
       </div>
     </Dialog>
   );

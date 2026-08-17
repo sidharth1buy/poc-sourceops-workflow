@@ -130,9 +130,12 @@ export function gateReason(b: OrderBundle, step: JourneyStep): string | null {
       ? null : "Every line that needs testing must have a PASS lot (see the Testing tab).";
   }
   if (step.phase === "EXPORT") return b.shipments.some((s) => s.leg === "INBOUND" && s.status !== "PLANNED") ? null : "Supplier hasn't dispatched (export cleared) the inbound shipment yet.";
-  if (step.phase === "IMPORT") return b.shipments.some((s) => s.leg === "INBOUND" && ["ARRIVED", "DELIVERED"].includes(s.status)) ? null : "No inbound shipment arrival recorded yet - update status on the Shipments tab.";
+  // "Ship to India (inbound AWB)" = the goods are on their way (dispatched / in transit / at customs).
+  // Arrival-after-customs is gated later, on the "Received to 1Buy" step — otherwise this step would
+  // demand full customs clearance out of order (goods sit AT_CUSTOMS until the BoE is filed).
+  if (step.phase === "IMPORT") return b.shipments.some((s) => s.leg === "INBOUND" && s.status !== "PLANNED") ? null : "Inbound shipment not dispatched yet — book it on the Shipments tab (leg INBOUND).";
   if (step.phase === "CUSTOMS") return b.customs.some((c) => !!c.icegateRef) ? null : "BOE not filed in ICEGATE yet.";
-  if (step.phase === "RELABEL") return b.relabelledAt ? null : "Goods not yet marked as received + relabelled to 1Buy (Journey tab).";
+  if (step.phase === "RELABEL") return b.relabelledAt ? null : "Goods not yet marked as received at 1Buy (Journey tab).";
   if (step.phase === "DELIVERY" && n.includes("dispatch")) { // can't dispatch to client until every line is mapped to demand
     return b.lines.every((l) => unmappedForOrderLine(b, l) === 0) ? null : "Not all order lines are mapped to a client PO yet (Allocations tab).";
   }

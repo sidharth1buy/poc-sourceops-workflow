@@ -647,6 +647,9 @@ export interface Shipment {
   lastLocation?: string; // latest tracking checkpoint location (incl. origin/away country)
 }
 
+// Core ICEGATE clearance stepper: file BoE → faceless assessment → pay duty → out-of-charge.
+export type CustomsStage = "FILED" | "ASSESSED" | "DUTY_PAID" | "CLEARED";
+
 export interface CustomsEntry {
   id: string;
   shipmentNo: string;
@@ -658,6 +661,17 @@ export interface CustomsEntry {
   currency?: string;
   icegateRef?: string;
   filedAt?: string;
+  // ---- core clearance stepper ----
+  stage?: CustomsStage;
+  boeType?: "PRIOR" | "ON_ARRIVAL"; // filed before arrival (prior) or after IGM (on-arrival)
+  icegateAckNo?: string;
+  assessableValue?: number;         // retained to compute duty at the assessment stage
+  assessment?: "AUTO_CLEAR" | "FLAGGED"; // faceless assessment outcome
+  query?: string;                   // if flagged, what customs asked for
+  queryResolvedAt?: string;
+  duty?: { bcd: number; sws: number; igst: number; totalDuty: number };
+  dutyPaidAt?: string;
+  oocDate?: string;
 }
 
 export interface SourcingAllocation {

@@ -17,6 +17,7 @@ import { ESCROW_STATUS_ORDER } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
 import { fileBillOfEntry, getAssessment, getClearanceStatus } from "@/integrations/customs-icegate";
 import { bookShipment, getTracking, type Carrier } from "@/integrations/logistics";
+import { weClearImportCustoms } from "@/lib/incoterm";
 import {
   whlSubmitTestJob, whlPollTestReport, mapVerdict, whlFetchReport, whlSendMail, whlPollInbox,
   conclusionToLotStatus, processToTestStatus,
@@ -446,7 +447,12 @@ interface Store {
   setShipmentStatus: (orderId: string, shipId: string, status: ShipmentStatus) => void;
   pollShipmentTracking: (orderId: string, shipId: string) => void; // logistics adapter - advance from carrier tracking
 
-  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number }) => void; // ICEGATE adapter
+  // ICEGATE core clearance stepper: file → assess → pay duty → out-of-charge.
+  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL" }) => void;
+  assessCustoms: (orderId: string, customsId: string) => void;
+  respondCustomsQuery: (orderId: string, customsId: string) => void;
+  payCustomsDuty: (orderId: string, customsId: string) => void;
+  clearCustoms: (orderId: string, customsId: string) => void;
 
   allocateDelivery: (orderId: string, a: { fromShipmentNo: string; clientPoNo: string; clientLineMpn: string; qty: number }) => boolean;
   recordPoD: (orderId: string, deliveryId: string) => void;
@@ -735,7 +741,7 @@ export const useStore = create<Store>()(
 
       markRelabelled: (orderId) => {
         set((s) => { const b = s.orders[orderId]; if (b) b.relabelledAt = today(); });
-        toast.success("Goods marked as received + relabelled to 1Buy");
+        toast.success("Goods marked as received at 1Buy");
       },
 
       addLot: (orderId, lot) => {
@@ -1850,9 +1856,16 @@ export const useStore = create<Store>()(
       },
       // Logistics adapter: poll the carrier and advance the shipment one checkpoint.
       pollShipmentTracking: (orderId, shipId) => {
-        const sh = get().orders[orderId]?.shipments.find((x) => x.id === shipId);
-        if (!sh) return;
+        const b0 = get().orders[orderId];
+        const sh = b0?.shipments.find((x) => x.id === shipId);
+        if (!b0 || !sh) return;
         if (sh.awb === "booking…" || sh.awb === "booking failed") { toast.error("AWB not booked yet."); return; }
+        // Customs hold: an international import that 1Buy clears can't move past "held for customs"
+        // until the Bill of Entry is cleared in ICEGATE (out of charge). File it on the Customs tab.
+        if (sh.status === "AT_CUSTOMS" && sh.leg === "INBOUND" && weClearImportCustoms(b0)) {
+          const cleared = b0.customs.some((c) => c.shipmentNo === sh.shipmentNo && !!c.icegateRef);
+          if (!cleared) { toast.error("Held at customs — file the Bill of Entry (Customs tab); the shipment clears once ICEGATE gives out-of-charge."); return; }
+        }
         const trackSeq: ShipmentStatus[] = ["DISPATCHED", "IN_TRANSIT", "AT_CUSTOMS", "ARRIVED", "DELIVERED"];
         const hopsDone = trackSeq.indexOf(sh.status) + 1; // PLANNED → 0 → first checkpoint
         toast.message("Polling carrier tracking…");
@@ -1865,27 +1878,66 @@ export const useStore = create<Store>()(
         })();
       },
 
-      // ICEGATE adapter: file → assess (duty) → clearance (issues the real ICEGATE ref). No hand-typed ref anymore.
+      // ICEGATE step 1 — file the Bill of Entry (Prior or on-arrival). Assessment / duty / OOC are
+      // now separate steps (assessCustoms → payCustomsDuty → clearCustoms), so the flow mirrors the
+      // real clearance sequence and the shipment stays held at customs until OOC issues the ref.
       fileBOE: (orderId, e) => {
         const b0 = get().orders[orderId]; if (!b0) return;
         const ceId = uid("ce");
         set((s) => {
           const b = s.orders[orderId]; if (!b) return;
           const existing = b.customs.find((c) => c.shipmentNo === e.shipmentNo);
-          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", totalDuty: undefined, icegateRef: undefined, filedAt: undefined };
+          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
           if (existing) Object.assign(existing, entry); else b.customs.push(entry);
         });
         toast.message("Filing BOE with ICEGATE…");
         void (async () => {
           try {
             const filed = await fileBillOfEntry({ orderId, shipmentNo: e.shipmentNo, portCode: e.portCode, chaName: e.chaName, assessableValue: e.assessableValue });
-            const assessed = await getAssessment(filed.beNo, e.assessableValue);
-            const cleared = await getClearanceStatus(filed.beNo);
-            set((s) => {
-              const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo);
-              if (c) { c.beNo = filed.beNo; c.beDate = filed.beDate; c.totalDuty = assessed.duty.totalDuty; c.icegateRef = cleared.icegateRef; c.filedAt = cleared.oocDate; }
-            });
-            toast.success(`BOE ${filed.beNo} cleared - ICEGATE ${cleared.icegateRef}`);
+            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo); if (c) { c.beNo = filed.beNo; c.beDate = filed.beDate; c.icegateAckNo = filed.icegateAckNo; c.stage = "FILED"; } });
+            toast.success(`BOE filed: ${filed.beNo} (${e.boeType === "PRIOR" ? "Prior" : "on-arrival"})`);
+          } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
+        })();
+      },
+      // ICEGATE step 2 — faceless assessment: computes duty + auto-clears or flags for a query.
+      assessCustoms: (orderId, customsId) => {
+        const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
+        if (!c0 || !c0.beNo || c0.beNo === "filing…") { toast.error("File the BOE first."); return; }
+        toast.message("Running faceless assessment…");
+        void (async () => {
+          try {
+            const a = await getAssessment(c0.beNo!, c0.assessableValue ?? 0);
+            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.duty = a.duty; c.totalDuty = a.duty.totalDuty; c.assessment = a.review; c.query = a.query; c.stage = "ASSESSED"; } });
+            if (a.review === "FLAGGED") toast.message(`Assessment flagged — ${a.query}`);
+            else toast.success("Auto-cleared by faceless assessment");
+          } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
+        })();
+      },
+      // ICEGATE step 2b — respond to a flagged query (valuation/HS/BIS), unblocking duty payment.
+      respondCustomsQuery: (orderId, customsId) => {
+        const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
+        if (!c0 || c0.assessment !== "FLAGGED") return;
+        set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) c.queryResolvedAt = today(); });
+        toast.success("Query response submitted to customs — assessment resolved");
+      },
+      // ICEGATE step 3 — pay assessed duty (BCD + SWS + IGST) on ICEGATE.
+      payCustomsDuty: (orderId, customsId) => {
+        const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
+        if (!c0 || c0.stage !== "ASSESSED") { toast.error("Run the assessment first."); return; }
+        if (c0.assessment === "FLAGGED" && !c0.queryResolvedAt) { toast.error("Respond to the customs query before paying duty."); return; }
+        set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.dutyPaidAt = today(); c.stage = "DUTY_PAID"; } });
+        toast.success(`Duty paid on ICEGATE — ${c0.currency ?? "INR"} ${(c0.duty?.totalDuty ?? c0.totalDuty ?? 0).toLocaleString()}`);
+      },
+      // ICEGATE step 4 — Out-of-Charge: issues the ICEGATE ref and releases the shipment's customs hold.
+      clearCustoms: (orderId, customsId) => {
+        const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
+        if (!c0 || c0.stage !== "DUTY_PAID" || !c0.beNo) { toast.error("Pay the duty first."); return; }
+        toast.message("Requesting Out-of-Charge from ICEGATE…");
+        void (async () => {
+          try {
+            const cleared = await getClearanceStatus(c0.beNo!);
+            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.icegateRef = cleared.icegateRef; c.oocDate = cleared.oocDate; c.filedAt = cleared.oocDate; c.stage = "CLEARED"; } });
+            toast.success(`Out of Charge — ICEGATE ${cleared.icegateRef}. Shipment released from customs.`);
           } catch (err) { toast.error(`ICEGATE: ${errMsg(err)}`); }
         })();
       },
@@ -2585,8 +2637,9 @@ export const useStore = create<Store>()(
       // 13 = merged with the RFQ module (client intake → PO, PI-gated approvals) ·
       // 14 = added ord-201/202 demo orders + Escrow.hkinRpaStartedAt · 15-17 = escrow real-HKin-evidence rework ·
       // 18 = merged with WHL testing rework: 7-stage lifecycle (started / report-prep dropped),
-      //      advance-vs-credit lab payment terms on the invoice, all-mail-driven stages
-      version: 18,
+      //      advance-vs-credit lab payment terms on the invoice, all-mail-driven stages ·
+      // 19 = staged customs clearance (file BoE → faceless assessment → duty → out-of-charge) on CustomsEntry
+      version: 19,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than
