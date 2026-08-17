@@ -52,8 +52,8 @@ export const NAV_GROUPS = [
     { href: "/fulfilment", label: "Dashboard", icon: "LayoutDashboard" },
   ] },
   { group: "Create", items: [
-    { href: "/fulfilment/client-pos", label: "Client POs", icon: "FileText" },
-    { href: "/fulfilment/supplier-pos", label: "Supplier POs", icon: "ClipboardList" },
+    { href: "/fulfilment/client-pos", label: "Sales Orders", icon: "FileText" },
+    { href: "/fulfilment/supplier-pos", label: "Purchase Orders", icon: "ClipboardList" },
   ] },
   { group: "Operate", items: [
     { href: "/fulfilment/orders", label: "Orders", icon: "Package" },
@@ -362,7 +362,7 @@ const refLine = (c: WhlMailCtx) => [
   c.lotCode && `· Lot: ${c.lotCode}${c.qty ? ` - qty ${c.qty}${c.sampleQty ? `, sample ${c.sampleQty}` : ""}` : ""}`,
   c.workOrderNo && `· Work order: ${c.workOrderNo}`,
   c.reportNo && `· Report: ${c.reportNo}`,
-  c.clientPoNo && `· Client PO: ${c.clientPoNo}`,
+  c.clientPoNo && `· Sales Order: ${c.clientPoNo}`,
   c.lab && `· Lab site: ${c.lab}`,
 ].filter(Boolean).join("\n");
 
@@ -485,7 +485,7 @@ export const NOTIFY_TEMPLATES: NotifyTemplate[] = [
   {
     party: "SUPPLIER", label: "Notify supplier", hint: "Result + report to the supplier (buyer stays masked)",
     to: () => "quality@supplier.example",
-    masking: "The buyer's identity, client PO and sell prices are never included.",
+    masking: "The buyer's identity, sales order and sell prices are never included.",
     subject: (c) => `Test result - ${c.mpn} / Lot ${c.lotCode} - ${verdictWord(c)}${c.supplierPoNo ? ` (${c.supplierPoNo})` : ""}`,
     body: (c) => `Dear supplier,\n\nThe independent test on the lot supplied against ${c.supplierPoNo ?? "our PO"} is complete.\n\n${lotRef(c)}\n\n${
       c.conclusion === "ACCEPTABLE"
@@ -536,7 +536,7 @@ export const NOTIFY_TEMPLATES: NotifyTemplate[] = [
       c.invoiceTerms === "ADVANCE"
         ? "This work order is on advance terms, so the laboratory is holding the lot and has not started testing. The order is waiting on this transfer — please treat it as priority.\n\n"
         : ""
-    }Please quote work order ${c.workOrderNo ?? "—"} and lot ${c.lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against ${c.supplierPoNo ?? "the supplier PO"} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n${c.entity}`,
+    }Please quote work order ${c.workOrderNo ?? "—"} and lot ${c.lotCode} as the payment reference so the lab can reconcile it, and send us the transfer reference once released.\n\nThis is a testing cost against ${c.supplierPoNo ?? "the purchase order"} — book it to the order, not to the supplier's material payment.\n\nThanks,\nSourcing Ops\n${c.entity}`,
   },
 ];
 
@@ -652,7 +652,7 @@ export function notifyDigest(party: NotifyParty, c: NotifyDigestCtx): { subject:
           + (held.length ? `${codes(held)} ${held.length === 1 ? "is" : "are"} on advance terms — the laboratory is holding ${held.length === 1 ? "that lot" : "those lots"} and has not started testing, so please treat ${held.length === 1 ? "it" : "them"} as priority.\n\n` : "")
           + `Please quote each work order and lot code as the payment reference so the lab can reconcile them, and send us the transfer references once released.\n\n`
           + (missing.length ? `No invoice has been received yet for ${codes(missing)} — those are excluded from this run and will follow separately.\n\n` : "")
-          + `These are testing costs against ${c.supplierPoNo ?? "the supplier PO"} — book them to the order, not to the supplier's material payment.\n\n${sign}`,
+          + `These are testing costs against ${c.supplierPoNo ?? "the purchase order"} — book them to the order, not to the supplier's material payment.\n\n${sign}`,
       };
     }
     case "WHL":

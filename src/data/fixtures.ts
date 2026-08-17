@@ -469,15 +469,15 @@ const STM32_TESTS = [
 
 const HERO_MPN_TESTS: MpnTestSpec[] = [
   {
-    id: "spec-a", mpn: "STM32F407VGT6", autofill: "OK", sourceDoc: "Supplier PO SPO-2026-0148",
+    id: "spec-a", mpn: "STM32F407VGT6", autofill: "OK", sourceDoc: "Purchase Order SPO-2026-0148",
     parsedAt: "2026-07-20 09:14", confidence: 0.96, tests: STM32_TESTS,
     audit: [
-      aud(1, "Doc extraction (auto)", "AUTOFILL", { target: "STM32F407VGT6", before: "—", after: "5 test(s) from Supplier PO SPO-2026-0148", note: "Confidence 96%." }),
+      aud(1, "Doc extraction (auto)", "AUTOFILL", { target: "STM32F407VGT6", before: "—", after: "5 test(s) from Purchase Order SPO-2026-0148", note: "Confidence 96%." }),
       aud(2, "A. Sharma", "ADD", { at: "2026-07-20 11:02", target: "Decapsulation & Die Analysis", before: "—", after: "manual test (AS6171)", note: "PO clause 7 asks for die analysis on MIL-grade lines; parser missed the footnote." }),
     ],
   },
   {
-    id: "spec-b", mpn: "TPS54560DDAR", autofill: "FAILED", sourceDoc: "Supplier PO SPO-2026-0148",
+    id: "spec-b", mpn: "TPS54560DDAR", autofill: "FAILED", sourceDoc: "Purchase Order SPO-2026-0148",
     parsedAt: "2026-07-20 09:14", confidence: 0.31,
     autofillNote: "Test table on page 2 is a low-resolution scan — columns could not be resolved.",
     tests: [
@@ -607,7 +607,7 @@ const LOT_A_NOTIFICATIONS: LotNotification[] = [
     reportNo: "352146.2", attachments: ["WHL-352146.2.pdf"],
     subject: "Test result — STM32F407VGT6 / Lot LOT-A — Acceptable (SPO-2026-0148)",
     body: "Dear supplier,\n\nThe independent test on the lot supplied against SPO-2026-0148 is complete.\n\n· MPN: STM32F407VGT6 (date code 2325)\n· Lot: LOT-A — qty 300, sample 20\n· Test report: 352146.2 dated 2026-07-25\n· Conclusion: Acceptable\n\nThe lot is accepted. We are proceeding with onward logistics and payment per the agreed terms.\n\nRegards,\nSourcing Ops\nSharpbuy Global Solutions",
-    note: "Masked — buyer identity, client PO and sell price withheld. Report shared under NDA — internal use by the recipient only." },
+    note: "Masked — buyer identity, sales order and sell price withheld. Report shared under NDA — internal use by the recipient only." },
   { id: "ntf-a2", party: "BUYER", to: "procurement@acme.example", at: "2026-07-25 16:35", by: "A. Sharma", status: "SENT",
     reportNo: "352146.2", attachments: ["WHL-352146.2.pdf"],
     subject: "ORD-2026-000148 — test result for STM32F407VGT6 / Lot LOT-A — Acceptable",
@@ -754,7 +754,7 @@ const HERO_LAB_EMAILS: LabEmail[] = [
   { id: "em-2", direction: "OUT", lotId: "lot-c", lotCode: "LOT-C", mpn: "TPS54560DDAR", workOrderNo: "352151", poNo: "ACME-PO-3391",
     subject: "Status request — WO 352151 / Lot LOT-C / TPS54560DDAR", kind: "REQUEST_UPDATE", status: "AWAITING_RESPONSE",
     at: "2026-07-24 11:30", by: "A. Sharma",
-    body: "Hi WHL team,\n\nCould you share the current status of:\n· MPN: TPS54560DDAR\n· Lot: LOT-C (qty 100, sample 15)\n· Work order: 352151\n· Client PO: ACME-PO-3391\n\nIf the report is issued, please attach the latest revision.\n\nThanks,\nSharpbuy Global Solutions" },
+    body: "Hi WHL team,\n\nCould you share the current status of:\n· MPN: TPS54560DDAR\n· Lot: LOT-C (qty 100, sample 15)\n· Work order: 352151\n· Sales Order: ACME-PO-3391\n\nIf the report is issued, please attach the latest revision.\n\nThanks,\nSharpbuy Global Solutions" },
   { id: "em-3", direction: "IN", lotId: "lot-c", lotCode: "LOT-C", mpn: "TPS54560DDAR", workOrderNo: "352151",
     subject: "Interim status — WO 352151 / Lot LOT-C", kind: "STATUS_UPDATE", status: "UPDATE_RECEIVED",
     at: "2026-07-27 10:15", by: "WHL Reports",

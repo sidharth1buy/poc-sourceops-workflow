@@ -122,10 +122,10 @@ export const INTEGRATIONS: IntegrationSystem[] = [
     criticalPath: false,
     envVar: "NEXT_PUBLIC_DOC_EXTRACT_URL",
     baseUrl: "https://doc-ai.sandbox.1buy.ai/api",
-    description: "Demand capture: parse an uploaded client PO / supplier PI into structured fields + line items with per-field confidence (mirrors 1Buy's BOM-upload pattern).",
-    wiredInto: ["Client PO → New → Parse"],
+    description: "Demand capture: parse an uploaded sales order / supplier PI into structured fields + line items with per-field confidence (mirrors 1Buy's BOM-upload pattern).",
+    wiredInto: ["Sales Order → New → Parse"],
     endpoints: [
-      { method: "POST", path: "/extract/client-po", purpose: "parse a client PO document" },
+      { method: "POST", path: "/extract/client-po", purpose: "parse a sales order document" },
     ],
   },
 ];

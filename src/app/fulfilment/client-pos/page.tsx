@@ -23,9 +23,9 @@ export default function ClientPosPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Client POs"
+        title="Sales Orders"
         description={<>The demand we fulfil. <b className="text-foreground">Source</b> each line to one or more suppliers (split a PO across suppliers, or reuse an order for several POs).</>}
-        actions={<Link href="/fulfilment/client-pos/new"><Button><Plus className="h-4 w-4" /> New Client PO</Button></Link>}
+        actions={<Link href="/fulfilment/client-pos/new"><Button><Plus className="h-4 w-4" /> New Sales Order</Button></Link>}
       />
 
       <div className="space-y-4">
@@ -71,7 +71,7 @@ export default function ClientPosPage() {
 
               {serving.length > 0 && (
                 <div className="mt-3">
-                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sourced via (supplier POs)</div>
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sourced via (purchase orders)</div>
                   <div className="flex flex-wrap gap-1.5">
                     {serving.map((spo) => (
                       <Link key={spo.id} href={spo.orderId ? `/fulfilment/orders/${spo.orderId}` : "/fulfilment/supplier-pos"}

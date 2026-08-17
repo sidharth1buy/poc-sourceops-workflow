@@ -561,7 +561,7 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
               <div className="mb-3">
                 <Notice tone="warn" icon={<Wand2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
                   action={<button className="font-medium underline disabled:opacity-50" disabled={!canEdit} onClick={() => autofillMpnTests(id, line.mpn)}>Auto-fill now</button>}>
-                  No test list yet for this MPN — parse it off {b.supplierPoNo ? `Supplier PO ${b.supplierPoNo}` : "the PO"}.
+                  No test list yet for this MPN — parse it off {b.supplierPoNo ? `Purchase Order ${b.supplierPoNo}` : "the PO"}.
                 </Notice>
               </div>
             )}
@@ -706,7 +706,7 @@ function BulkActionsMenu({
             {item("Notify supplier", `One digest covering ${lots.length} lot(s); buyer stays masked`, <Factory className="h-4 w-4" />,
               () => onBulk("SUPPLIER"), !canEmail)}
             {item("Notify buyer / client", clientPos.size > 1
-              ? `Split into ${clientPos.size} mails — one per client PO`
+              ? `Split into ${clientPos.size} mails — one per sales order`
               : `One digest covering ${lots.length} lot(s); supplier stays masked`, <Users className="h-4 w-4" />,
               () => onBulk("BUYER"), !canEmail)}
             {item("Notify escrow provider", b.escrow ? `Release-trigger evidence for ${lots.length} lot(s)` : "No escrow on this order", <Landmark className="h-4 w-4" />,
@@ -1126,7 +1126,7 @@ function MailSection({
           ))}
         </div>
         <p className="mt-2 text-xs text-muted-foreground">
-          Each template fills the subject and the whole message from the lot&apos;s MPN, lot code, work order, report no and client PO — edit the wording and send.
+          Each template fills the subject and the whole message from the lot&apos;s MPN, lot code, work order, report no and sales order — edit the wording and send.
           {!canEmail && <> <Denied what="Emailing WHL" /></>}
         </p>
       </Panel>

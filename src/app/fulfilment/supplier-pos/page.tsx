@@ -21,13 +21,13 @@ export default function SupplierPosPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Supplier POs"
-        description={<>Our purchase docs to suppliers. Lines can reference one or more client-PO lines (or stay unlinked). Once ready, <b className="text-foreground">create the fulfilment order</b> from a PO to start the journey.</>}
-        actions={<Link href="/fulfilment/supplier-pos/new"><Button><Plus className="h-4 w-4" /> New Supplier PO</Button></Link>}
+        title="Purchase Orders"
+        description={<>Our purchase docs to suppliers. Lines can reference one or more sales-order lines (or stay unlinked). Once ready, <b className="text-foreground">create the fulfilment order</b> from a PO to start the journey.</>}
+        actions={<Link href="/fulfilment/supplier-pos/new"><Button><Plus className="h-4 w-4" /> New Purchase Order</Button></Link>}
       />
 
       {supplierPos.length === 0 && (
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No supplier POs yet. <Link href="/fulfilment/supplier-pos/new" className="text-primary hover:underline">Create one</Link>.</div></Panel>
+        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No purchase orders yet. <Link href="/fulfilment/supplier-pos/new" className="text-primary hover:underline">Create one</Link>.</div></Panel>
       )}
 
       <div className="space-y-4">

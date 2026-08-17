@@ -64,7 +64,7 @@ export function OrderWorkspace({ id }: { id: string }) {
           </div>
           <div className="flex items-center gap-2">
             {!["CLOSED", "CANCELLED"].includes(b.status) && (
-              <Button variant="ghost" onClick={() => { if (confirm("Cancel this order and release its supplier PO back to draft?")) cancelOrder(id); }}>Cancel order</Button>
+              <Button variant="ghost" onClick={() => { if (confirm("Cancel this order and release its purchase order back to draft?")) cancelOrder(id); }}>Cancel order</Button>
             )}
             <Button variant="outline" onClick={() => setModal("event")}>Add event</Button>
             <Button onClick={() => advanceStep(id)} disabled={!current}>{current ? `Advance: ${current.name}` : "All steps done"}</Button>
@@ -210,7 +210,7 @@ function OverviewTab({ b, pct, current, onUploadPI }: { b: OrderBundle; pct: num
           <Field label="Buyer (client)">{party(b.buyer)}</Field>
           <Field label="Supplier">{party(b.supplier)}</Field>
           <Field label="Masking entity">{b.maskingEntity}</Field>
-          {b.supplierPoNo && <Field label="Supplier PO"><Link href="/fulfilment/supplier-pos" className="font-mono text-primary hover:underline">{b.supplierPoNo}</Link></Field>}
+          {b.supplierPoNo && <Field label="Purchase Order"><Link href="/fulfilment/supplier-pos" className="font-mono text-primary hover:underline">{b.supplierPoNo}</Link></Field>}
           <Field label="Supplier PI">
             {b.piNo ? <span className="font-mono text-foreground">{b.piNo}</span> : <span className="text-warn">awaiting PI</span>}
             <button type="button" onClick={onUploadPI} className="ml-2 text-xs font-medium text-primary hover:underline">{b.piNo ? "Replace" : "Upload PI"}</button>
@@ -283,7 +283,7 @@ function LinesTab({ b }: { b: OrderBundle }) {
 
 function AllocationsTab({ b, onMap }: { b: OrderBundle; onMap: (line: OrderBundle["lines"][number]) => void }) {
   const cols: Col<OrderBundle["sourcingAllocations"][number]>[] = [
-    { key: "cpo", header: "Client PO", render: (a) => <span className="font-mono text-xs">{a.clientPoNo}</span> },
+    { key: "cpo", header: "Sales Order", render: (a) => <span className="font-mono text-xs">{a.clientPoNo}</span> },
     { key: "cl", header: "Client line", render: (a) => <span className="font-mono text-xs">{a.clientLineMpn}</span> },
     { key: "ol", header: "Order line", render: (a) => <span className="font-mono text-xs">{a.orderLineMpn}</span> },
     { key: "qty", header: "Qty", align: "right", render: (a) => qtyfmt(a.qty) },
@@ -443,7 +443,7 @@ function DeliveryTab({ b, id, onAllocate }: { b: OrderBundle; id: string; onAllo
   const generateEInvoice = useStore((s) => s.generateEInvoice);
   const cols: Col<OrderBundle["deliveries"][number]>[] = [
     { key: "from", header: "From shipment", render: (d) => <span className="font-mono text-xs">{d.fromShipmentNo}</span> },
-    { key: "cpo", header: "Client PO", render: (d) => d.clientPoNo },
+    { key: "cpo", header: "Sales Order", render: (d) => d.clientPoNo },
     { key: "mpn", header: "Line", render: (d) => <span className="font-mono text-xs">{d.clientLineMpn}</span> },
     { key: "qty", header: "Qty", align: "right", render: (d) => qtyfmt(d.qty) },
     { key: "pod", header: "PoD", render: (d) => d.pod ? <Pill tone="ok">captured</Pill> : <Button variant="outline" onClick={() => recordPoD(id, d.id)}>Record PoD</Button> },
@@ -458,7 +458,7 @@ function DeliveryTab({ b, id, onAllocate }: { b: OrderBundle; id: string; onAllo
         </span>
         {!b.einvoice && <Button variant="outline" onClick={() => generateEInvoice(id)}>Generate e-Invoice (IRN)</Button>}
       </div>
-      {b.deliveries.length === 0 ? <Empty text="No allocations yet — allocate received qty to a client PO." /> : <DataTable columns={cols} rows={b.deliveries} />}
+      {b.deliveries.length === 0 ? <Empty text="No allocations yet — allocate received qty to a sales order." /> : <DataTable columns={cols} rows={b.deliveries} />}
       <p className="mt-3 text-xs text-muted-foreground">Available to allocate: {Array.from(new Set(b.shipments.flatMap((s) => s.lines).map((l) => l.mpn))).map((m) => `${m} ${remainingToAllocate(b, m)}`).join(" · ") || "—"}</p>
     </Panel>
   );

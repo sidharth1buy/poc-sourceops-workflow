@@ -137,7 +137,7 @@ const ntf = (
 ): LotNotification => ({
   id: nid("ntf"), party, to, at, by: o.by ?? "A. Sharma", status: o.status ?? "SENT",
   subject, body, reportNo: o.reportNo, attachments: o.attach ? [o.attach] : [],
-  note: o.note ?? (party === "SUPPLIER" ? "Masked — buyer identity, client PO and sell price withheld."
+  note: o.note ?? (party === "SUPPLIER" ? "Masked — buyer identity, sales order and sell price withheld."
     : party === "BUYER" ? "Masked — supplier identity, buy price and inbound AWB withheld."
     : party === "ESCROW" ? "Release-trigger evidence for the escrow provider."
     : "Acknowledgement to the laboratory."),
@@ -241,7 +241,7 @@ const LOT151_B: Lot = {
 
 const D151: OrderDetail = {
   lines: L151,
-  mpnTests: [spec("XC7A35T-2FGG484I", "Supplier PO SPO-2026-0151", "2026-07-20 09:20", {
+  mpnTests: [spec("XC7A35T-2FGG484I", "Purchase Order SPO-2026-0151", "2026-07-20 09:20", {
     tests: [["Documentation & Packaging Inspection", "AS6081"], ["General Inspection", "AS6081"], ["External Visual Inspection", "AS6081"],
       ["X-Ray Inspection", "AS6081"], ["Decapsulation & Die Analysis", "AS6171"], ["Electrical Test", "AS6081"]],
     manual: ["Decapsulation & Die Analysis"], conf: 0.94,
@@ -262,7 +262,7 @@ const D151: OrderDetail = {
       { lot: LOT151_B }),
     mail("OUT", "REQUEST_UPDATE", "AWAITING_RESPONSE", "2026-07-29 09:45",
       "Status request — WO 352178 / Lot LOT-NW-2 / XC7A35T-2FGG484I",
-      "Hi WHL team,\n\nReference:\n· MPN: XC7A35T-2FGG484I (date code 2412)\n· Lot: LOT-NW-2 — qty 50, sample 8\n· Work order: 352178\n· Client PO: NW-4402\n\nGiven the outcome on LOT-NW-1, please prioritise this lot and confirm the expected report date.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
+      "Hi WHL team,\n\nReference:\n· MPN: XC7A35T-2FGG484I (date code 2412)\n· Lot: LOT-NW-2 — qty 50, sample 8\n· Work order: 352178\n· Sales Order: NW-4402\n\nGiven the outcome on LOT-NW-1, please prioritise this lot and confirm the expected report date.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
       { lot: LOT151_B }),
   ],
   payments: [
@@ -335,10 +335,10 @@ const LOT149_B: Lot = {
 const D149: OrderDetail = {
   lines: L149,
   mpnTests: [
-    spec("LM317T", "Supplier PO SPO-2026-0149", "2026-07-21 15:05", {
+    spec("LM317T", "Purchase Order SPO-2026-0149", "2026-07-21 15:05", {
       tests: [["Documentation & Packaging Inspection"], ["General Inspection"], ["Electrical Test"]], conf: 0.97,
     }),
-    spec("IRF540NPBF", "Supplier PO SPO-2026-0149", "2026-07-21 15:05", {
+    spec("IRF540NPBF", "Purchase Order SPO-2026-0149", "2026-07-21 15:05", {
       tests: [["Documentation & Packaging Inspection"], ["General Inspection"], ["Electrical Test"]], conf: 0.96,
     }),
   ],
@@ -346,7 +346,7 @@ const D149: OrderDetail = {
   labEmails: [
     mail("OUT", "CUSTOM", "AWAITING_RESPONSE", "2026-07-25 11:00",
       "Self-test report request — LOT-DC-2 / IRF540NPBF",
-      "Hi team,\n\nReference:\n· MPN: IRF540NPBF (date code 2519)\n· Lot: LOT-DC-2 — qty 3000, sample 32\n· Work order: DC-SELF-4472\n· Client PO: BEL-DOM/26/PO/77\n\nPlease share the signed CoC once the Rds(on) sweep is complete, and confirm the disposition of the 2 bent-lead units.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
+      "Hi team,\n\nReference:\n· MPN: IRF540NPBF (date code 2519)\n· Lot: LOT-DC-2 — qty 3000, sample 32\n· Work order: DC-SELF-4472\n· Sales Order: BEL-DOM/26/PO/77\n\nPlease share the signed CoC once the Rds(on) sweep is complete, and confirm the disposition of the 2 bent-lead units.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
       { lot: LOT149_B }),
     mail("IN", "STATUS_UPDATE", "UPDATE_RECEIVED", "2026-07-25 09:30",
       "LOT-DC-2 interim — 2 units flagged on visual",
@@ -452,11 +452,11 @@ const LOT153_B: Lot = {
 const D153: OrderDetail = {
   lines: L153,
   mpnTests: [
-    spec("ADSP-21489KSWZ-4B", "Supplier PO SPO-2026-0153", "2026-07-19 16:20", {
+    spec("ADSP-21489KSWZ-4B", "Purchase Order SPO-2026-0153", "2026-07-19 16:20", {
       tests: [["Documentation & Packaging Inspection", "AS6081"], ["General Inspection", "AS6081"], ["External Visual Inspection", "AS6081"],
         ["Electrical Test", "AS6081"], ["X-Ray Inspection", "AS6081"]], conf: 0.93,
     }),
-    spec("MAX3232ECPE+", "Supplier PO SPO-2026-0153", "2026-07-19 16:20", {
+    spec("MAX3232ECPE+", "Purchase Order SPO-2026-0153", "2026-07-19 16:20", {
       autofill: "FAILED", note: "Test table for this MPN sits in an image-only annexe — columns could not be resolved.",
       tests: [["Documentation & Packaging Inspection", "AS6081"], ["General Inspection", "AS6081"], ["External Visual Inspection", "AS6081"],
         ["Electrical Test", "AS6081"], ["X-Ray Inspection", "AS6081"]],
@@ -472,11 +472,11 @@ const D153: OrderDetail = {
       { matchNote: "Subject line carries no work order, lot or report number — match it manually." }),
     mail("OUT", "CUSTOM", "ESCALATED", "2026-07-28 09:15",
       "Escalation — TAT overdue — WO 352159 / Lot LOT-KS-2 / MAX3232ECPE+",
-      "Hi WHL team,\n\nReference:\n· MPN: MAX3232ECPE+ (date code 2410)\n· Lot: LOT-KS-2 — qty 800, sample 20\n· Work order: 352159\n· Client PO: KES-2026-0114\n\nThis lot is past the quoted turnaround and our earlier request is unanswered. The order is held on this result. Please confirm today: current stage, blocker, and a committed report date.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
+      "Hi WHL team,\n\nReference:\n· MPN: MAX3232ECPE+ (date code 2410)\n· Lot: LOT-KS-2 — qty 800, sample 20\n· Work order: 352159\n· Sales Order: KES-2026-0114\n\nThis lot is past the quoted turnaround and our earlier request is unanswered. The order is held on this result. Please confirm today: current stage, blocker, and a committed report date.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
       { lot: LOT153_B }),
     mail("OUT", "REQUEST_UPDATE", "AWAITING_RESPONSE", "2026-07-23 15:30",
       "Status request — WO 352159 / Lot LOT-KS-2 / MAX3232ECPE+",
-      "Hi WHL team,\n\nReference:\n· MPN: MAX3232ECPE+ (date code 2410)\n· Lot: LOT-KS-2 — qty 800, sample 20\n· Work order: 352159\n· Client PO: KES-2026-0114\n\nCould you share the current status of the above lot — which processes are complete, which are in progress, and the expected date for the report?\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
+      "Hi WHL team,\n\nReference:\n· MPN: MAX3232ECPE+ (date code 2410)\n· Lot: LOT-KS-2 — qty 800, sample 20\n· Work order: 352159\n· Sales Order: KES-2026-0114\n\nCould you share the current status of the above lot — which processes are complete, which are in progress, and the expected date for the report?\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
       { lot: LOT153_B }),
     mail("IN", "REPORT", "REPORT_DELIVERED", "2026-07-26 17:10",
       "WHL Report 352158.1 — ADSP-21489KSWZ-4B (Lot LOT-KS-1)",
@@ -601,11 +601,11 @@ const LOT144_B: Lot = {
 const D144: OrderDetail = {
   lines: L144,
   mpnTests: [
-    spec("STM32F407VGT6", "Supplier PO SPO-2026-0144", "2026-06-12 10:00", {
+    spec("STM32F407VGT6", "Purchase Order SPO-2026-0144", "2026-06-12 10:00", {
       tests: [["Documentation & Packaging Inspection", "AS6081"], ["General Inspection", "AS6081"], ["External Visual Inspection", "AS6081"],
         ["Electrical Test", "AS6081"], ["X-Ray Inspection", "AS6081"]], conf: 0.98,
     }),
-    spec("TPS54560DDAR", "Supplier PO SPO-2026-0144", "2026-06-12 10:00", {
+    spec("TPS54560DDAR", "Purchase Order SPO-2026-0144", "2026-06-12 10:00", {
       tests: [["Documentation & Packaging Inspection", "AS6081"], ["General Inspection", "AS6081"], ["External Visual Inspection", "AS6081"],
         ["Electrical Test", "AS6081"]], conf: 0.97,
     }),
@@ -622,7 +622,7 @@ const D144: OrderDetail = {
       { lot: LOT144_A, attachments: ["WHL-351902.1.pdf"] }),
     mail("OUT", "REQUEST_UPDATE", "UPDATE_RECEIVED", "2026-06-23 09:00",
       "Status request — WO 351902 / Lot LOT-J1 / STM32F407VGT6",
-      "Hi WHL team,\n\nReference:\n· MPN: STM32F407VGT6 (date code 2318)\n· Lot: LOT-J1 — qty 1000, sample 32\n· Work order: 351902\n· Client PO: ACME-PO-3210\n\nCould you confirm the report date? The shipment is booked for the 26th.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
+      "Hi WHL team,\n\nReference:\n· MPN: STM32F407VGT6 (date code 2318)\n· Lot: LOT-J1 — qty 1000, sample 32\n· Work order: 351902\n· Sales Order: ACME-PO-3210\n\nCould you confirm the report date? The shipment is booked for the 26th.\n\nThanks,\nSourcing Ops\nSharpbuy Global Solutions",
       { lot: LOT144_A }),
   ],
   payments: [
@@ -687,7 +687,7 @@ const L155 = [
 
 const D155: OrderDetail = {
   lines: L155,
-  mpnTests: [spec("IRLZ44NPBF", "Supplier PO SPO-2026-0155", "2026-07-25 12:10", {
+  mpnTests: [spec("IRLZ44NPBF", "Purchase Order SPO-2026-0155", "2026-07-25 12:10", {
     tests: [], note: "PO specifies no incoming test for this MPN (client waived screening in writing).", conf: 0.99,
   })],
   lots: [],

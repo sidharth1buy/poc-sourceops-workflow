@@ -438,7 +438,7 @@ export function BulkNotifyModal({
       <div className="space-y-3">
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
           One digest instead of {lots.length} separate mails.
-          {party === "BUYER" && groups.length > 1 && <> Split into <b className="text-foreground">{groups.length} mails — one per client PO</b>, so no client sees another&apos;s lots.</>}
+          {party === "BUYER" && groups.length > 1 && <> Split into <b className="text-foreground">{groups.length} mails — one per sales order</b>, so no client sees another&apos;s lots.</>}
         </div>
         {tpl.masking && <p className="rounded-lg border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg px-2.5 py-2 text-xs text-warn">{tpl.masking}</p>}
         {(isFinance ? noInvoice : noReport).length > 0 && (
@@ -792,7 +792,7 @@ export function AllocateDeliveryModal({ orderId, onClose }: { orderId: string; o
             <p className="text-xs text-warn">This order hasn&apos;t sourced <span className="font-mono">{mpn}</span> for any client yet — map it on the Allocations tab first.</p>
           ) : (
             <>
-              <Labeled label="Client PO (sourced by this order)"><Select value={effectivePo} onChange={(e) => { const po = e.target.value; setClientPoNo(po); setQty(capForSel(mpn, po)); setErr(""); }}>{clientOptions.map((po) => <option key={po} value={po}>{po} · {nameFor(po)}</option>)}</Select></Labeled>
+              <Labeled label="Sales Order (sourced by this order)"><Select value={effectivePo} onChange={(e) => { const po = e.target.value; setClientPoNo(po); setQty(capForSel(mpn, po)); setErr(""); }}>{clientOptions.map((po) => <option key={po} value={po}>{po} · {nameFor(po)}</option>)}</Select></Labeled>
               <Labeled label="Qty" hint={`owed to this client: ${cap} (prefilled)`}><Input type="number" value={qty} max={cap} onChange={(e) => { setQty(+e.target.value); setErr(""); }} /></Labeled>
             </>
           )}
@@ -877,13 +877,13 @@ export function AddAllocationModal({
     if (addSourcingAllocation(orderId, { orderLineId, orderLineMpn, clientPoNo, clientLineMpn, qty, marginPct })) onClose();
   };
   return (
-    <Dialog open onClose={onClose} title={`Map ${orderLineMpn} → client PO`}
+    <Dialog open onClose={onClose} title={`Map ${orderLineMpn} → sales order`}
       footer={<Footer onClose={onClose} onSave={save} saveLabel="Map" disabled={!clientLineMpn || qty <= 0} />}>
       <div className="space-y-3">
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">Order line <b className="font-mono text-foreground">{orderLineMpn}</b> · unmapped <b className="text-foreground">{unmapped}</b></div>
-        <Labeled label="Client PO (demand served)"><Select value={clientPoNo} onChange={(e) => { setClientPoNo(e.target.value); setClientLineMpn(""); }}>{clientPos.map((c) => <option key={c.id} value={c.clientPoNo}>{c.clientPoNo} · {c.client.name}</option>)}</Select></Labeled>
-        <Labeled label="Client PO line"><Select value={clientLineMpn} onChange={(e) => setClientLineMpn(e.target.value)}><option value="">— select —</option>{clientLines.map((l) => <option key={l.mpn} value={l.mpn}>{l.mpn} (need {l.qty})</option>)}</Select></Labeled>
-        {clientLines.length === 0 && <p className="text-xs text-warn">No <span className="font-mono">{orderLineMpn}</span> demand on this client PO — pick a PO that ordered this part.</p>}
+        <Labeled label="Sales Order (demand served)"><Select value={clientPoNo} onChange={(e) => { setClientPoNo(e.target.value); setClientLineMpn(""); }}>{clientPos.map((c) => <option key={c.id} value={c.clientPoNo}>{c.clientPoNo} · {c.client.name}</option>)}</Select></Labeled>
+        <Labeled label="Sales Order line"><Select value={clientLineMpn} onChange={(e) => setClientLineMpn(e.target.value)}><option value="">— select —</option>{clientLines.map((l) => <option key={l.mpn} value={l.mpn}>{l.mpn} (need {l.qty})</option>)}</Select></Labeled>
+        {clientLines.length === 0 && <p className="text-xs text-warn">No <span className="font-mono">{orderLineMpn}</span> demand on this sales order — pick one that ordered this part.</p>}
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="Qty" hint={`max ${cap}`}><Input type="number" value={qty} max={cap} onChange={(e) => setQty(+e.target.value)} /></Labeled>
           <Labeled label="Margin %"><Input type="number" value={marginPct} onChange={(e) => setMarginPct(+e.target.value)} /></Labeled>
@@ -916,7 +916,7 @@ export function SourceOrderModal({
   };
   return (
     <Dialog open onClose={onClose} title={`Source ${clientLineMpn} for ${clientPoNo}`}
-      footer={<Footer onClose={onClose} onSave={save} saveLabel="Create supplier PO" disabled={!supplier.trim() || qty <= 0} />}>
+      footer={<Footer onClose={onClose} onSave={save} saveLabel="Create purchase order" disabled={!supplier.trim() || qty <= 0} />}>
       <div className="space-y-3">
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">Buyer <b className="text-foreground">{buyerName}</b> · line <b className="font-mono text-foreground">{clientLineMpn}</b></div>
         <Labeled label="Supplier"><Input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Shenzhen Micro Co" /></Labeled>
@@ -932,7 +932,7 @@ export function SourceOrderModal({
           <Labeled label="Testing"><Select value={testing} onChange={(e) => setTesting(e.target.value as TestingMode)}><option>NONE</option><option>SUPPLIER_SELF</option><option>WHL</option></Select></Labeled>
           <Labeled label="Margin %"><Input type="number" value={margin} onChange={(e) => setMargin(+e.target.value)} /></Labeled>
         </div>
-        <p className="text-xs text-muted-foreground">Creates a <b className="text-foreground">Supplier PO</b> pre-linked to {clientPoNo} · {clientLineMpn}. Create its fulfilment order from the Supplier POs list. Split across suppliers by sourcing again for the rest.</p>
+        <p className="text-xs text-muted-foreground">Creates a <b className="text-foreground">Purchase Order</b> pre-linked to {clientPoNo} · {clientLineMpn}. Create its fulfilment order from the Purchase Orders list. Split across suppliers by sourcing again for the rest.</p>
       </div>
     </Dialog>
   );

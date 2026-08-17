@@ -149,8 +149,8 @@ function InvoicePanel({
         <div className={cn("mt-3 rounded-lg border p-2.5 text-xs",
           recon.match ? "border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-ok-bg text-ok" : "border-[color-mix(in_srgb,var(--bad)_40%,transparent)] bg-bad-bg text-bad")}>
           {recon.match
-            ? "Matches the Supplier PO's PO amount and the fee schedule agreed at order time — no discrepancy to flag."
-            : `This invoice charges ${money(recon.invoiceFee, e.currency)} escrow fee, but the supplier PO agreed ${money(recon.agreedFee, e.currency)}. Flag with the provider before remitting.`}
+            ? "Matches the Purchase Order's PO amount and the fee schedule agreed at order time — no discrepancy to flag."
+            : `This invoice charges ${money(recon.invoiceFee, e.currency)} escrow fee, but the purchase order agreed ${money(recon.agreedFee, e.currency)}. Flag with the provider before remitting.`}
         </div>
       )}
 

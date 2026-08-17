@@ -262,7 +262,7 @@ export default function RfqBundleDetailPage() {
           title={`Seller PI → Our PO (${winningQuotes.filter((q) => q.sellerPiNo).length}/${winningQuotes.length} received)`}
           actions={
             <Button onClick={handleFinalize} disabled={finalizing || winningQuotes.every((q) => !q.sellerPiNo)}>
-              {finalizing ? "Finalizing…" : "Finalize Supplier PO(s)"}
+              {finalizing ? "Finalizing…" : "Finalize Purchase Order(s)"}
             </Button>
           }
         >
