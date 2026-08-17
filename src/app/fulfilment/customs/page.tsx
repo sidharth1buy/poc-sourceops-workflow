@@ -26,7 +26,7 @@ function CustomsDesk() {
   // orders 1Buy actually clears (international, not DDP) that have an inbound shipment
   const jobs = Object.values(orders).filter(
     (b) => weClearImportCustoms(b) && b.shipments.some((s) => s.leg === "INBOUND"),
-  );
+  ).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))); // newest orders first
   const focusId = params.get("order") ?? "";
 
   // deep link to file straight away: ?order=…&file=1

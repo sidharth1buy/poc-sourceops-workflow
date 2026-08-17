@@ -645,6 +645,7 @@ export interface Shipment {
   carrierRef?: string;   // carrier booking ref (from the logistics adapter)
   trackingUrl?: string;
   lastLocation?: string; // latest tracking checkpoint location (incl. origin/away country)
+  updatedAt?: string;    // bumped on create / status change / tracking poll — drives newest-first sort
   // ---- booking particulars (captured when 1Buy books the carrier — needed by DHL + customs) ----
   dimensions?: string;        // L×W×H cm
   goodsDescription?: string;  // commodity on the AWB / invoice

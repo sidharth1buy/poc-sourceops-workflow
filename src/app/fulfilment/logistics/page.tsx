@@ -26,7 +26,8 @@ function LogisticsBoard() {
   const receiveDocs = useStore((s) => s.receiveShippingDocs);
   const [composeFor, setComposeFor] = useState("");
   const [trackId, setTrackId] = useState<string | null>(null); // row expanded to its tracking timeline
-  const rows = allShipments(orders);
+  // newest activity first — most-recently created / status-changed / tracked shipment on top
+  const rows = [...allShipments(orders)].sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
   const tracked = rows.find((r) => r.id === trackId);
   const router = useRouter();
   const params = useSearchParams();
@@ -49,7 +50,7 @@ function LogisticsBoard() {
     !["CLOSED", "CANCELLED"].includes(o.status) &&
     !o.shipments.some((s) => s.leg === "INBOUND") &&
     o.lines.some((l) => remainingToShipLeg(o, l.mpn, "INBOUND") > 0),
-  );
+  ).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))); // newest orders first
 
   const clearLink = () => { setModalOpen(false); router.replace("/fulfilment/logistics"); };
   const clearBook = () => { setBookFor(""); router.replace("/fulfilment/logistics"); };
