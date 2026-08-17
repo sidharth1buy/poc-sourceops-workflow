@@ -567,7 +567,7 @@ export const useStore = create<Store>()(
         const st = get();
         let clientPoNo = input.clientPoNo.trim();
         if (clientPoNo && st.clientPos.some((c) => c.clientPoNo === clientPoNo)) {
-          toast.error(`Client PO ${clientPoNo} already exists - use a unique number.`);
+          toast.error(`Sales Order ${clientPoNo} already exists - use a unique number.`);
           return "";
         }
         if (!clientPoNo) { // collision-safe fallback
@@ -581,7 +581,7 @@ export const useStore = create<Store>()(
           lines: input.lines.map((l) => ({ mpn: l.mpn, make: l.make, dateCode: l.dateCode, qty: l.qty, unitPrice: l.unitPrice, requiredBy: l.requiredBy, status: "OPEN" })),
         };
         set((s) => { s.clientPos.unshift(cpo); });
-        toast.success(`Client PO ${clientPoNo} created`);
+        toast.success(`Sales Order ${clientPoNo} created`);
         return clientPoNo;
       },
 
@@ -614,7 +614,7 @@ export const useStore = create<Store>()(
           buyTotal: Math.round(buyTotal), createdBy: "You (demo)", createdAt: created, status: "DRAFT",
         };
         set((s) => { s.supplierPos.unshift(spo); });
-        toast.success(`Supplier PO ${poNo} created${linked.length < input.lines.length ? " - some lines unlinked" : ""}`);
+        toast.success(`Purchase Order ${poNo} created${linked.length < input.lines.length ? " - some lines unlinked" : ""}`);
         return id;
       },
 
@@ -622,7 +622,7 @@ export const useStore = create<Store>()(
       createOrderFromSupplierPo: (supplierPoId) => {
         const st = get();
         const spo = st.supplierPos.find((s) => s.id === supplierPoId);
-        if (!spo) { toast.error("Supplier PO not found."); return null; }
+        if (!spo) { toast.error("Purchase Order not found."); return null; }
         if (spo.orderId && st.orders[spo.orderId]) { toast(`Order already created for ${spo.poNo}`); return spo.orderId; }
         const linked = spo.lines.filter((l) => l.clientPoNo && l.clientLineMpn);
         const sellFor = (l: SupplierPoLine) =>
@@ -804,7 +804,7 @@ export const useStore = create<Store>()(
         const b0 = get().orders[orderId]; if (!b0) return;
         const targets = (mpn ? b0.lines.filter((l) => l.mpn === mpn) : b0.lines).map((l) => l.mpn);
         if (targets.length === 0) return;
-        const sourceDoc = b0.supplierPoNo ? `Supplier PO ${b0.supplierPoNo}` : `Order ${b0.orderNo}`;
+        const sourceDoc = b0.supplierPoNo ? `Purchase Order ${b0.supplierPoNo}` : `Order ${b0.orderNo}`;
         const modes: Record<string, string> = {};
         for (const l of b0.lines) modes[l.mpn] = l.testingMode;
         toast.message(`Parsing test table off ${sourceDoc}…`);
@@ -1289,7 +1289,7 @@ export const useStore = create<Store>()(
           const r = lot.reports?.find((x) => x.id === reportId); if (!r) return;
           const before = r.clientPo;
           const onFile = lot.clientPoNo ?? b.sourcingAllocations.find((a) => a.orderLineMpn === lot.orderLineMpn)?.clientPoNo;
-          if (!onFile) { toast.error("No client PO on file for this lot - map it on the Allocations tab first."); return; }
+          if (!onFile) { toast.error("No sales order on file for this lot - map it on the Allocations tab first."); return; }
           r.clientPo = onFile;
           r.parseFlags = r.parseFlags.filter((f) => !f.toLowerCase().includes("client p/o"));
           const spec = (b.mpnTests ?? []).find((x) => x.mpn === lot.orderLineMpn);
@@ -1310,7 +1310,7 @@ export const useStore = create<Store>()(
           ? (m.attachReport && inv ? [inv.fileName] : [])
           : (m.attachReport && rep ? [rep.fileName] : []);
         const noteFor: Record<NotifyParty, string> = {
-          SUPPLIER: "Masked - buyer identity, client PO and sell price withheld.",
+          SUPPLIER: "Masked - buyer identity, sales order and sell price withheld.",
           BUYER: "Masked - supplier identity, buy price and inbound AWB withheld.",
           ESCROW: "Release-trigger evidence for the escrow provider.",
           WHL: "Acknowledgement to the laboratory.",
@@ -1928,9 +1928,9 @@ export const useStore = create<Store>()(
           b.status = "CANCELLED";
           b.journey.forEach((j) => { if (j.status === "IN_PROGRESS" || j.status === "BLOCKED") j.status = "SKIPPED"; });
           if (b.supplierPoId) { const spo = s.supplierPos.find((x) => x.id === b.supplierPoId); if (spo) { spo.status = "DRAFT"; spo.orderId = undefined; } }
-          b.events.unshift({ id: uid("ev"), eventType: "GENERAL", message: "Order cancelled; supplier PO released back to draft.", source: "SC_MANUAL", occurredAt: today(), recordedBy: "You (demo)" });
+          b.events.unshift({ id: uid("ev"), eventType: "GENERAL", message: "Order cancelled; purchase order released back to draft.", source: "SC_MANUAL", occurredAt: today(), recordedBy: "You (demo)" });
         });
-        toast.success("Order cancelled - supplier PO released to draft");
+        toast.success("Order cancelled - purchase order released to draft");
       },
 
       addEvent: (orderId, e) => { set((s) => { s.orders[orderId]?.events.unshift({ id: uid("ev"), eventType: e.eventType, message: e.message, source: "SC_MANUAL", occurredAt: today(), recordedBy: "You (demo)" }); }); toast.success("Event logged"); },

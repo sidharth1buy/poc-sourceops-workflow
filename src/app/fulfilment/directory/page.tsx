@@ -38,8 +38,8 @@ export default function DirectoryPage() {
 
       <Panel title="How to use">
         <div className="space-y-3 text-sm text-muted-foreground">
-          <p><b className="text-foreground">When creating Client POs:</b> Select a buyer from the dropdown in the "Client & parties" tab. The buyer's details (name, GSTIN, state) will auto-fill.</p>
-          <p><b className="text-foreground">When creating Supplier POs:</b> Select a supplier from the dropdown in the "Supplier & terms" tab. The supplier's details (name, GSTIN, state) will auto-fill.</p>
+          <p><b className="text-foreground">When creating Sales Orders:</b> Select a buyer from the dropdown in the "Client & parties" tab. The buyer's details (name, GSTIN, state) will auto-fill.</p>
+          <p><b className="text-foreground">When creating Purchase Orders:</b> Select a supplier from the dropdown in the "Supplier & terms" tab. The supplier's details (name, GSTIN, state) will auto-fill.</p>
           <p><b className="text-foreground">To add more:</b> Contact your administrator to add new buyers or suppliers to the master directory.</p>
         </div>
       </Panel>

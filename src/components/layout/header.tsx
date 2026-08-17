@@ -74,9 +74,9 @@ export function Header({ onMenu }: { onMenu: () => void }) {
             <>
               <div className="fixed inset-0 z-20" onClick={() => setCreateOpen(false)} />
               <div className="absolute right-0 z-30 mt-1 w-56 rounded-lg border bg-card p-1 shadow-xl">
-                <Link href="/fulfilment/client-pos/new" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>1 ·</b> New Client PO <span className="text-faint">(demand)</span></Link>
-                <Link href="/fulfilment/supplier-pos/new" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>2 ·</b> New Supplier PO <span className="text-faint">(our purchase doc)</span></Link>
-                <Link href="/fulfilment/supplier-pos" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>3 ·</b> Order <span className="text-faint">(from a Supplier PO)</span></Link>
+                <Link href="/fulfilment/client-pos/new" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>1 ·</b> New Sales Order <span className="text-faint">(demand)</span></Link>
+                <Link href="/fulfilment/supplier-pos/new" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>2 ·</b> New Purchase Order <span className="text-faint">(our purchase doc)</span></Link>
+                <Link href="/fulfilment/supplier-pos" onClick={() => setCreateOpen(false)} className="block rounded-md px-3 py-2 text-sm hover:bg-muted"><b>3 ·</b> Order <span className="text-faint">(from a Purchase Order)</span></Link>
               </div>
             </>
           )}

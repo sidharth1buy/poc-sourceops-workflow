@@ -132,8 +132,8 @@ export default function CreateSupplierPoPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 pb-24">
-      <Link href="/fulfilment/supplier-pos" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Supplier POs</Link>
-      <PageHeader title="New Supplier PO" description={<>Step 2 — our PO to a supplier. Each line can <b className="text-foreground">reference a client-PO line</b> (partial ok, multi-client) — or be <b className="text-foreground">unlinked</b> and mapped later. This creates the document only; you&apos;ll <b className="text-foreground">create the fulfilment order</b> from it next.</>} />
+      <Link href="/fulfilment/supplier-pos" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Purchase Orders</Link>
+      <PageHeader title="New Purchase Order" description={<>Step 2 — our PO to a supplier. Each line can <b className="text-foreground">reference a sales-order line</b> (partial ok, multi-client) — or be <b className="text-foreground">unlinked</b> and mapped later. This creates the document only; you&apos;ll <b className="text-foreground">create the fulfilment order</b> from it next.</>} />
 
       <div className="flex gap-1 rounded-lg border bg-card p-1 text-sm">
         {(["upload", "manual"] as const).map((m) => (
@@ -147,7 +147,7 @@ export default function CreateSupplierPoPage() {
         <Panel>
           <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed p-6 text-center">
             <FileText className="h-8 w-8 text-faint" />
-            <p className="text-sm text-muted-foreground">Drop the supplier PO / PI (PDF / XLSX / CSV) — we parse it and pre-fill the tabs below. Lines come in <b className="text-foreground">unlinked</b>; link them to client-PO demand in the Lines tab.</p>
+            <p className="text-sm text-muted-foreground">Drop the purchase order / PI (PDF / XLSX / CSV) — we parse it and pre-fill the tabs below. Lines come in <b className="text-foreground">unlinked</b>; link them to sales-order demand in the Lines tab.</p>
             <input ref={fileRef} type="file" accept=".pdf,.xlsx,.csv" className="text-xs" />
             <Button onClick={parse} disabled={parsing}><Upload className="h-4 w-4" /> {parsing ? "Parsing…" : "Parse & pre-fill"}</Button>
             {parsedFrom && <p className="inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Parsed <b>{parsedFrom}</b> — review &amp; link in the tabs.</p>}
@@ -223,9 +223,9 @@ export default function CreateSupplierPoPage() {
 
       {tab === "lines" && (
       <Panel title="Lines" actions={<Button variant="outline" onClick={addRow}><Plus className="h-4 w-4" /> Add line</Button>}>
-        {!canLink && <p className="mb-2 text-xs text-warn">No client POs exist yet — lines will be created <b>unlinked</b>; map them once a client PO is available.</p>}
+        {!canLink && <p className="mb-2 text-xs text-warn">No sales orders exist yet — lines will be created <b>unlinked</b>; map them once a sales order is available.</p>}
         <div className="mb-1 hidden grid-cols-[1.3fr_1.3fr_4.5rem_5rem_2rem] gap-2 px-4 text-[10px] font-medium uppercase tracking-wide text-muted-foreground sm:grid">
-          <span>Client PO / MPN <span className="text-bad">*</span></span><span>Client line / Manufacturer</span><span className="text-right">Qty <span className="text-bad">*</span></span><span className="text-right">Buy <span className="text-bad">*</span></span><span />
+          <span>Sales Order / MPN <span className="text-bad">*</span></span><span>Client line / Manufacturer</span><span className="text-right">Qty <span className="text-bad">*</span></span><span className="text-right">Buy <span className="text-bad">*</span></span><span />
         </div>
         <div className="space-y-2">
           {rows.map((r, i) => {
@@ -283,13 +283,13 @@ export default function CreateSupplierPoPage() {
           <span className="text-muted-foreground">Buy <b className="text-foreground tnum">{money(buyTotal, f.currency)}</b></span>
           <span className="text-muted-foreground">Sell <b className="text-foreground tnum">{money(sellTotal, f.currency)}</b></span>
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">Tip: mix lines from <b className="text-foreground">different client POs</b> to consolidate, or leave lines <b className="text-foreground">unlinked</b> and map them later.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Tip: mix lines from <b className="text-foreground">different sales orders</b> to consolidate, or leave lines <b className="text-foreground">unlinked</b> and map them later.</p>
       </Panel>
       )}
 
       <StickyBar>
-        <span className="text-xs text-muted-foreground">Creates the Supplier PO document; create its fulfilment order from the Supplier POs list. {!canSubmit && <span className="text-warn">Add supplier &amp; valid lines (within remaining).</span>}</span>
-        <Button onClick={submit} disabled={!canSubmit}>Create Supplier PO →</Button>
+        <span className="text-xs text-muted-foreground">Creates the Purchase Order document; create its fulfilment order from the Purchase Orders list. {!canSubmit && <span className="text-warn">Add supplier &amp; valid lines (within remaining).</span>}</span>
+        <Button onClick={submit} disabled={!canSubmit}>Create Purchase Order →</Button>
       </StickyBar>
     </div>
   );

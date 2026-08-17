@@ -52,12 +52,12 @@ export default function OrdersPage() {
     <div className="space-y-5">
       <PageHeader
         title="Orders"
-        description="Fulfilment orders (Mode 4) — each spun from a Supplier PO. Click a row to open its workspace."
+        description="Fulfilment orders (Mode 4) — each spun from a Purchase Order. Click a row to open its workspace."
         actions={
           <div className="flex items-center gap-2">
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search order / party…"
               className="w-48 rounded-lg border bg-card px-3 py-1.5 text-sm outline-none focus:border-primary" />
-            <Link href="/fulfilment/supplier-pos"><Button><Plus className="h-4 w-4" /> From a Supplier PO</Button></Link>
+            <Link href="/fulfilment/supplier-pos"><Button><Plus className="h-4 w-4" /> From a Purchase Order</Button></Link>
           </div>
         }
       />

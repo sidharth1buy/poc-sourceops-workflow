@@ -71,7 +71,7 @@ const SCENARIOS: { title: string; when: string; steps: { name: string; gate?: bo
 ];
 
 const ROLES = [
-  { role: "SC (supply chain)", does: "Creates client & supplier POs, spins up the order from a supplier PO, drives the journey, records shipments, relabel, delivery & PoD." },
+  { role: "SC (supply chain)", does: "Creates sales & purchase orders, spins up the order from a purchase order, drives the journey, records shipments, relabel, delivery & PoD." },
   { role: "Finance", does: "Advances each escrow order through its invoice/confirmation states, acknowledges terms, runs both-sided payments, sits on release gates." },
   { role: "Approver (upstream)", does: "PO review & approval happen on the sourcing platform — orders arrive in this console already approved, with the PI in hand." },
   { role: "Lab (WHL)", does: "Runs testing; the PASS/FAIL/MAYBE result drives the TESTING journey gate." },
@@ -264,17 +264,17 @@ export default function GuidePage() {
       {/* N:N */}
       <Panel title="Why one order isn't one client — the N:N spine">
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <Pill tone="info">Client PO line</Pill><ArrowRight className="h-4 w-4 text-faint" />
-          <Pill tone="warn">Supplier PO line (sourcing)</Pill><ArrowRight className="h-4 w-4 text-faint" />
+          <Pill tone="info">Sales Order line</Pill><ArrowRight className="h-4 w-4 text-faint" />
+          <Pill tone="warn">Purchase Order line (sourcing)</Pill><ArrowRight className="h-4 w-4 text-faint" />
           <Pill tone="neutral">Order line (fulfilment)</Pill><ArrowRight className="h-4 w-4 text-faint" />
           <Pill tone="neutral">shipment line</Pill><ArrowRight className="h-4 w-4 text-faint" />
           <Pill tone="warn">delivery allocation</Pill><ArrowRight className="h-4 w-4 text-faint" />
           <Pill tone="info">client gets goods</Pill>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Create the <Link href="/fulfilment/client-pos" className="text-primary hover:underline">Client PO</Link> (demand), then a <Link href="/fulfilment/supplier-pos" className="text-primary hover:underline">Supplier PO</Link> whose
-          lines reference those client lines (partial ok, multi-client) or stay <b className="text-foreground">unlinked</b>. Selecting a Supplier PO <b className="text-foreground">spins up its fulfilment order</b>.
-          One Supplier PO can serve several client POs (<b className="text-foreground">consolidate</b>) and one client&apos;s demand can split across supplier POs
+          Create the <Link href="/fulfilment/client-pos" className="text-primary hover:underline">Sales Order</Link> (demand), then a <Link href="/fulfilment/supplier-pos" className="text-primary hover:underline">Purchase Order</Link> whose
+          lines reference those client lines (partial ok, multi-client) or stay <b className="text-foreground">unlinked</b>. Selecting a Purchase Order <b className="text-foreground">spins up its fulfilment order</b>.
+          One Purchase Order can serve several sales orders (<b className="text-foreground">consolidate</b>) and one client&apos;s demand can split across purchase orders
           (<b className="text-foreground">segregate</b>) — that&apos;s where extra margin comes from. Unlinked lines get mapped from the order&apos;s <b className="text-foreground">Allocations</b> tab; the
           <b className="text-foreground"> Delivery</b> step is the manual &ldquo;who gets what&rdquo;. Guards stop you sourcing more than a client line needs, shipping more than a line has, or allocating more than was received.
         </p>

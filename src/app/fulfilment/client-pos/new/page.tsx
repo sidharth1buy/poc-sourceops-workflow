@@ -96,8 +96,8 @@ export default function CreateClientPoPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 pb-24">
-      <Link href="/fulfilment/client-pos" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Client POs</Link>
-      <PageHeader title="New Client PO" description="Step 1 — record the buyer's demand. Next you'll create supplier PO(s) that reference these lines. Upload to auto-fill or enter manually." />
+      <Link href="/fulfilment/client-pos" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Sales Orders</Link>
+      <PageHeader title="New Sales Order" description="Step 1 — record the buyer's demand. Next you'll create purchase order(s) that reference these lines. Upload to auto-fill or enter manually." />
 
       <div className="flex gap-1 rounded-lg border bg-card p-1 text-sm">
         {(["upload", "manual"] as const).map((m) => (
@@ -133,7 +133,7 @@ export default function CreateClientPoPage() {
                 ))}
               </Select>
             </Labeled>
-            <Labeled label="Client PO no"><Input value={f.clientPoNo} onChange={(e) => set("clientPoNo", e.target.value)} placeholder="GIPL/26-27/PO/121" /></Labeled>
+            <Labeled label="Sales Order no"><Input value={f.clientPoNo} onChange={(e) => set("clientPoNo", e.target.value)} placeholder="GIPL/26-27/PO/121" /></Labeled>
             <Labeled label="Client pays us"><Select value={f.paymentMode} onChange={(e) => set("paymentMode", e.target.value)}><option>ADVANCE</option><option>ESCROW</option><option>CREDIT</option></Select></Labeled>
             <Labeled label="Client GSTIN / UIN"><Input value={f.clientGstin} onChange={(e) => set("clientGstin", e.target.value)} placeholder="33AALCG9069K1Z0" /></Labeled>
             <Labeled label="Client state"><Input value={f.clientState} onChange={(e) => set("clientState", e.target.value)} placeholder="Tamil Nadu" /></Labeled>
@@ -187,8 +187,8 @@ export default function CreateClientPoPage() {
       )}
 
       <StickyBar>
-        <span className="text-xs text-muted-foreground">Creates the client PO (demand). {!canSubmit && <span className="text-warn">Add a client &amp; at least one line.</span>}</span>
-        <Button onClick={submit} disabled={!canSubmit}>Create Client PO →</Button>
+        <span className="text-xs text-muted-foreground">Creates the sales order (demand). {!canSubmit && <span className="text-warn">Add a client &amp; at least one line.</span>}</span>
+        <Button onClick={submit} disabled={!canSubmit}>Create Sales Order →</Button>
       </StickyBar>
     </div>
   );
