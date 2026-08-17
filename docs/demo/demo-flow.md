@@ -7,8 +7,8 @@
 ---
 
 ## Act 0 — Orient (30s)
-- **Dashboard** — the operator's command center: KPIs (open orders, approvals, payments due, tests pending, blocked, escrow-to-release), recent orders, and a **Needs attention** list.
-- Point out the grouped sidebar: **Create** (Client/Supplier POs) · **Operate** (Orders, Approvals, Testing, Logistics, Warehouse, Delivery) · **Finance & Tax** (Payments, Escrow) · **Reference** (Integrations, Guide).
+- **Order Processing** (the landing page) — KPIs (open orders, approvals, payments due, tests pending, blocked, escrow-to-release), a **Needs attention** list, and **every** order with a status filter. Clicking a row opens that order's single-page flow view.
+- Point out the grouped sidebar: **Order Processing** at the top · **Create** (Client/Supplier POs) · **Operate** (Approvals, Testing, Logistics, Customs, Warehouse, Delivery) · **Finance & Tax** (Payments, Escrow) · **Reference** (Directory, Integrations, Guide). There's no separate "Orders" item — the landing page is the list, and the work is done on the boards.
 - (Optional) the **persona** switch (SC / Finance / Approver / Mgmt) jumps to that role's home.
 
 ## Act 1 — The demand: Client PO (1 min)
@@ -29,7 +29,7 @@ The order lands **ACTIVE** with the **journey stepper**. Walk the tabs:
 Use the header **Advance** button; each gate blocks with a reason until satisfied. Keep the **Integrations** tab open in another window to watch live API calls.
 
 1. **Fund escrow** (gate) → **Escrow** tab → **Fund** → HKIN mock funds the super-invoice (**A1 + A2 + banking charges + fees**). Point out the **Payment terms**, **Release trigger** (*Per T&C + lab PASS*), and **Window expiry** on the account. *This is the buyer's advance held safely.* → **Advance**.
-2. **Testing — WHL** (gate, **per-line**) → **Testing** tab → **Add lot** for TMS320 → **Fetch WHL** → PASS; **Add lot** for AD7768 → set/fetch PASS. *Both testable lines must PASS.* Once a lot PASSes, the banner offers **Extend window** (mock email request → response, logged on the escrow) beside **Release escrow**. → **Advance**.
+2. **Testing — WHL** (gate, **per-line**) → the order's **Testing** tab (or sidebar **Testing** → pick this order — same screen either way) → **Add lot** for TMS320 → **Fetch WHL** → PASS; **Add lot** for AD7768 → set/fetch PASS. *Both testable lines must PASS.* Once a lot PASSes, the banner offers **Extend window** (mock email request → response, logged on the escrow) beside **Release escrow**. → **Advance**.
 3. **Release escrow on PASS** (gate) → **Escrow** tab → **Release tranche** (only allowed after a PASS; fulfilled per the agreed **T&Cs** — see the Overview panel). → **Advance**.
 4. **Ship to India** (gate) → **Shipments** tab → **Create shipment** (leg INBOUND, pick a carrier) → AWB booked by the logistics mock. → **Advance**.
 5. **Customs — BOE in ICEGATE** (gate) → **Customs** tab → **File BOE** → ICEGATE mock files → assesses duty → issues the clearance ref. → **Advance**.

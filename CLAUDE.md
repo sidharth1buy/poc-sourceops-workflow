@@ -72,7 +72,7 @@ No test runner configured (manual testing via UI + integration logs).
 src/
 ├── app/
 │   ├── fulfilment/                 # Internal console (all "Create"/"Operate"/RFQ pages)
-│   │   ├── page.tsx                 # Main dashboard
+│   │   ├── page.tsx                 # "Order Processing" — the landing page AND the one orders list (rows → order-flow)
 │   │   ├── client-rfq/              # Incoming client RFQ intake
 │   │   ├── demand-intake/           # Raw demand queue (pre-aggregation)
 │   │   ├── rfq-aggregation/         # Demand → RfqBundle aggregation flow
@@ -83,9 +83,10 @@ src/
 │   │   ├── rfq-dashboard/           # RFQ funnel KPIs
 │   │   ├── directory/               # Buyer/supplier master directory
 │   │   ├── client-pos/, supplier-pos/   # PO management (both `new` sub-forms use directory dropdowns)
-│   │   ├── orders/                  # Order listing + workspace (13 tabs incl. Escrow, Testing)
+│   │   ├── order-flow/[orderId]/    # READ-ONLY single-page view of one order's whole fulfilment flow (the landing page links here)
+│   │   ├── orders/                  # `[id]` = the tabbed workspace (12 tabs, no Escrow). `orders/page.tsx` just redirects to /fulfilment — the list lives there now, and there is no sidebar item for it
 │   │   ├── approvals/               # Order-level approvals (PO_REVIEW/payment) — NOT the RFQ one above
-│   │   ├── testing/                 # WHL testing lifecycle boards
+│   │   ├── testing/                 # order-first board (`page.tsx`) + `[orderId]/` = the acting testing workspace
 │   │   ├── escrow/                  # Escrow Agent dashboard
 │   │   ├── logistics/, warehouse/, delivery/, payments/
 │   │   ├── integrations/            # API call log + chaos toggle
@@ -100,7 +101,8 @@ src/
 ├── components/
 │   ├── ui/                          # Hand-rolled primitives (Panel, Button, DataTable, Pill, StatusPill, form inputs)
 │   ├── layout/                      # Sidebar (NAV_GROUPS-driven), app-shell, store-hydrator
-│   └── order/                       # order-workspace.tsx (tabs) + escrow-tab.tsx + testing-tab.tsx + testing-stages.tsx + modals.tsx
+│   └── order/                       # order-flow-page.tsx (read-only whole-flow page) + order-workspace.tsx (tabs) + escrow-tab.tsx + testing-tab.tsx (the testing screen) + testing-readonly.tsx + report-repository.tsx + testing-stages.tsx + test-tables.tsx + modals.tsx
+│                                     #   (testing-view-tab.tsx is PARKED — unrendered; see its header comment)
 │
 ├── store/
 │   ├── store.ts                     # Single Zustand store: fulfilment + escrow + testing + RFQ actions, immer + persist
@@ -128,6 +130,16 @@ src/
 ```
 
 ## Key Patterns
+
+### Reading surfaces vs acting surfaces
+Some screens report state and some change it:
+
+- **Read:** `/fulfilment/order-flow/[orderId]` — one order's **entire** fulfilment flow on a single page (deal → demand → money → testing → freight → customs → hub → delivery → approvals → evidence), phase-ordered, each section headed by its journey phase's real state + gate reason. The landing page's order rows and its "needs attention" list point here.
+- **Act:** `/fulfilment/orders/[id]` — the tabbed workspace (Advance, cancel, add/edit records), including its **Testing tab**, which mounts the same acting `TestingTab` the Testing board opens at `/fulfilment/testing/[orderId]`. One screen, two doors — don't fork it.
+
+**Nav shape:** the sidebar's first item **is** Order Processing (`/fulfilment`) — the orders list, not a separate dashboard. There is no second "Orders" item, because the day-to-day work happens on the per-discipline boards below it (Testing, Logistics, Customs, Warehouse, Delivery, Payments, Escrow, Approvals). An order's own pages hang off `/fulfilment/order-flow/*` and `/fulfilment/orders/*`, and `sidebar.tsx` keeps that first item lit while you're inside either (`ORDER_PROCESSING_ROUTES`).
+
+Rules for the read side: it renders the **same selectors and the same components** as the acting screens and never recomputes a number (or re-lays-out a document) of its own; it holds no control that changes the order; and each section links out to where that step is worked. **Reading a document is not "changing the order"** — a report can be opened and downloaded from the flow page, and both write the NDA access-log row there exactly as in the workspace, because that log (not the absence of a button) is the invariant. Persona gates still apply — escrow amounts/fees/wire details stay behind `canAccessEscrow`, matching the escrow board, while escrow *status and triggers* are visible to everyone because the rest of the flow depends on them.
 
 ### Escrow (Escrow Agent model — rebuilt, no longer HKIN-direct)
 Escrow is now a simulated **email-action-library** ("Escrow Agent"), not a direct fund/release API. `Escrow.status` (`EscrowOrderStatus`) moves strictly forward through 8 stages:
@@ -166,6 +178,7 @@ TT_PAYMENT_RECEIVED → GOODS_SHIPPED → RECIPIENT_INSPECTION → RELEASED_TO_S
 - **`TestStatus`** (`PENDING|PASS|FAIL|MAYBE`, the verdict) lives on `Lot.testStatus`, derived from WHL's `conclusion` + any F.A.R. process flag — completely independent of stage. A lot can be `REPORT_SHARED` (stage) with verdict `MAYBE` (an Acceptable report with an F.A.R. process still needs follow-up).
 - **Lab payment** is a third, separate track: `Lot.labPayment?.status` (`NOT_REQUESTED→REQUESTED→INVOICE_RECEIVED→SENT_TO_FINANCE→PAID`) — WHL bills for testing itself, separate from the test report and from escrow. The invoice mail also states the **terms** (`LabInvoice.terms`: `ADVANCE` | `CREDIT`) plus the per-process rate, and those terms decide what an unpaid fee *means*: on credit the lab tests on account so it blocks nothing; on advance it holds the lot, so `labFeeBlocking(lot)` is a real gate after `COMPONENTS_RECEIVED`. Terms are never chosen in the app — only read off the mail.
 - **One test list, rendered twice.** The lot tracker (status + the report's process result folded into each row, via `lotTestRows`) and the per-MPN requirements × lots matrix. A third rendering is always a duplicate — the report's processes are rolled onto `lot.tests` on fetch, which is why the report block shows only a count roll-up.
+- **One acting screen, mounted twice; one read-only rendering.** `testing-tab.tsx` (all the WHL mail / report-fetch / stage / fee / verdict / reconcile actions) is what both the order workspace's **Testing tab** and the Testing board's `/fulfilment/testing/[orderId]` render — same component, same actions, either way in. The **order-flow page's Testing section** is the read-only rendering, and it stays deliberately thin: per lot, `testing-readonly.tsx`'s `LotReadOnlyDetail` renders the `readOnly` lifecycle stepper plus `ReportRepository` (read in full + download, both access-logged) — **and nothing else**. A vertical stage list, a per-test table and a requirements-by-MPN roll-up were each tried there and cut as repeats of something already on the page or on the acting screen; don't re-add them (CONTEXT §9.0 keeps the reasoning). `readOnly` **removes** the stepper/fee action rows and a report's reconcile action; that's distinct from `canEdit={false}`, the persona gate. Full spec: `docs/whl-testing-module/CONTEXT.md` §9.0.
 
 ### Gate Guards (Journey Phases)
 `gateReason()` in `src/store/selectors.ts` — PAYMENT gate now checks the new escrow model directly:
