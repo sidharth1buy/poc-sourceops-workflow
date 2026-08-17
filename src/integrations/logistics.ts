@@ -50,3 +50,42 @@ export function getTracking(awb: string, hopsDone = 0, from = "", to = "") {
     },
     { latencyMs: [200, 800] });
 }
+
+// ---- Display-side tracking timeline -----------------------------------------
+// A richer, DHL-style scan history for the shipment card. This is a *pure* derivation
+// from the shipment's current status (no network) so it renders for seeded shipments too,
+// not only ones we've polled. Each hop is tagged with the ShipmentStatus milestone it belongs
+// to, so the timeline stays in lock-step with the coarse status the poll/dropdown advances.
+export interface TrackHop { status: ShipmentStatus; location: string; description: string; hrs: number }
+
+const STATUS_RANK: Record<ShipmentStatus, number> = {
+  PLANNED: 0, DISPATCHED: 1, IN_TRANSIT: 2, AT_CUSTOMS: 3, ARRIVED: 4, DELIVERED: 5, CANCELLED: 0,
+};
+
+// The granular scan events. Customs hops only appear for an international import leg.
+function trackHops(from: string, to: string, isImport: boolean): TrackHop[] {
+  const origin = from || "Origin";
+  const dest = to || "Destination";
+  const hops: TrackHop[] = [
+    { status: "DISPATCHED", hrs: 0, location: origin, description: "Shipment picked up by carrier" },
+    { status: "DISPATCHED", hrs: 2, location: origin, description: "Processed at origin facility" },
+    { status: "IN_TRANSIT", hrs: 6, location: `${origin} — export cleared`, description: "Departed origin facility" },
+    { status: "IN_TRANSIT", hrs: 16, location: "In transit", description: "In transit to destination country" },
+  ];
+  if (isImport) hops.push(
+    { status: "AT_CUSTOMS", hrs: 24, location: `${dest} — import customs`, description: "Arrived at destination; held for customs clearance" },
+    { status: "AT_CUSTOMS", hrs: 28, location: `${dest} — import customs`, description: "Customs clearance in progress (CHA / Bill of Entry)" },
+  );
+  hops.push(
+    { status: "ARRIVED", hrs: 32, location: dest, description: isImport ? "Customs cleared; arrived at destination facility" : "Arrived at destination facility" },
+    { status: "DELIVERED", hrs: 36, location: dest, description: "Delivered" },
+  );
+  return hops;
+}
+
+/** All scan events up to (and including) the shipment's current status. Chronological. */
+export function trackingTimeline(status: ShipmentStatus, from: string, to: string, isImport = true): TrackHop[] {
+  const reached = STATUS_RANK[status] ?? 0;
+  if (reached === 0) return []; // PLANNED / CANCELLED — nothing scanned yet
+  return trackHops(from, to, isImport).filter((h) => STATUS_RANK[h.status] <= reached);
+}

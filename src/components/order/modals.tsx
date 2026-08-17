@@ -7,8 +7,9 @@ import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
 import { Button } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { remainingToShipLeg, remainingToAllocate, sourcedForClientLine, orderSourcedForClient, deliveredForClientLine } from "@/store/selectors";
+import { incotermPlan } from "@/lib/incoterm";
 import { computeDuty } from "@/lib/fx";
-import { money, fmtAddress } from "@/lib/utils";
+import { money, fmtAddress, cn } from "@/lib/utils";
 import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
 import type {
   PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty,
@@ -659,6 +660,7 @@ export function CreateShipmentModal({
   const [carrier, setCarrier] = useState<string>("DHL");
   const [from, setFrom] = useState(prefill?.from ?? b?.supplier.name ?? "");
   const [to, setTo] = useState(fmtAddress(b?.hubAddress) || "1Buy hub");
+  const [awb, setAwb] = useState("");
   const [qtys, setQtys] = useState<Record<string, number>>(() => {
     if (!prefill || !b) return {};
     const out: Record<string, number> = {};
@@ -671,14 +673,27 @@ export function CreateShipmentModal({
   if (!b) return null;
   const lineRows = b.lines.map((l) => ({ mpn: l.mpn, remaining: remainingToShipLeg(b, l.mpn, leg) }));
   const anyQty = Object.values(qtys).some((q) => q > 0);
+  // Incoterm decides who books the inbound carrier. On C/D terms the supplier books, so we
+  // switch to "record the supplier's AWB" mode instead of calling DHL. (Outbound is unaffected.)
+  const plan = incotermPlan(b.incoterm);
+  const recordMode = leg === "INBOUND" && !plan.weBookFreight;
+  const canSave = anyQty && (!recordMode || awb.trim().length > 0);
   const save = () => {
     const lines = Object.entries(qtys).map(([mpn, qty]) => ({ mpn, qty })).filter((l) => l.qty > 0);
-    const id = createShipment(orderId, { leg, carrier, fromLocation: from || "—", toLocation: to || "—", boxCount: 1, grossWeightKg: 0, lines });
+    const id = createShipment(orderId, { leg, carrier, fromLocation: from || "—", toLocation: to || "—", boxCount: 1, grossWeightKg: 0, lines, awb: recordMode ? awb.trim() : undefined });
     if (id) onClose();
   };
   return (
-    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel="Create shipment" disabled={!anyQty} />}>
+    <Dialog open onClose={onClose} title="Create shipment (AWB)" footer={<Footer onClose={onClose} onSave={save} saveLabel={recordMode ? "Record inbound AWB" : leg === "INBOUND" ? "Book AWB (DHL)" : "Create shipment"} disabled={!canSave} />}>
       <div className="space-y-3">
+        {leg === "INBOUND" && (
+          <div className={cn("rounded-lg border p-2.5 text-xs", recordMode ? "bg-warn-bg text-warn" : "border-primary/40 bg-accent-soft text-primary")}>
+            <b>Incoterm {plan.incoterm}</b> · {plan.summary}
+            {recordMode
+              ? " Enter the AWB the supplier gave you — we won't book a carrier, but we can still track it."
+              : " We book the carrier now and the AWB is assigned on booking."}
+          </div>
+        )}
         {prefill && (
           <div className="rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
             Pre-filled from {prefill.lotCodes?.length === 1 ? "tested lot" : `${prefill.lotCodes?.length ?? prefill.lines.length} tested lots`}
@@ -693,8 +708,11 @@ export function CreateShipmentModal({
             if (lg === "INBOUND") { setFrom(b.supplier.name); setTo(fmtAddress(b.hubAddress) || "1Buy hub"); }
             else { setFrom(fmtAddress(b.hubAddress) || "1Buy hub"); setTo(fmtAddress(b.buyerAddress) || b.buyer.name); }
           }}><option value="INBOUND">INBOUND (supplier → us)</option><option value="OUTBOUND">OUTBOUND (us → client)</option></Select></Labeled>
-          <Labeled label="Carrier" hint="AWB assigned on booking"><Select value={carrier} onChange={(e) => setCarrier(e.target.value)}><option>DHL</option><option>FEDEX</option><option>DELHIVERY</option></Select></Labeled>
+          <Labeled label={recordMode ? "Carrier (supplier's)" : "Carrier"} hint={recordMode ? "who the supplier shipped with" : "AWB assigned on booking"}><Select value={carrier} onChange={(e) => setCarrier(e.target.value)}><option>DHL</option><option>FEDEX</option><option>DELHIVERY</option></Select></Labeled>
         </div>
+        {recordMode && (
+          <Labeled label="Supplier's AWB / tracking no." hint="the number on the supplier's dispatch advice"><Input value={awb} onChange={(e) => setAwb(e.target.value)} placeholder="e.g. DHL 12345678" /></Labeled>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="From"><Input value={from} onChange={(e) => setFrom(e.target.value)} placeholder="origin" /></Labeled>
           <Labeled label="To"><Input value={to} onChange={(e) => setTo(e.target.value)} placeholder="1Buy hub / client" /></Labeled>
