@@ -175,4 +175,42 @@ export function DataTable<T>({
   );
 }
 
+// Numbered pager for tables with more rows than fit on one page. Collapses
+// distant page numbers into an ellipsis, always keeping first/last/current±1
+// visible. Slicing the row array by page is the caller's job (see the Escrow
+// board) — this component only renders the control and reports the click.
+export function Pagination({
+  page, totalPages, onChange,
+}: { page: number; totalPages: number; onChange: (page: number) => void }) {
+  if (totalPages <= 1) return null;
+
+  const pages: (number | "…")[] = [];
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || Math.abs(p - page) <= 1) pages.push(p);
+    else if (pages[pages.length - 1] !== "…") pages.push("…");
+  }
+
+  return (
+    <div className="mt-3 flex items-center justify-end gap-1">
+      <button type="button" onClick={() => onChange(page - 1)} disabled={page === 1}
+        className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:pointer-events-none disabled:opacity-40">
+        ← Prev
+      </button>
+      {pages.map((p, i) => p === "…"
+        ? <span key={`e${i}`} className="px-1.5 text-xs text-faint">…</span>
+        : (
+          <button key={p} type="button" onClick={() => onChange(p)}
+            className={cn("min-w-[1.75rem] rounded-lg border px-2 py-1 text-xs font-medium transition",
+              p === page ? "border-primary bg-accent-soft text-primary" : "text-muted-foreground hover:text-foreground")}>
+            {p}
+          </button>
+        ))}
+      <button type="button" onClick={() => onChange(page + 1)} disabled={page === totalPages}
+        className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:pointer-events-none disabled:opacity-40">
+        Next →
+      </button>
+    </div>
+  );
+}
+
 export { statusTone };

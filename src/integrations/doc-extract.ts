@@ -5,8 +5,10 @@ const SYS = "doc-extract";
 const LABEL = "Doc Extraction";
 
 export interface ExtractedLine { mpn: string; qty: number; price: number; requiredBy: string; confidence: number; }
+export interface ExtractedAddress { line1: string; city: string; state: string; pincode: string; country: string }
 export interface ExtractClientPoRes {
   fields: { clientName: string; clientPoNo: string; paymentMode: string; clientGstin: string; clientState: string; referenceNo: string; gstNote: string; paymentMethod: string; deliveryTerms: string; dateCode: string; warranty: string };
+  deliveryAddress: ExtractedAddress;
   lines: ExtractedLine[];
   overallConfidence: number;
 }
@@ -21,6 +23,7 @@ export function extractClientPo(req: { fileName: string; bytesLen: number }) {
         clientGstin: "33AALCG9069K1Z0", clientState: "Tamil Nadu", referenceNo: "GIPL/26-27/PO",
         gstNote: "GST extra @ actual", paymentMethod: "As agreed", deliveryTerms: "Test Report Along with Shipment", dateCode: "", warranty: "",
       },
+      deliveryAddress: { line1: "23/25, SBI Colony Main, Nanganallur", city: "Chennai", state: "Tamil Nadu", pincode: "600061", country: "IN" },
       lines: [{ mpn: "MIC5282-5.0YMME-TR", qty: 12500, price: 345.6, requiredBy: "2026-07-20", confidence: 0.97 }],
       overallConfidence: 0.94,
     }),

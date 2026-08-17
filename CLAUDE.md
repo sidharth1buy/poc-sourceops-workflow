@@ -222,7 +222,7 @@ const useStore = create<Store>()(
 - **TypeScript:** strict mode; no `any` unless unavoidable
 - **`'use client'`:** for interactive components; the RFQ portal pages are all client components under a bare `layout.tsx` (no sidebar)
 - **No UI library:** don't reach for shadcn/Radix — extend `src/components/ui/primitives.tsx`/`form.tsx` instead
-- **Directory-first for party names:** never add a free-text buyer/supplier name input — wire a dropdown from `src/data/directory.ts` (`BUYERS`/`SUPPLIERS`), resolve display names by matching `email` (case-insensitive), fall back to the raw email/id if not found — never truncate an email to its local-part for display (two suppliers can share a local-part and become indistinguishable)
+- **Directory-first for party names — except on the Sales/Purchase Order "new" forms:** everywhere else, never add a free-text buyer/supplier name input — wire a dropdown from `src/data/directory.ts` (`BUYERS`/`SUPPLIERS`), resolve display names by matching `email` (case-insensitive), fall back to the raw email/id if not found — never truncate an email to its local-part for display (two suppliers can share a local-part and become indistinguishable). **Exception:** `client-pos/new` and `supplier-pos/new` dropped their `BUYERS`/`SUPPLIERS` dropdowns (2026-08-17) — the client/supplier name field is now a plain text input prefilled by `parse()` (`extractClientPo`/`extractSupplierPo`), same as every other field on those forms; it stays freely editable and is not resolved back against the directory.
 
 ## Known Limitations & Caveats
 
