@@ -16,7 +16,7 @@ import type { OrdersMap } from "@/store/selectors";
 import { ESCROW_STATUS_ORDER } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
 import { fileBillOfEntry, getAssessment, getClearanceStatus, getIgmEntry } from "@/integrations/customs-icegate";
-import { bookShipment, getTracking, type Carrier } from "@/integrations/logistics";
+import { bookShipment, getTracking, dhlCreatePickup, dhlUpdatePickup, dhlCancelPickup, dhlGetInvoices, dhlUploadImage, type Carrier } from "@/integrations/logistics";
 import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyFinanceToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
 import { weClearImportCustoms } from "@/lib/incoterm";
 import {
@@ -473,12 +473,16 @@ interface Store {
   setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus) => void;
   initiatePaymentTransfer: (orderId: string, payId: string) => void; // banking adapter - T/T
 
-  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string; dimensions?: string; goodsDescription?: string; hsCode?: string; declaredValue?: number; declaredCurrency?: string; pickupReadyDate?: string; bookingDocs?: string[]; notifyFinanceBoe?: boolean }) => string | null;
+  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string; dimensions?: string; goodsDescription?: string; hsCode?: string; declaredValue?: number; declaredCurrency?: string; pickupReadyDate?: string; bookingDocs?: string[]; notifyFinanceBoe?: boolean; productCode?: string; productName?: string; rateAmount?: number; rateCurrency?: string; estimatedDelivery?: string; bookingMode?: "COMBINED" | "SEPARATE"; pickupDate?: string; pickupCloseTime?: string }) => string | null;
   // Pre-booking: ask the supplier for the Packing List / Commercial Invoice / COO, then parse the reply.
   requestShippingDocs: (orderId: string, body?: string) => void;
   receiveShippingDocs: (orderId: string) => void;
   setShipmentStatus: (orderId: string, shipId: string, status: ShipmentStatus) => void;
   pollShipmentTracking: (orderId: string, shipId: string) => void; // logistics adapter - advance from carrier tracking
+  reschedulePickup: (orderId: string, shipId: string, date: string, closeTime: string) => void;
+  cancelPickup: (orderId: string, shipId: string) => void;
+  retrieveCarrierDocs: (orderId: string, shipId: string) => void; // DHL /invoices → waybill + CI
+  correctCarrierInvoice: (orderId: string, shipId: string) => void; // DHL /upload-image
 
   // ICEGATE core clearance stepper: file → assess → pay duty → out-of-charge.
   fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[]; awb?: string }) => void;
@@ -1903,7 +1907,9 @@ export const useStore = create<Store>()(
             boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines, updatedAt: stamp(),
             dimensions: input.dimensions, goodsDescription: input.goodsDescription, hsCode: input.hsCode,
             declaredValue: input.declaredValue, declaredCurrency: input.declaredCurrency,
-            pickupReadyDate: input.pickupReadyDate, bookingDocs: input.bookingDocs });
+            pickupReadyDate: input.pickupReadyDate, bookingDocs: input.bookingDocs,
+            productCode: input.productCode, productName: input.productName, rateAmount: input.rateAmount,
+            rateCurrency: input.rateCurrency, estimatedDelivery: input.estimatedDelivery, bookingMode: input.bookingMode });
         });
         // Logistics → Finance: queue a (prior) BoE now — create the customs entry so it shows on the
         // Customs desk immediately, and mail Finance to file it (no need to wait for arrival at port).
@@ -1935,6 +1941,15 @@ export const useStore = create<Store>()(
             const booked = await bookShipment({ carrier: (input.carrier as Carrier) || "DHL", leg: input.leg, reference: shipmentNo, from: input.fromLocation, to: input.toLocation, pieces: input.boxCount, weightKg: input.grossWeightKg });
             set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; sh.updatedAt = stamp(); } });
             toast.success(`✓ ${bookProvider} — AWB ${booked.awb} booked`, { id: bookTid });
+            // Pickup: COMBINED = created inline with the shipment; SEPARATE = its own /pickups call.
+            if (input.pickupDate) {
+              const ptid = toast.loading(`📡 Calling ${bookProvider} — Schedule Pickup API…`);
+              try {
+                const p = await dhlCreatePickup({ from: input.fromLocation, date: input.pickupDate, closeTime: input.pickupCloseTime ?? "18:00" });
+                set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.pickupConfirmationNo = p.dispatchConfirmationNumber; sh.pickupWindow = `${input.pickupDate} · by ${p.readyByTime}`; sh.updatedAt = stamp(); } });
+                toast.success(`✓ Pickup scheduled · ${p.dispatchConfirmationNumber} (${input.bookingMode === "SEPARATE" ? "separate" : "combined"})`, { id: ptid });
+              } catch (e) { toast.error(`${bookProvider} pickup: ${errMsg(e)}`, { id: ptid }); }
+            }
           } catch (e) { set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) sh.awb = "booking failed"; }); toast.error(`${bookProvider} — booking failed: ${errMsg(e)}`, { id: bookTid }); }
         })();
         return id;
@@ -1966,6 +1981,60 @@ export const useStore = create<Store>()(
             set((s) => { const bb = s.orders[orderId]; const x = bb?.shipments.find((y) => y.id === shipId); if (x) { x.status = t.mappedStatus; x.lastLocation = t.lastLocation; x.updatedAt = stamp(); if (t.mappedStatus === "DISPATCHED") x.dispatchDate = today(); if (t.mappedStatus === "DELIVERED" || t.mappedStatus === "ARRIVED") x.deliveryDate = today(); } if (bb) autoAdvanceOperational(bb); });
             toast.success(`📦 ${trackProvider} — ${t.mappedStatus} · ${t.lastLocation}`, { id: trackTid });
           } catch (e) { toast.error(`${trackProvider} — tracking failed: ${errMsg(e)}`, { id: trackTid }); }
+        })();
+      },
+
+      // DHL pickup management — reschedule (PATCH) / cancel (DELETE) a scheduled pickup.
+      reschedulePickup: (orderId, shipId, date, closeTime) => {
+        const sh = get().orders[orderId]?.shipments.find((x) => x.id === shipId);
+        if (!sh?.pickupConfirmationNo) { toast.error("No pickup to reschedule."); return; }
+        const conf = sh.pickupConfirmationNo;
+        const tid = toast.loading("📡 Calling DHL Global Forwarding — Update Pickup API…");
+        void (async () => {
+          try {
+            const p = await dhlUpdatePickup({ dispatchConfirmationNumber: conf, date, closeTime });
+            set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) { x.pickupWindow = `${date} · by ${p.readyByTime}`; x.updatedAt = stamp(); } });
+            toast.success(`✓ Pickup ${conf} rescheduled · ${date} by ${p.readyByTime}`, { id: tid });
+          } catch (e) { toast.error(`DHL pickup: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+      cancelPickup: (orderId, shipId) => {
+        const sh = get().orders[orderId]?.shipments.find((x) => x.id === shipId);
+        if (!sh?.pickupConfirmationNo) { toast.error("No pickup to cancel."); return; }
+        const conf = sh.pickupConfirmationNo;
+        const tid = toast.loading("📡 Calling DHL Global Forwarding — Cancel Pickup API…");
+        void (async () => {
+          try {
+            await dhlCancelPickup({ dispatchConfirmationNumber: conf, reason: "Rescheduled by supplier" });
+            set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) { x.pickupConfirmationNo = undefined; x.pickupWindow = undefined; x.updatedAt = stamp(); } });
+            toast.success(`✓ Pickup ${conf} cancelled (no fee)`, { id: tid });
+          } catch (e) { toast.error(`DHL pickup: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+      // DHL document retrieval — pull the waybill + commercial invoice PDFs (the packet the CHA files with).
+      retrieveCarrierDocs: (orderId, shipId) => {
+        const sh = get().orders[orderId]?.shipments.find((x) => x.id === shipId);
+        if (!sh || sh.awb === "booking…" || sh.awb === "booking failed") { toast.error("AWB not booked yet."); return; }
+        const tid = toast.loading("📡 Calling DHL Global Forwarding — Get Invoices API…");
+        void (async () => {
+          try {
+            const r = await dhlGetInvoices(sh.awb);
+            set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) { x.carrierDocs = r.documents; x.updatedAt = stamp(); } });
+            toast.success(`✓ Retrieved ${r.documents.map((d) => d.typeCode).join(" + ")} from DHL`, { id: tid });
+          } catch (e) { toast.error(`DHL docs: ${errMsg(e)}`, { id: tid }); }
+        })();
+      },
+      // DHL /upload-image — attach a corrected commercial invoice after booking (customs flagged it, etc.).
+      correctCarrierInvoice: (orderId, shipId) => {
+        const sh = get().orders[orderId]?.shipments.find((x) => x.id === shipId);
+        if (!sh || sh.awb === "booking…" || sh.awb === "booking failed") { toast.error("AWB not booked yet."); return; }
+        const tid = toast.loading("📡 Calling DHL Global Forwarding — Upload Image (correct CI) API…");
+        void (async () => {
+          try {
+            await dhlUploadImage({ awb: sh.awb, typeCode: "INV" });
+            set((s) => { const x = s.orders[orderId]?.shipments.find((y) => y.id === shipId); if (x) x.updatedAt = stamp(); });
+            toast.success("✓ Corrected commercial invoice re-attached to the shipment", { id: tid });
+          } catch (e) { toast.error(`DHL upload: ${errMsg(e)}`, { id: tid }); }
         })();
       },
 
@@ -2770,8 +2839,10 @@ export const useStore = create<Store>()(
       // 21 = pre-booking supplier document request/receipt (OrderBundle.shippingDocs) ·
       // 22 = editable request email (shippingDocs.requestBody) + supplier docs forwarded to customs (CustomsEntry.docs) ·
       // 23 = IGM↔BoE linkage: AWB→CHA + IGM_LINKED stage + igmStatus/igmNo/igmItemNo/awbSentToChaAt ·
-      // 24 = Shipment.updatedAt (newest-first sorting on the Logistics/Customs desks)
-      version: 24,
+      // 24 = Shipment.updatedAt (newest-first sorting on the Logistics/Customs desks) ·
+      // 25 = DHL booking fields on Shipment (product/rate/estimatedDelivery + pickup confirmation/window/mode) ·
+      // 26 = Shipment.carrierDocs (waybill + CI retrieved from DHL /invoices)
+      version: 26,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

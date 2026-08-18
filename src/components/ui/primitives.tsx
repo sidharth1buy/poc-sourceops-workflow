@@ -164,8 +164,8 @@ export type Col<T> = {
 };
 
 export function DataTable<T>({
-  columns, rows, empty = "Nothing here yet.", onRowClick,
-}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void }) {
+  columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded,
+}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode }) {
   if (rows.length === 0) {
     return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{empty}</div>;
   }
@@ -184,16 +184,23 @@ export function DataTable<T>({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
-              className={cn("border-b last:border-0", onRowClick && "cursor-pointer hover:bg-muted/60")}>
-              {columns.map((c) => (
-                <td key={c.key} className={cn("px-3 py-2.5 align-middle",
-                  c.align === "right" && "text-right tnum", c.align === "center" && "text-center", c.className)}>
-                  {c.render(row)}
-                </td>
-              ))}
-            </tr>
+            <React.Fragment key={i}>
+              <tr
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+                className={cn(!(isExpanded?.(row)) && "border-b last:border-0", onRowClick && "cursor-pointer hover:bg-muted/60", isExpanded?.(row) && "bg-muted/40")}>
+                {columns.map((c) => (
+                  <td key={c.key} className={cn("px-3 py-2.5 align-middle",
+                    c.align === "right" && "text-right tnum", c.align === "center" && "text-center", c.className)}>
+                    {c.render(row)}
+                  </td>
+                ))}
+              </tr>
+              {isExpanded?.(row) && renderExpanded && (
+                <tr className="border-b last:border-0">
+                  <td colSpan={columns.length} className="bg-muted/20 px-3 pb-3">{renderExpanded(row)}</td>
+                </tr>
+              )}
+            </React.Fragment>
           ))}
         </tbody>
       </table>

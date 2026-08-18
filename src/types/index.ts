@@ -646,6 +646,16 @@ export interface Shipment {
   trackingUrl?: string;
   lastLocation?: string; // latest tracking checkpoint location (incl. origin/away country)
   updatedAt?: string;    // bumped on create / status change / tracking poll — drives newest-first sort
+  // ---- DHL booking (MyDHL API) ----
+  productCode?: string;        // DHL product picked from /rates (P / W / Y …)
+  productName?: string;
+  rateAmount?: number;
+  rateCurrency?: string;
+  estimatedDelivery?: string;
+  bookingMode?: "COMBINED" | "SEPARATE"; // pickup inline with /shipments vs a separate /pickups call
+  pickupConfirmationNo?: string;
+  pickupWindow?: string;       // e.g. "2026-08-25 · by 18:00"
+  carrierDocs?: { typeCode: string; fileName: string }[]; // waybill + CI retrieved from DHL (/invoices)
   // ---- booking particulars (captured when 1Buy books the carrier — needed by DHL + customs) ----
   dimensions?: string;        // L×W×H cm
   goodsDescription?: string;  // commodity on the AWB / invoice

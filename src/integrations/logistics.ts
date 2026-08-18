@@ -88,3 +88,64 @@ export function trackingTimeline(status: ShipmentStatus, from: string, to: strin
   if (reached === 0) return []; // PLANNED / CANCELLED — nothing scanned yet
   return trackHops(from, to, isImport).filter((h) => STATUS_RANK[h.status] <= reached);
 }
+
+// ---- DHL Express (MyDHL API v3.3.1) shaped mocks --------------------------------------------
+// Pre-booking (address-validate, rates, landed-cost), pickup scheduling, and document retrieval.
+// All route through mockCall so they log on the Integrations board and inject latency.
+export interface DhlProduct { productName: string; productCode: string; price: number; currency: string; estimatedDelivery: string }
+
+export function dhlAddressValidate(req: { type: "pickup" | "delivery"; countryCode: string; postalCode?: string; cityName?: string }) {
+  return mockCall(SYS, LABEL, "GET /address-validate", req,
+    () => ({ valid: true, serviceArea: req.cityName || req.countryCode }),
+    { latencyMs: [200, 700] });
+}
+
+export function dhlGetRates(req: { from: string; to: string; weightKg: number; declaredValue: number; currency: string }) {
+  return mockCall<{ products: DhlProduct[] }>(SYS, LABEL, "POST /rates", req,
+    () => {
+      const ccy = req.currency || "USD";
+      const base = Math.max(35, Math.round(req.weightKg * 8 + 30));
+      return { products: [
+        { productName: "ECONOMY SELECT", productCode: "W", price: base, currency: ccy, estimatedDelivery: "5 days" },
+        { productName: "EXPRESS WORLDWIDE", productCode: "P", price: base + 22, currency: ccy, estimatedDelivery: "3 days" },
+        { productName: "EXPRESS 12:00", productCode: "Y", price: base + 48, currency: ccy, estimatedDelivery: "3 days · by 12:00" },
+      ] };
+    },
+    { latencyMs: [500, 1500] });
+}
+
+export function dhlLandedCost(req: { declaredValue: number; currency: string }) {
+  return mockCall<{ totalCost: number; currency: string }>(SYS, LABEL, "POST /landed-cost", req,
+    () => ({ totalCost: Math.round(req.declaredValue * 0.2 + 40), currency: req.currency || "USD" }),
+    { latencyMs: [500, 1500] });
+}
+
+export function dhlCreatePickup(req: { from: string; date: string; closeTime: string }) {
+  return mockCall<{ dispatchConfirmationNumber: string; readyByTime: string }>(SYS, LABEL, "POST /pickups", req,
+    () => ({ dispatchConfirmationNumber: `${Math.floor(10000000 + Math.random() * 89999999)}`, readyByTime: req.closeTime }),
+    { latencyMs: [400, 1200] });
+}
+
+export function dhlGetInvoices(awb: string) {
+  return mockCall<{ documents: { typeCode: string; fileName: string }[] }>(SYS, LABEL, `GET /shipments/${encodeURIComponent(awb)}/invoices`, { awb },
+    () => ({ documents: [{ typeCode: "waybill", fileName: `waybill-${awb}.pdf` }, { typeCode: "invoice", fileName: `commercial-invoice-${awb}.pdf` }] }),
+    { latencyMs: [400, 1000] });
+}
+
+export function dhlUpdatePickup(req: { dispatchConfirmationNumber: string; date: string; closeTime: string }) {
+  return mockCall<{ dispatchConfirmationNumber: string; readyByTime: string; status: "updated" }>(SYS, LABEL, `PATCH /pickups/${req.dispatchConfirmationNumber}`, req,
+    () => ({ dispatchConfirmationNumber: req.dispatchConfirmationNumber, readyByTime: req.closeTime, status: "updated" }),
+    { latencyMs: [300, 900] });
+}
+
+export function dhlCancelPickup(req: { dispatchConfirmationNumber: string; reason?: string }) {
+  return mockCall<{ dispatchConfirmationNumber: string; status: "cancelled" }>(SYS, LABEL, `DELETE /pickups/${req.dispatchConfirmationNumber}`, req,
+    () => ({ dispatchConfirmationNumber: req.dispatchConfirmationNumber, status: "cancelled" }),
+    { latencyMs: [300, 900] });
+}
+
+export function dhlUploadImage(req: { awb: string; typeCode: string }) {
+  return mockCall<{ shipmentTrackingNumber: string; status: "document updated" }>(SYS, LABEL, `POST /shipments/${encodeURIComponent(req.awb)}/upload-image`, req,
+    () => ({ shipmentTrackingNumber: req.awb, status: "document updated" }),
+    { latencyMs: [400, 1200] });
+}

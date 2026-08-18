@@ -445,13 +445,15 @@ function ShipmentsTab({ b, id }: { b: OrderBundle; id: string }) {
               🔒 Held at customs — file the <b>Bill of Entry</b> on the <b>Customs</b> tab. The shipment clears once ICEGATE gives out-of-charge.
             </div>
           )}
-          {(s.hsCode || s.declaredValue || s.bookingDocs?.length || s.goodsDescription) && (
+          {(s.hsCode || s.declaredValue || s.bookingDocs?.length || s.goodsDescription || s.productName || s.pickupConfirmationNo) && (
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               {s.goodsDescription && <span>Goods: <span className="text-foreground">{s.goodsDescription}</span></span>}
               {s.hsCode && <span>HS <span className="font-mono text-foreground">{s.hsCode}</span></span>}
               {!!s.declaredValue && <span>Value: <span className="text-foreground">{s.declaredCurrency} {s.declaredValue.toLocaleString()}</span></span>}
               {s.dimensions && <span>Dims {s.dimensions}</span>}
-              {s.pickupReadyDate && <span>Pickup {s.pickupReadyDate}</span>}
+              {s.productName && <span>DHL <span className="text-foreground">{s.productName}</span>{s.rateAmount ? ` · ${money(s.rateAmount, s.rateCurrency)}` : ""}{s.estimatedDelivery ? ` · ${s.estimatedDelivery}` : ""}</span>}
+              {s.pickupConfirmationNo && <span>Pickup <span className="font-mono text-foreground">{s.pickupConfirmationNo}</span>{s.pickupWindow ? ` · ${s.pickupWindow}` : ""}</span>}
+              {s.pickupReadyDate && !s.pickupConfirmationNo && <span>Pickup {s.pickupReadyDate}</span>}
               {s.bookingDocs?.length ? <span>Docs: <span className="text-foreground">{s.bookingDocs.join(", ")}</span></span> : null}
             </div>
           )}
