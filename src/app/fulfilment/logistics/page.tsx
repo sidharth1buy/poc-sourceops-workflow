@@ -3,14 +3,17 @@
 import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Truck, FlaskConical, Mail } from "lucide-react";
+import { Truck, FlaskConical, Mail, Stamp } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allShipments, currentReport, remainingToShipLeg } from "@/store/selectors";
 import { incotermPlan } from "@/lib/incoterm";
 import { Panel, Pill, StatusPill, Button, DataTable, PageHeader, type Col } from "@/components/ui/primitives";
 import { CreateShipmentModal, RequestDocsModal } from "@/components/order/modals";
 import { TrackingTimeline } from "@/components/order/tracking-timeline";
-import { qtyfmt } from "@/lib/utils";
+import { qtyfmt, cn } from "@/lib/utils";
+
+const LOGI_TABS = ["Overview", "To Book", "Shipments", "Pickups", "Documents", "Supplier Comms", "Exceptions"] as const;
+type LogiTab = (typeof LOGI_TABS)[number];
 
 export default function LogisticsBoardPage() {
   return (
@@ -20,17 +23,29 @@ export default function LogisticsBoardPage() {
   );
 }
 
+function Stat({ label, value, tone }: { label: string; value: number; tone?: "warn" | "ok" | "info" }) {
+  return (
+    <div className={cn("rounded-lg border p-3", tone === "warn" && value > 0 ? "border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg" : "bg-card")}>
+      <div className={cn("text-2xl font-bold tabular-nums", tone === "warn" && value > 0 ? "text-warn" : tone === "ok" ? "text-ok" : "text-foreground")}>{value}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+    </div>
+  );
+}
+
 function LogisticsBoard() {
   const orders = useStore((s) => s.orders);
   const poll = useStore((s) => s.pollShipmentTracking);
   const receiveDocs = useStore((s) => s.receiveShippingDocs);
+  const router = useRouter();
+  const params = useSearchParams();
+
   const [composeFor, setComposeFor] = useState("");
   const [trackId, setTrackId] = useState<string | null>(null); // row expanded to its tracking timeline
+
   // newest activity first — most-recently created / status-changed / tracked shipment on top
   const rows = [...allShipments(orders)].sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
   const tracked = rows.find((r) => r.id === trackId);
-  const router = useRouter();
-  const params = useSearchParams();
+  const inb = rows.filter((r) => r.leg === "INBOUND");
 
   // deep link from the testing screen: ?order=…&lot=… (one lot) or ?order=…&lots=a,b,c (bulk)
   const orderId = params.get("order") ?? "";
@@ -44,13 +59,25 @@ function LogisticsBoard() {
   const [bookFor, setBookFor] = useState(initialBook);
   const bookOrder = orders[bookFor];
 
-  // Pending inbound bookings — the logistics team works from here (no Order-page access): every
+  // Pending inbound bookings — the logistics team's work queue (no Order-page access needed): every
   // active order that still has inbound qty to move and no inbound shipment booked yet.
   const toBook = Object.values(orders).filter((o) =>
     !["CLOSED", "CANCELLED"].includes(o.status) &&
     !o.shipments.some((s) => s.leg === "INBOUND") &&
     o.lines.some((l) => remainingToShipLeg(o, l.mpn, "INBOUND") > 0),
   ).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))); // newest orders first
+
+  // KPIs / derived work-lists
+  const awaitingDocs = Object.values(orders).filter((o) => o.shippingDocs?.status === "REQUESTED");
+  const readyToBook = toBook.filter((o) => o.shippingDocs?.status === "RECEIVED");
+  const inTransit = inb.filter((r) => ["DISPATCHED", "IN_TRANSIT"].includes(r.status));
+  const atCustoms = inb.filter((r) => r.status === "AT_CUSTOMS");
+  const delivered = inb.filter((r) => ["ARRIVED", "DELIVERED"].includes(r.status));
+  const bookingFailed = inb.filter((r) => r.awb === "booking failed");
+  const comms = Object.values(orders).filter((o) => o.shippingDocs).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const docShipments = inb.filter((r) => (r.bookingDocs?.length ?? 0) > 0);
+
+  const [tab, setTab] = useState<LogiTab>(lots.length > 0 || initialBook ? "To Book" : "Overview");
 
   const clearLink = () => { setModalOpen(false); router.replace("/fulfilment/logistics"); };
   const clearBook = () => { setBookFor(""); router.replace("/fulfilment/logistics"); };
@@ -89,138 +116,267 @@ function LogisticsBoard() {
   const failed = lots.filter((l) => l.testStatus === "FAIL");
   const noReport = lots.filter((l) => (l.reports ?? []).length === 0);
 
+  const badge: Partial<Record<LogiTab, number>> = {
+    "To Book": toBook.length, Shipments: rows.length, "Supplier Comms": comms.length,
+    Exceptions: bookingFailed.length + atCustoms.length,
+  };
+
   return (
     <div className="space-y-5">
-      <PageHeader title="Logistics" description={<><b className="text-foreground">Book pending inbound shipments</b> from the “To book” queue, then track every carrier AWB across orders. <b className="text-foreground">Refresh tracking</b> polls the carrier (mock) and advances the checkpoint. Inbound AWBs are hidden from the client; outbound from the supplier.</>} />
+      <PageHeader title="Logistics" description={<>The forwarding desk for the <b className="text-foreground">supplier → 1Buy</b> inbound leg: request docs, book the carrier (DHL), manage pickups, track, and hand the waybill + invoice to the CHA. Inbound AWBs are hidden from the client; outbound from the supplier.</>} />
 
-      {/* arrived here from the testing screen — book the movement without hunting for the order */}
-      {lots.length > 0 && order && (
-        <Panel title={`Create logistics for ${lots.length === 1 ? "a tested lot" : `${lots.length} tested lots`}`}
-          actions={<div className="flex gap-2">
-            <Button variant="ghost" onClick={clearLink}>Dismiss</Button>
-            <Button onClick={() => setModalOpen(true)} disabled={totalToMove <= 0}>
-              <Truck className="h-4 w-4" /> {totalToMove > 0 ? "Create shipment" : "Fully shipped"}
-            </Button>
-          </div>}>
-          <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-            <span className="text-muted-foreground">order <Link href={`/fulfilment/orders/${order.id}`} className="font-mono text-primary hover:underline">{order.orderNo}</Link></span>
-            <span className="text-muted-foreground">lots <b className="text-foreground">{lots.length}</b></span>
-            <span className="text-muted-foreground">to move <b className="text-foreground tnum">{qtyfmt(totalToMove)}</b> across <b className="text-foreground">{perMpn.length}</b> MPN(s)</span>
-            <span className="text-muted-foreground">from <b className="text-foreground">{origins.join(" · ")}</b></span>
+      {/* module sub-nav */}
+      <div className="no-scrollbar flex gap-1.5 overflow-x-auto border-b">
+        {LOGI_TABS.map((t) => (
+          <button key={t} onClick={() => setTab(t)}
+            className={cn("-mb-px inline-flex items-center gap-1.5 whitespace-nowrap rounded-t-lg border-b-2 px-3 py-2 text-sm transition",
+              tab === t ? "border-primary bg-accent-soft font-semibold text-primary" : "border-transparent font-medium text-muted-foreground hover:bg-muted hover:text-foreground")}>
+            {t}
+            {badge[t] ? <span className="rounded-full bg-muted px-1.5 text-[10px] font-semibold text-muted-foreground">{badge[t]}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {/* ───────────────── Overview ───────────────── */}
+      {tab === "Overview" && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
+            <Stat label="To book" value={toBook.length} tone="warn" />
+            <Stat label="Awaiting docs" value={awaitingDocs.length} />
+            <Stat label="Ready to book" value={readyToBook.length} tone="ok" />
+            <Stat label="In transit" value={inTransit.length} />
+            <Stat label="At customs" value={atCustoms.length} tone="warn" />
+            <Stat label="Delivered" value={delivered.length} tone="ok" />
+            <Stat label="Exceptions" value={bookingFailed.length} tone="warn" />
           </div>
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[560px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 text-left">Lot</th>
-                  <th className="px-3 py-2 text-left">MPN</th>
-                  <th className="px-3 py-2 text-right">Qty</th>
-                  <th className="px-3 py-2 text-left">Verdict</th>
-                  <th className="px-3 py-2 text-left">Report</th>
-                  <th className="px-3 py-2 text-left">Currently at</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lots.map((l) => {
-                  const r = currentReport(l);
-                  return (
-                    <tr key={l.id} className="border-b last:border-0">
-                      <td className="px-3 py-2 font-medium">
-                        <span className="inline-flex items-center gap-1.5"><FlaskConical className="h-3.5 w-3.5 text-primary" />{l.lotCode}</span>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs">{l.orderLineMpn}</td>
-                      <td className="px-3 py-2 text-right tnum">{qtyfmt(l.qty)}</td>
-                      <td className="px-3 py-2"><StatusPill status={l.testStatus} /></td>
-                      <td className="px-3 py-2 text-xs">{r ? <span className="font-mono">{r.reportNo}</span> : <span className="text-warn">none</span>}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{l.lab ?? order.supplier.name}</td>
+          <Panel title="Needs attention">
+            {toBook.length + awaitingDocs.length + bookingFailed.length === 0
+              ? <p className="p-4 text-center text-sm text-muted-foreground">Nothing waiting — all inbound shipments booked & moving.</p>
+              : <div className="space-y-1.5 text-sm">
+                  {readyToBook.map((o) => <AttnRow key={o.id} tone="ok" text={<>Docs received for <OrderLink o={o} /> — ready to book.</>} onGo={() => { setTab("To Book"); }} />)}
+                  {awaitingDocs.filter((o) => o.shippingDocs?.status === "REQUESTED").map((o) => <AttnRow key={o.id} text={<>Awaiting supplier docs for <OrderLink o={o} />.</>} onGo={() => setTab("Supplier Comms")} />)}
+                  {toBook.filter((o) => !o.shippingDocs).map((o) => <AttnRow key={o.id} tone="warn" text={<>No shipment booked for <OrderLink o={o} /> — start the request.</>} onGo={() => setTab("To Book")} />)}
+                  {bookingFailed.map((r) => <AttnRow key={r.id} tone="warn" text={<>Booking failed for <span className="font-mono text-xs">{r.orderNo} · {r.shipmentNo}</span>.</>} onGo={() => setTab("Exceptions")} />)}
+                </div>}
+          </Panel>
+        </div>
+      )}
+
+      {/* ───────────────── To Book ───────────────── */}
+      {tab === "To Book" && (
+        <div className="space-y-4">
+          {/* arrived here from the testing screen — book the movement without hunting for the order */}
+          {lots.length > 0 && order && (
+            <Panel title={`Create logistics for ${lots.length === 1 ? "a tested lot" : `${lots.length} tested lots`}`}
+              actions={<div className="flex gap-2">
+                <Button variant="ghost" onClick={clearLink}>Dismiss</Button>
+                <Button onClick={() => setModalOpen(true)} disabled={totalToMove <= 0}>
+                  <Truck className="h-4 w-4" /> {totalToMove > 0 ? "Create shipment" : "Fully shipped"}
+                </Button>
+              </div>}>
+              <div className="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+                <span className="text-muted-foreground">order <Link href={`/fulfilment/orders/${order.id}`} className="font-mono text-primary hover:underline">{order.orderNo}</Link></span>
+                <span className="text-muted-foreground">lots <b className="text-foreground">{lots.length}</b></span>
+                <span className="text-muted-foreground">to move <b className="text-foreground tnum">{qtyfmt(totalToMove)}</b> across <b className="text-foreground">{perMpn.length}</b> MPN(s)</span>
+                <span className="text-muted-foreground">from <b className="text-foreground">{origins.join(" · ")}</b></span>
+              </div>
+              <div className="overflow-x-auto rounded-lg border">
+                <table className="w-full min-w-[560px] border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <th className="px-3 py-2 text-left">Lot</th><th className="px-3 py-2 text-left">MPN</th><th className="px-3 py-2 text-right">Qty</th>
+                      <th className="px-3 py-2 text-left">Verdict</th><th className="px-3 py-2 text-left">Report</th><th className="px-3 py-2 text-left">Currently at</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Lots of the same MPN are merged into one shipment line: {perMpn.map((r) => `${r.mpn} ×${qtyfmt(r.qty)}${r.want > r.cap ? ` (capped from ${qtyfmt(r.want)} — rest already shipped)` : ""}`).join(" · ") || "—"}.
-            Destination is the 1Buy hub for relabelling.
-          </p>
-          {origins.length > 1 && <p className="mt-1 text-xs text-warn">These lots sit at {origins.length} different locations — one AWB can only collect from one origin. Book them separately, or edit the origin before saving.</p>}
-          {failed.length > 0 && <p className="mt-1 text-xs text-bad">{failed.map((l) => l.lotCode).join(", ")} did not pass — book the return leg to the supplier rather than an onward shipment.</p>}
-          {noReport.length > 0 && <p className="mt-1 text-xs text-warn">{noReport.map((l) => l.lotCode).join(", ")} have no report yet — moving them now pre-empts the result.</p>}
+                  </thead>
+                  <tbody>
+                    {lots.map((l) => {
+                      const r = currentReport(l);
+                      return (
+                        <tr key={l.id} className="border-b last:border-0">
+                          <td className="px-3 py-2 font-medium"><span className="inline-flex items-center gap-1.5"><FlaskConical className="h-3.5 w-3.5 text-primary" />{l.lotCode}</span></td>
+                          <td className="px-3 py-2 font-mono text-xs">{l.orderLineMpn}</td>
+                          <td className="px-3 py-2 text-right tnum">{qtyfmt(l.qty)}</td>
+                          <td className="px-3 py-2"><StatusPill status={l.testStatus} /></td>
+                          <td className="px-3 py-2 text-xs">{r ? <span className="font-mono">{r.reportNo}</span> : <span className="text-warn">none</span>}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">{l.lab ?? order.supplier.name}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">Lots of the same MPN are merged into one shipment line: {perMpn.map((r) => `${r.mpn} ×${qtyfmt(r.qty)}${r.want > r.cap ? ` (capped from ${qtyfmt(r.want)})` : ""}`).join(" · ") || "—"}. Destination is the 1Buy hub.</p>
+              {origins.length > 1 && <p className="mt-1 text-xs text-warn">These lots sit at {origins.length} locations — one AWB collects from one origin. Book separately.</p>}
+              {failed.length > 0 && <p className="mt-1 text-xs text-bad">{failed.map((l) => l.lotCode).join(", ")} did not pass — book the return leg instead.</p>}
+              {noReport.length > 0 && <p className="mt-1 text-xs text-warn">{noReport.map((l) => l.lotCode).join(", ")} have no report yet.</p>}
+            </Panel>
+          )}
+
+          <Panel title={`To book · ${toBook.length}`}>
+            {toBook.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">No pending bookings — every active order with inbound goods has an AWB.</p> : (
+              <>
+                <p className="mb-3 text-xs text-muted-foreground">Active orders with inbound goods to move and no AWB yet. Request docs from the supplier, then book the carrier.</p>
+                <div className="space-y-2">
+                  {toBook.map((o) => {
+                    const qty = o.lines.reduce((a, l) => a + remainingToShipLeg(o, l.mpn, "INBOUND"), 0);
+                    const weBook = incotermPlan(o.incoterm).weBookFreight;
+                    const sd = o.shippingDocs;
+                    return (
+                      <div key={o.id} className="rounded-lg border p-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2 text-sm">
+                            <Link href={`/fulfilment/orders/${o.id}`} className="font-mono text-xs font-medium text-primary hover:underline">{o.orderNo}</Link>
+                            <Pill tone="neutral">Incoterm {o.incoterm}</Pill>
+                            <span className="text-xs text-muted-foreground">{o.supplier.name} → 1Buy hub · {qtyfmt(qty)} to move</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {!weBook ? (
+                              <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Record supplier AWB</Button>
+                            ) : !sd ? (
+                              <Button onClick={() => setComposeFor(o.id)}><Mail className="h-4 w-4" /> Request docs from supplier</Button>
+                            ) : sd.status === "REQUESTED" ? (
+                              <Button variant="outline" onClick={() => receiveDocs(o.id)}>Check supplier reply</Button>
+                            ) : (
+                              <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Book shipment</Button>
+                            )}
+                          </div>
+                        </div>
+                        {weBook && sd && (
+                          <div className="mt-2 rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                            {sd.status === "REQUESTED"
+                              ? <>📧 Requested <b className="text-foreground">{sd.requested.join(", ")}</b> from {o.supplier.name} — awaiting reply.</>
+                              : <>✓ Supplier replied: <b className="text-foreground">{sd.pieces} pcs · {sd.grossWeightKg} kg · {sd.dimensions}</b> · docs: {sd.docs?.join(", ")}.</>}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      {/* ───────────────── Shipments ───────────────── */}
+      {tab === "Shipments" && (
+        <Panel>
+          <p className="mb-2 text-xs text-muted-foreground">Every carrier AWB across orders. Click a row to see its DHL scan history; <b>Refresh tracking</b> polls the carrier.</p>
+          <DataTable columns={cols} rows={rows} onRowClick={(r) => setTrackId((prev) => (prev === r.id ? null : r.id))} empty="No shipments yet — book one from the To Book tab." />
+          {tracked && (
+            <div className="mt-3 rounded-lg border p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm font-medium">{tracked.orderNo} · {tracked.leg === "INBOUND" ? "Inbound" : "Outbound"} · {tracked.shipmentNo}</span>
+                <button className="text-xs text-primary hover:underline" onClick={() => setTrackId(null)}>close</button>
+              </div>
+              <TrackingTimeline s={tracked} isImport={tracked.leg === "INBOUND" && tracked.tradeType === "INTERNATIONAL"} />
+            </div>
+          )}
         </Panel>
       )}
 
-      {/* Pending inbound bookings — the logistics team's work queue (no Order-page access needed) */}
-      {toBook.length > 0 && (
-        <Panel title={`To book · ${toBook.length}`}>
-          <p className="mb-3 text-xs text-muted-foreground">Active orders with inbound goods to move and no AWB booked yet. Book the carrier (or record the supplier&apos;s AWB) right here.</p>
-          <div className="space-y-2">
-            {toBook.map((o) => {
-              const qty = o.lines.reduce((a, l) => a + remainingToShipLeg(o, l.mpn, "INBOUND"), 0);
-              const weBook = incotermPlan(o.incoterm).weBookFreight;
-              const sd = o.shippingDocs;
-              return (
-                <div key={o.id} className="rounded-lg border p-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex flex-wrap items-center gap-2 text-sm">
-                      <Link href={`/fulfilment/orders/${o.id}`} className="font-mono text-xs font-medium text-primary hover:underline">{o.orderNo}</Link>
-                      <Pill tone="neutral">Incoterm {o.incoterm}</Pill>
-                      <span className="text-xs text-muted-foreground">{o.supplier.name} → 1Buy hub · {qtyfmt(qty)} to move</span>
+      {/* ───────────────── Pickups (Phase 2) ───────────────── */}
+      {tab === "Pickups" && (
+        <Panel title="Pickups">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+            Pickup scheduling arrives with the booking wizard. For a <b className="text-foreground">combined</b> booking the courier pickup is created inline with the shipment (<code>POST /shipments</code> with <code>pickup.isRequested</code>); a <b className="text-foreground">separate</b> pickup (<code>POST /pickups</code>) covers shipments booked without one, or one pickup across several. This tab will list scheduled pickups with reschedule / cancel.
+          </div>
+        </Panel>
+      )}
+
+      {/* ───────────────── Documents ───────────────── */}
+      {tab === "Documents" && (
+        <Panel title="Documents · waybill + invoice → CHA">
+          {docShipments.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">No booked shipments with documents yet.</p> : (
+            <div className="space-y-2">
+              {docShipments.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-xs">{r.orderNo} · {r.shipmentNo}</span>
+                    <span className="font-mono text-xs text-muted-foreground">{r.awb}</span>
+                    <span className="text-xs text-muted-foreground">📎 {r.bookingDocs?.join(", ")}</span>
+                  </div>
+                  <Button variant="outline" onClick={() => router.push(`/fulfilment/customs?order=${r.orderId}`)}><Stamp className="h-4 w-4" /> Send to CHA</Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="mt-3 text-xs text-muted-foreground">Real flow: <code>GET /shipments/&#123;awb&#125;/invoices</code> returns the waybill + commercial invoice PDFs that the CHA files the BoE with.</p>
+        </Panel>
+      )}
+
+      {/* ───────────────── Supplier Comms ───────────────── */}
+      {tab === "Supplier Comms" && (
+        <Panel title="Supplier communication">
+          {comms.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">No supplier threads yet — request shipping docs from the To Book tab.</p> : (
+            <div className="space-y-2">
+              {comms.map((o) => {
+                const sd = o.shippingDocs!;
+                return (
+                  <div key={o.id} className="rounded-lg border p-2.5 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="flex flex-wrap items-center gap-2">
+                        <Link href={`/fulfilment/orders/${o.id}`} className="font-mono text-xs text-primary hover:underline">{o.orderNo}</Link>
+                        <span className="text-xs text-muted-foreground">{o.supplier.name}</span>
+                        <Pill tone={sd.status === "RECEIVED" ? "ok" : "warn"}>{sd.status === "RECEIVED" ? "docs received" : "requested"}</Pill>
+                      </span>
+                      {sd.status === "REQUESTED" && <Button variant="outline" onClick={() => receiveDocs(o.id)}>Check reply</Button>}
                     </div>
-                    <div className="flex items-center gap-2">
-                      {!weBook ? (
-                        <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Record supplier AWB</Button>
-                      ) : !sd ? (
-                        <Button onClick={() => setComposeFor(o.id)}><Mail className="h-4 w-4" /> Request docs from supplier</Button>
-                      ) : sd.status === "REQUESTED" ? (
-                        <Button variant="outline" onClick={() => receiveDocs(o.id)}>Check supplier reply</Button>
-                      ) : (
-                        <Button onClick={() => setBookFor(o.id)}><Truck className="h-4 w-4" /> Book shipment</Button>
-                      )}
+                    <div className="mt-1.5 text-xs text-muted-foreground">
+                      📧 Requested {sd.requested.join(", ")}{sd.requestedAt ? ` · ${sd.requestedAt}` : ""}
+                      {sd.status === "RECEIVED" && <> · ✓ replied {sd.receivedAt}: <b className="text-foreground">{sd.pieces} pcs · {sd.grossWeightKg} kg · {sd.dimensions}</b></>}
                     </div>
                   </div>
-                  {weBook && sd && (
-                    <div className="mt-2 rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
-                      {sd.status === "REQUESTED"
-                        ? <>📧 Requested <b className="text-foreground">{sd.requested.join(", ")}</b> from {o.supplier.name} — awaiting reply. Click <b>Check supplier reply</b>.</>
-                        : <>✓ Supplier replied: <b className="text-foreground">{sd.pieces} pcs · {sd.grossWeightKg} kg · {sd.dimensions}</b> · docs: {sd.docs?.join(", ")}. Weight &amp; dimensions pre-fill the booking form.</>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </Panel>
       )}
 
-      <Panel>
-        <p className="mb-2 text-xs text-muted-foreground">Click a row to see its DHL scan history.</p>
-        <DataTable columns={cols} rows={rows} onRowClick={(r) => setTrackId((prev) => (prev === r.id ? null : r.id))} empty="No shipments yet — pending bookings appear in the “To book” panel above." />
-        {tracked && (
-          <div className="mt-3 rounded-lg border p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-sm font-medium">{tracked.orderNo} · {tracked.leg === "INBOUND" ? "Inbound" : "Outbound"} · {tracked.shipmentNo}</span>
-              <button className="text-xs text-primary hover:underline" onClick={() => setTrackId(null)}>close</button>
+      {/* ───────────────── Exceptions ───────────────── */}
+      {tab === "Exceptions" && (
+        <Panel title="Exceptions">
+          {bookingFailed.length + atCustoms.length === 0 ? <p className="p-4 text-center text-sm text-muted-foreground">No exceptions — nothing held or failed.</p> : (
+            <div className="space-y-2 text-sm">
+              {bookingFailed.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-warn-bg p-2.5 text-warn">
+                  <span>❌ Carrier booking failed · <span className="font-mono text-xs">{r.orderNo} · {r.shipmentNo}</span> — rebook from the order&apos;s Shipments tab.</span>
+                  <Button variant="outline" onClick={() => router.push(`/fulfilment/orders/${r.orderId}`)}>Open order</Button>
+                </div>
+              ))}
+              {atCustoms.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5">
+                  <span>🔒 Held at customs · <span className="font-mono text-xs">{r.orderNo} · {r.shipmentNo}</span> — the BoE must clear (OOC) before it moves on.</span>
+                  <Button variant="outline" onClick={() => router.push(`/fulfilment/customs?order=${r.orderId}`)}><Stamp className="h-4 w-4" /> Customs desk</Button>
+                </div>
+              ))}
             </div>
-            <TrackingTimeline s={tracked} isImport={tracked.leg === "INBOUND" && tracked.tradeType === "INTERNATIONAL"} />
-          </div>
-        )}
-      </Panel>
+          )}
+        </Panel>
+      )}
 
+      {/* modals (shared across tabs) */}
       {modalOpen && lots.length > 0 && order && (
         <CreateShipmentModal orderId={order.id}
-          prefill={{
-            lotCodes: lots.map((l) => l.lotCode),
-            lines: perMpn.map((r) => ({ mpn: r.mpn, qty: r.qty })),
-            from: origins[0], leg: "INBOUND",
-          }}
+          prefill={{ lotCodes: lots.map((l) => l.lotCode), lines: perMpn.map((r) => ({ mpn: r.mpn, qty: r.qty })), from: origins[0], leg: "INBOUND" }}
           onClose={() => setModalOpen(false)} />
       )}
-
       {composeFor && <RequestDocsModal orderId={composeFor} onClose={() => setComposeFor("")} />}
+      {bookOrder && <CreateShipmentModal orderId={bookOrder.id} onClose={clearBook} />}
+    </div>
+  );
+}
 
-      {bookOrder && (
-        <CreateShipmentModal orderId={bookOrder.id} onClose={clearBook} />
-      )}
+function OrderLink({ o }: { o: { id: string; orderNo: string } }) {
+  return <Link href={`/fulfilment/orders/${o.id}`} className="font-mono text-xs text-primary hover:underline">{o.orderNo}</Link>;
+}
+
+function AttnRow({ text, onGo, tone }: { text: React.ReactNode; onGo: () => void; tone?: "warn" | "ok" }) {
+  return (
+    <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5", tone === "warn" ? "bg-warn-bg" : tone === "ok" ? "bg-ok-bg" : "")}>
+      <span className={cn(tone === "warn" ? "text-warn" : tone === "ok" ? "text-ok" : "text-foreground")}>{text}</span>
+      <button className="text-xs text-primary hover:underline" onClick={onGo}>go →</button>
     </div>
   );
 }
