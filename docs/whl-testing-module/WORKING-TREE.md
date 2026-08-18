@@ -120,6 +120,7 @@ per adapter.
 src/
 ├── app/fulfilment/
 │   ├── orders/[id]/page.tsx           ◈  route → order workspace → Testing tab (the acting screen)
+│   ├── payments/page.tsx        250  ◈  4 money legs incl. the "WHL testing" fee ledger (§9.9)
 │   ├── testing/page.tsx         160  ✦  cross-order board, order-first: pick an order, then lots
 │   ├── testing/[orderId]/page.tsx 70 ✦  the main screen's route: header + <TestingTab> + add-lot
 │   └── logistics/page.tsx        144  ◈  hand-off target for ?order=&lot= / &lots=
@@ -327,7 +328,7 @@ history row behind it.
 specForMpn · lotTestProgress · currentReport · lotTestRows (the joined tracker rows)
 derivedStage (internal) · lotStage · lotStageProgress · stageWaiting
 labPaymentOf · labFeeUnpaid · labTerms · labFeeGross · labFeeBlocking
-outstandingLabFees · labFeeOutstandingTotal · mpnFeeRollup
+outstandingLabFees · labFeeOutstandingTotal · mpnFeeRollup · allLabFees (cross-order, finance ledger)
 lotEmails · unmatchedEmails · testAutofillGaps · overdueUpdateRequests
 reconciliationAlerts · testingSummary · lotResults
 ```
@@ -476,7 +477,7 @@ of 6"*, `Show 4 earlier message(s)`, `Show history (3)`.
 |---|---|
 | add / rename / reorder a lifecycle stage | `types/index.ts` L18 (union) → `enums.ts` L136 + L162 (order + meta) → `selectors.ts` L115 (`derivedStage`, if derivable) → `lab-whl.ts` L209 (`nextStageMail` branch) → `testing-stages.tsx` L21 (icon) → `fixtures.ts` (seed rows). **Nothing hardcodes which stage is last** — use `TESTING_TERMINAL_STAGE`. |
 | change how a stage is reached | `lab-whl.ts` L209 only, if it's mail-driven |
-| change the lab-fee flow | `types/index.ts` L315–347 (`LabInvoice` / `LabPayment`) → `enums.ts` L224 (labels/tones/rates) → `selectors.ts` L134 (fee selectors) → `store.ts` L584/603/628 (request / pay / access) → `LabFeePanel` (testing-stages L216) |
+| change the lab-fee flow | `types/index.ts` L315–347 (`LabInvoice` / `LabPayment`) → `enums.ts` L224 (labels/tones/rates) → `selectors.ts` L134 (fee selectors, incl. `allLabFees`) → `store.ts` L584/603/628 (request / pay / access) → `LabFeePanel` (testing-stages L216) → **the "WHL testing" tab on `app/fulfilment/payments/page.tsx`** (§9.9), which renders the same `markLabFeePaid` |
 | change the invoice's shape or amount | `lab-whl.ts` L209 (the `INVOICE` branch) + `WHL_TEST_FEE_PER_PROCESS` / `WHL_INVOICE_TAX_PCT` in `enums.ts` |
 | add a notify party | `types/index.ts` (`NotifyParty`) → `enums.ts` L403 (`NOTIFY_TEMPLATES`) + the `notifyDigest` switch → `store.ts` L899 `noteFor` map → the menus in testing-tab |
 | add a WHL / notification mail template | `enums.ts` L294 / L403 — both the store action and the compose UI read the same source, so add it once |
@@ -485,7 +486,7 @@ of 6"*, `Show 4 earlier message(s)`, `Show history (3)`.
 | change the roll-up table | `TestingTab` L113 (the `<table>` and its 10 columns; the expanded stepper row uses `colSpan={10}` — keep them in step). The read-only tab has its own 8-column version (`colSpan={8}`) — same data, no checkbox or Progress-toggle column |
 | add or reword an alert | the alert stack in `TestingTab` L113 **and** the one in `TestingViewTab` (both render the shared `Notice` primitive) — the second has no action buttons, and an alert that only exists on one surface is a bug |
 | add / rename a lifecycle stage's *presentation* | `enums.ts` `TESTING_STAGE_META` → `STAGE_ICON` in testing-stages.tsx → nothing else: both the stepper and the compact bar read that meta |
-| change collapse behaviour | `CollapsibleCard` L65 / `ExpandBar` L93, and the `RECENT_MAILS` / clamp constants in `MailSection` L1134 |
+| change collapse behaviour | `CollapsibleCard` L65 / `ExpandBar` L93, and `RECENT_MAILS` in `MailSection` (how many thread rows render before the "show earlier" toggle) |
 | add a per-lot action | `NextActionsMenu` L690 (+ `BulkActionsMenu` L622 if it batches). Note the per-lot menu is gated on a report existing — anything available earlier (like the fee) belongs in `LabFeePanel` instead |
 | adjust mock realism (weights, latency, failures) | `lab-whl.ts` L70 / L178, `doc-extract.ts` L46 |
 | change what a persona may do | `lib/role.ts` only |

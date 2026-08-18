@@ -924,9 +924,10 @@ function MailSection({
   const [lotFilter, setLotFilter] = useState<string>(defaultLotId ?? "ALL");
   const thread = (b.labEmails ?? []).filter((m) => !!m.lotId && (lotFilter === "ALL" || m.lotId === lotFilter));
 
-  // A long-running lot accumulates dozens of mails. Show the two most recent (the thread
-  // is newest-first) and keep the rest one click away, with each body clamped until asked for.
-  const RECENT_MAILS = 2;
+  // A long-running lot accumulates dozens of mails, so the thread (newest-first) is still
+  // truncated — but a table row is one line where the old card was a clamped paragraph, so
+  // eight of them cost less height than two cards did. The rest stay one click away.
+  const RECENT_MAILS = 8;
   const [showAllMail, setShowAllMail] = useState(false);
   const [openMails, setOpenMails] = useState<Set<string>>(new Set());
   const visible = showAllMail ? thread : thread.slice(0, RECENT_MAILS);
@@ -963,20 +964,42 @@ function MailSection({
           </Button>
         </div>}>
         {unmatched.length === 0 ? <Empty text="Nothing waiting — every inbound WHL email is matched to a lot." /> : (
-          <div className="space-y-2">
-            {unmatched.map((m) => (
-              <div key={m.id} className="rounded-lg border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg/40 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">{m.subject}</div>
-                    <div className="text-xs text-muted-foreground">{m.by} · {m.at}{m.attachments?.length ? ` · ${m.attachments.join(", ")}` : ""}</div>
-                  </div>
-                  <Button variant="outline" onClick={() => onMatch(m)}><MailQuestion className="h-4 w-4" /> Match to lot</Button>
-                </div>
-                <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{m.body}</p>
-                {m.matchNote && <p className="mt-1 text-[11px] text-warn">{m.matchNote}</p>}
-              </div>
-            ))}
+          <div className="overflow-x-auto rounded-lg border">
+            <table className="w-full min-w-[820px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <th className="px-3 py-2 text-left">Received</th>
+                  <th className="px-3 py-2 text-left">From</th>
+                  <th className="px-3 py-2 text-left">Subject</th>
+                  <th className="px-3 py-2 text-left">Why it&apos;s here</th>
+                  <th className="px-3 py-2 text-left">Files</th>
+                  <th className="px-3 py-2 text-right">Route it</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unmatched.map((m) => (
+                  <Fragment key={m.id}>
+                    <tr className="border-b bg-warn-bg/30">
+                      <td className="whitespace-nowrap px-3 py-2 text-xs tnum text-muted-foreground">{m.at}</td>
+                      <td className="px-3 py-2 text-xs">{m.by}</td>
+                      <td className="px-3 py-2">
+                        <div className="font-medium">{m.subject}</div>
+                        <p className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{m.body}</p>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-warn">{m.matchNote ?? "No lot code, MPN or work order in the message"}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {m.attachments?.length
+                          ? <span className="inline-flex items-center gap-1 text-muted-foreground"><FileText className="h-3 w-3" /> {m.attachments.join(", ")}</span>
+                          : <span className="text-faint">—</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <Button variant="outline" onClick={() => onMatch(m)}><MailQuestion className="h-4 w-4" /> Match to lot</Button>
+                      </td>
+                    </tr>
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
         <p className="mt-3 text-xs text-muted-foreground">
@@ -993,12 +1016,28 @@ function MailSection({
         }>
         {thread.length === 0 ? <Empty text="No correspondence with WHL yet." /> : (
           <>
-            <ol className="space-y-3">
-              {visible.map((m) => (
-                <MailRow key={m.id} m={m} orderId={id} onEscalate={escalateLabEmail}
-                  expanded={openMails.has(m.id)} onToggle={() => toggleMail(m.id)} />
-              ))}
-            </ol>
+            <div className="overflow-x-auto rounded-lg border">
+              <table className="w-full min-w-[980px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2 text-left">When</th>
+                    <th className="px-3 py-2 text-left">Direction</th>
+                    <th className="px-3 py-2 text-left">Kind</th>
+                    <th className="px-3 py-2 text-left">Lot · MPN · WO</th>
+                    <th className="px-3 py-2 text-left">Subject</th>
+                    <th className="px-3 py-2 text-left">Status</th>
+                    <th className="px-3 py-2 text-left">Files</th>
+                    <th className="px-3 py-2 text-left">By</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((m) => (
+                    <MailRow key={m.id} m={m} orderId={id} onEscalate={escalateLabEmail}
+                      expanded={openMails.has(m.id)} onToggle={() => toggleMail(m.id)} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
             {hidden > 0 && (
               <button onClick={() => setShowAllMail((v) => !v)}
                 className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
@@ -1012,7 +1051,10 @@ function MailSection({
           This thread is what drives the lifecycle. Everything to and from <b className="text-foreground">{WHL_CONTACT}</b>{" "}
           lands here against its lot — the invoice and its payment terms, the supplier&apos;s dispatch advice, receipt
           confirmations, interim updates, the payment acknowledgement and the report — and each one moves the stage it establishes.
-          {thread.length > RECENT_MAILS && ` Showing the ${RECENT_MAILS} most recent of ${thread.length}.`}
+          Click a row to read the message in full.
+          {thread.length > RECENT_MAILS && (showAllMail
+            ? ` Showing all ${thread.length}.`
+            : ` Showing the ${RECENT_MAILS} most recent of ${thread.length}.`)}
         </p>
       </Panel>
     </div>
@@ -1037,45 +1079,68 @@ const MAIL_KIND_TONE: Record<string, "ok" | "warn" | "info" | "neutral"> = {
 };
 
 /**
- * One message in the thread. The body is clamped to a couple of lines so a long
- * report mail can't push the rest of the thread off screen — "view full email" opens it
- * in place. Short mails are shown whole and get no toggle.
+ * One message as a table row: when, which way it went, what kind of mail it is (the thing
+ * that tells you which stage it moved), which lot it belongs to, and its subject. The body
+ * lives in a spanning row underneath, opened by clicking the row — a report mail is long
+ * enough to push the rest of the thread off screen if every one were shown in full.
  */
 function MailRow({
   m, orderId, expanded, onToggle, onEscalate,
 }: { m: LabEmail; orderId: string; expanded: boolean; onToggle: () => void; onEscalate: (orderId: string, emailId: string) => void }) {
-  const long = m.body.length > 160 || m.body.includes("\n");
   return (
-    <li className="flex gap-3">
-      <div className={cn("mt-1.5 h-2 w-2 shrink-0 rounded-full", m.direction === "OUT" ? "bg-primary" : "bg-ok")} />
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
+    <>
+      <tr onClick={onToggle}
+        title={expanded ? "Hide the message" : "Read the full message"}
+        className={cn("cursor-pointer border-b last:border-0 hover:bg-muted/60", expanded && "bg-accent-soft/60")}>
+        <td className="whitespace-nowrap px-3 py-2 text-xs tnum text-muted-foreground">{m.at}</td>
+        <td className="px-3 py-2">
           <Pill tone={m.direction === "OUT" ? "info" : "neutral"}>{m.direction === "OUT" ? "sent" : "received"}</Pill>
-          {/* the kind is what tells you which stage this mail moved */}
-          {MAIL_KIND_LABEL[m.kind] && <Pill tone={MAIL_KIND_TONE[m.kind]}>{MAIL_KIND_LABEL[m.kind]}</Pill>}
-          <StatusPill status={m.status} />
-          <span className="text-xs text-faint tnum">{m.at}</span>
-          {m.lotCode && <span className="text-xs text-muted-foreground">{m.lotCode} · <span className="font-mono">{m.mpn}</span>{m.workOrderNo ? ` · WO ${m.workOrderNo}` : ""}</span>}
-        </div>
-        <button onClick={onToggle} className="block w-full text-left text-sm font-medium hover:text-primary" title={expanded ? "Collapse" : "View full email"}>
-          {m.subject}
-        </button>
-        <p className={cn("whitespace-pre-wrap text-xs text-muted-foreground", !expanded && long && "line-clamp-2")}>{m.body}</p>
-        <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-faint">
-          {long && (
-            <button onClick={onToggle} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-              {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              {expanded ? "collapse" : "view full email"}
-            </button>
-          )}
-          <span>{m.by}</span>
-          {m.attachments?.length ? <span className="inline-flex items-center gap-1"><FileText className="h-3 w-3" /> {m.attachments.join(", ")}</span> : null}
-          {m.matchedBy && <span>matched by {m.matchedBy}</span>}
-          {m.direction === "OUT" && m.status === "AWAITING_RESPONSE" && (
-            <button className="underline" onClick={() => onEscalate(orderId, m.id)}>Mark escalated</button>
-          )}
-        </div>
-      </div>
-    </li>
+        </td>
+        {/* the kind is what tells you which stage this mail moved */}
+        <td className="px-3 py-2">
+          {MAIL_KIND_LABEL[m.kind] ? <Pill tone={MAIL_KIND_TONE[m.kind]}>{MAIL_KIND_LABEL[m.kind]}</Pill> : <span className="text-faint">—</span>}
+        </td>
+        <td className="px-3 py-2 text-xs">
+          {m.lotCode
+            ? <>
+                <div className="font-medium text-foreground">{m.lotCode}</div>
+                <div className="text-faint"><span className="font-mono">{m.mpn}</span>{m.workOrderNo ? ` · WO ${m.workOrderNo}` : ""}</div>
+              </>
+            : <span className="text-faint">unmatched</span>}
+        </td>
+        <td className="px-3 py-2">
+          <div className="flex items-start gap-1.5">
+            {expanded ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+            <span className="min-w-0">
+              <span className="block font-medium">{m.subject}</span>
+              {!expanded && <span className="line-clamp-1 text-xs text-muted-foreground">{m.body}</span>}
+            </span>
+          </div>
+        </td>
+        <td className="px-3 py-2"><StatusPill status={m.status} /></td>
+        <td className="px-3 py-2 text-xs">
+          {m.attachments?.length
+            ? <span className="inline-flex items-center gap-1 text-muted-foreground"><FileText className="h-3 w-3" /> {m.attachments.join(", ")}</span>
+            : <span className="text-faint">—</span>}
+        </td>
+        <td className="px-3 py-2 text-xs text-muted-foreground">
+          {m.by}
+          {m.matchedBy && <span className="block text-faint">matched by {m.matchedBy}</span>}
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b bg-card-2/60 last:border-0">
+          <td colSpan={8} className="px-3 py-3">
+            <p className="whitespace-pre-wrap text-xs text-muted-foreground">{m.body}</p>
+            {m.direction === "OUT" && m.status === "AWAITING_RESPONSE" && (
+              <button className="mt-2 text-[11px] font-medium text-primary underline"
+                onClick={(e) => { e.stopPropagation(); onEscalate(orderId, m.id); }}>
+                Mark escalated
+              </button>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

@@ -486,11 +486,15 @@ Anything short of `PAID` means the fee is outstanding — including `SENT_TO_FIN
 `owner` drives the "waiting on X" pill: the owner of the stage **after** the current one, or
 `null` once the chain is complete.
 
-Test plan by testing mode (used by the PO parser mock):
+Test plan by testing mode (used by the PO parser mock — see §7.1 for the full contract):
 
-- `WHL` → first **6** of `WHL_PROCESSES`, standard `AS6081`
-- `SUPPLIER_SELF` → `["Documentation & Packaging Inspection", "General Inspection", "Electrical Test"]`, no standard
+- `WHL` → a **random draw of 4–6** of `WHL_PROCESSES` in WHL's own order, standard `AS6081`
+  (`AS6171` for `Decapsulation & Die Analysis`)
+- `SUPPLIER_SELF` → a random **2–3** of the first four processes, no standard
 - `NONE` → empty list + note `"PO specifies no incoming test for this MPN."` (this is **not** a failure)
+
+The draw is random rather than a fixed slice because which processes a PO lists genuinely varies by
+part; a fixed "first 6" made every MPN on every order carry an identical table.
 
 ---
 
@@ -552,6 +556,11 @@ outstandingLabFees(bundle)         → unpaid rows { lot, status, terms, blockin
                                      SENT_TO_FINANCE > INVOICE_RECEIVED > REQUESTED > NOT_REQUESTED
 labFeeOutstandingTotal(bundle)     → { count, gross, currency, blocking: lotCode[] }
                                      — invoiced-but-unpaid only; `blocking` drives its own alert
+
+allLabFees(ordersMap)              → cross-order rows for the finance ledger (§9.9):
+//   { id, orderId, orderNo, supplierPoNo, lot, pay, invoice, gross, terms, unpaid, blocking, currency }
+// A lot enters the ledger once it has a work order AND the fee track has started (status is past
+// NOT_REQUESTED) — finance wants to see a fee coming, not only one already owed.
 
 mpnFeeRollup(bundle, mpn)          → what testing this MPN costs and how it's paid, across its lots:
 //   { lots, invoiced, gross, currency, terms[], ratePerProcess?, unpaid, unpaidGross, blocked[] }
@@ -1180,29 +1189,38 @@ Named for what it does: this thread is the lifecycle's driver, not an archive.
 
 1. **Panel "Compose from a template — subject & body pre-filled"** — a chip per WHL template (tooltip =
    hint) opening the compose modal for that template; caption explains the auto-fill; role note when gated.
-2. **Panel "WHL inbox — manual match queue"** — `[Check mail]` `[Compose]`; each unmatched mail in an
-   amber card: subject, `by · at · attachments`, body, the match note, `[Match to lot]`. Empty: *"Nothing
-   waiting — every inbound WHL email is matched to a lot."* Caption: *"Unroutable mail is held here rather
-   than dropped or applied to the wrong lot. Matching it applies its updates to that lot's tracker."*
+2. **Panel "WHL inbox — manual match queue"** — `[Check mail]` `[Compose]`; a **table**, amber-tinted rows:
+   `Received | From | Subject (+ 2-line body preview) | Why it's here | Files | Route it → [Match to lot]`.
+   "Why it's here" is the match note, falling back to *"No lot code, MPN or work order in the message"*.
+   Empty: *"Nothing waiting — every inbound WHL email is matched to a lot."* Caption: *"Unroutable mail is
+   held here rather than dropped or applied to the wrong lot. Matching it applies its updates to that
+   lot's tracker."*
 3. **Panel "Correspondence & tracking history"** — lot filter `<select>` (defaults to the header's scope,
-   still overridable); newest-first thread with a dot (primary = sent, ok = received), `sent`/`received`
-   pill, **kind pill** (`invoice` warn · `payment` ok · `dispatch` info · `report` ok — the kinds that
-   moved a stage; `STATUS_UPDATE` and the outbound kinds are left unlabelled because the subject already
-   says it), status pill, timestamp, `lotCode · mpn · WO`, subject, body (pre-wrapped), then
-   `by · attachments · matched by · [Mark escalated]` for awaiting outbound mail.
+   still overridable), then the newest-first thread as a **table**, one row per message:
+
+   | When | Direction | Kind | Lot · MPN · WO | Subject | Status | Files | By |
+   |---|---|---|---|---|---|---|---|
+   | timestamp | `sent`/`received` pill | **kind pill** | lot code over `mpn · WO n` | subject + a 1-line body preview | status pill | attachment names | author, and `matched by x` beneath |
+
+   Kind pills are `invoice` warn · `payment` ok · `dispatch` info · `report` ok — the kinds that moved a
+   stage; `STATUS_UPDATE` and the outbound kinds show `—`, because the subject already says it.
+   A timeline of cards came before this and read worse: the eye had to re-find the date, the direction
+   and the lot inside each card, when what the operator does here is scan a column.
+
+   **Clicking a row** opens the full body in a spanning row underneath (`colSpan={8}`), which is also
+   where `[Mark escalated]` sits for outbound mail still awaiting a reply. The preview line is dropped
+   while a row is open so the body isn't shown twice.
+
    Caption: *"This thread is what drives the lifecycle. Everything to and from `<lab>` lands here against
    its lot — the invoice and its payment terms, the supplier's dispatch advice, receipt confirmations,
    interim updates, the payment acknowledgement and the report — and each one moves the stage it
-   establishes."*
+   establishes. Click a row to read the message in full."*
 
-   **Only the 2 most recent messages render.** The rest sit behind
-   `▸ Show N earlier message(s)` / `▾ Hide the earlier N message(s)`, and the panel footer states the
-   truncation plainly: *"Showing the 2 most recent of N."* A long-running lot accumulates dozens of
-   mails; silently rendering all of them buries the thread that matters.
-
-   Each body is **clamped to 2 lines** with a `▸ view full email` / `▾ collapse` toggle (the subject is
-   also clickable). Short mails — under ~160 characters and single-line — render whole and get **no**
-   toggle, so the control only appears where it does something.
+   **Only the 8 most recent messages render** (`RECENT_MAILS`). The rest sit behind
+   `▸ Show N earlier message(s)` / `▾ Hide the earlier N message(s)`, and the footer states where you
+   are: *"Showing the 8 most recent of N."* → *"Showing all N."* once expanded — a footer that still
+   claims truncation after you've expanded is just wrong. Eight is a table-row budget, not the two a
+   clamped-paragraph card could afford.
 
 ### 9.6 Menus and modals
 
@@ -1311,6 +1329,30 @@ The logistics screen, when the link is present, shows a panel above its usual bo
   MPN ×Q · origin <lab> (where the goods currently sit)"*.
 
 If the host route is statically pre-rendered, wrap the search-param reader in a Suspense boundary.
+
+---
+
+### 9.9 Finance-side ledger (separate screen)
+
+The lab fee is a **third money leg**: the client pays 1Buy, 1Buy pays the supplier, customs takes duty —
+and WHL bills separately for the test itself. So it gets its own tab on the Payments board next to those:
+`/fulfilment/payments?tab=whl` ("WHL testing"), fed by `allLabFees(orders)`.
+
+Two KPI tiles (`WHL fees paid` / `WHL fees due`, the latter labelled `· N lot(s) held` when any advance
+fee is blocking) and one table, one row per work order:
+
+| Order | Lot · MPN | Lab · work order | Invoice | Net + tax | Payable | Terms · due | Status | |
+|---|---|---|---|---|---|---|---|---|
+| links to the order flow's `#testing` | lot code over MPN | lab site over `WO n` | invoice no + `received at`, or `awaited · asked <date>` | net `+` tax, with `processes × rate` beneath | gross, bold | terms pill + due date | `LAB_PAYMENT_LABEL` pill, plus a `lot held` pill when blocking | `Mark paid` / `✓ paid · ref` / `Testing workspace` |
+
+- **Same action, not a second one.** `Mark paid` expands the row (the board's attach-then-pay shape, as
+  used for customs duty) for a transfer reference and calls the module's own `markLabFeePaid` — the
+  workspace's per-lot button and this row cannot diverge.
+- The expansion states what the lab needs quoted on the transfer (`WO n / LOT-x`), because a payment the
+  lab can't reconcile is the reason a settled fee still reads unpaid.
+- Terms are **displayed, never chosen** here either — same rule as everywhere else (§4).
+- A row with no invoice yet offers `Testing workspace` instead of `Mark paid`: nothing to pay until the
+  lab bills it, and chasing the invoice is a mail action that belongs on the acting screen.
 
 ---
 
@@ -1432,6 +1474,7 @@ the reference repo; this table is what a target repo should expect to end up wit
 | `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel`; chain and fee panel take `readOnly` | 340 |
 | `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / shipment-prefill | +450 |
 | `src/app/fulfilment/logistics/page.tsx` | §9.8 hand-off | +90 |
+| `src/app/fulfilment/payments/page.tsx` | §9.9 the "WHL testing" tab — the finance-side fee ledger (tiles, table, attach-then-pay row) | +95 |
 | `src/app/fulfilment/testing/page.tsx` | cross-order board, order-first (§9.0): pick an order, then the per-lot list with one `TestingStageBar` each | 150 |
 | `src/app/fulfilment/testing/[orderId]/page.tsx` | the workspace route — order header + `TestingTab` + the add-lot modal | 70 |
 | `src/data/fixtures.ts`, `src/data/order-details.ts` | demo seed §13 | +700 |

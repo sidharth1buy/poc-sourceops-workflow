@@ -472,6 +472,33 @@ export const allPayments = (o: OrdersMap) =>
 export const allLots = (o: OrdersMap) =>
   Object.values(o).flatMap((b) => b.lots.map((l) => ({ ...l, orderId: b.id, orderNo: b.orderNo })));
 
+/**
+ * WHL's own testing invoices across every order — the finance-side view of the lab-fee track.
+ * This is a *third* money leg alongside the client/supplier payments and customs duty: the lab
+ * bills for the test itself, on its own terms, and gets paid by finance rather than out of the
+ * order's material payment.
+ *
+ * A lot appears once it has a work order and the fee track has started (the invoice was asked
+ * for, or arrived) — finance wants to see a fee coming, not just one already owed.
+ */
+export const allLabFees = (o: OrdersMap) =>
+  Object.values(o).flatMap((b) => b.lots
+    .filter((l) => !!l.workOrderNo && labPaymentOf(l).status !== "NOT_REQUESTED")
+    .map((lot) => {
+      const pay = labPaymentOf(lot);
+      return {
+        id: `${b.id}:${lot.id}`,
+        orderId: b.id, orderNo: b.orderNo, supplierPoNo: b.supplierPoNo,
+        lot, pay, invoice: pay.invoice,
+        gross: labFeeGross(lot),
+        terms: labTerms(lot),
+        unpaid: labFeeUnpaid(lot),
+        /** advance terms + unpaid: the lab is holding the lot, so this one stops the bench */
+        blocking: labFeeBlocking(lot),
+        currency: pay.invoice?.currency ?? b.currency,
+      };
+    }));
+
 export const allEscrow = (o: OrdersMap) =>
   Object.values(o).filter((b) => b.escrow).map((b) => ({
     orderId: b.id, orderNo: b.orderNo, e: b.escrow!,
