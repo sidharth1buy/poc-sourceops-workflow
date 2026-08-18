@@ -22,11 +22,11 @@ export function requestSupplierShippingDocs(req: { to: string; orderNo: string; 
 
 export interface FinanceNotifyRes { messageId: string; to: string }
 
-// Logistics → Finance: ask the Finance/CHA team to file the Bill of Entry (a Prior BoE can go in
-// up to 30 days before arrival, so we notify as soon as the shipment is booked).
-export function notifyFinanceToFileBoe(req: { orderNo: string; shipmentNo: string }) {
-  return mockCall<FinanceNotifyRes>(MAIL, MAIL_LABEL, "POST /mail/notify-finance-boe", req,
-    () => ({ messageId: ref("MSG"), to: "finance@1buy.ai" }),
+// Logistics → Customs desk: ask the Customs handling team to file the Bill of Entry (a Prior BoE
+// can go in up to 30 days before arrival, so we notify as soon as the shipment is booked).
+export function notifyCustomsTeamToFileBoe(req: { orderNo: string; shipmentNo: string }) {
+  return mockCall<FinanceNotifyRes>(MAIL, MAIL_LABEL, "POST /mail/notify-customs-boe", req,
+    () => ({ messageId: ref("MSG"), to: "customs@1buy.ai" }),
     { latencyMs: [400, 1000] });
 }
 

@@ -4,7 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import { toast } from "sonner";
 import type {
   Order, OrderBundle, OrderLine, ClientPO, SupplierPO, SupplierPoLine, PoTerms, Address, JourneyPhase, TestStatus, TestingMode, PaymentMode, PaymentDirection,
-  PaymentStatus, ShipmentLeg, ShipmentStatus, TradeType, ApprovalState,
+  PaymentStatus, ShipmentLeg, ShipmentStatus, ShipmentPackage, TradeType, ApprovalState,
   LotTest, MpnTestSpec, TestAuditEntry, TestProcessStatus, WhlReport, LabEmail, NotifyParty,
   Lot, TestingStage, LotDispatch,
   DemandLine, RfqBundle, SupplierQuote, ClientQuoteDecision, ClientQuote, QuoteEmail, RfqBundleStatus,
@@ -17,7 +17,7 @@ import { ESCROW_STATUS_ORDER } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
 import { fileBillOfEntry, getAssessment, getClearanceStatus, getIgmEntry } from "@/integrations/customs-icegate";
 import { bookShipment, getTracking, dhlCreatePickup, dhlUpdatePickup, dhlCancelPickup, dhlGetInvoices, dhlUploadImage, type Carrier } from "@/integrations/logistics";
-import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyFinanceToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
+import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyCustomsTeamToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
 import { weClearImportCustoms } from "@/lib/incoterm";
 import {
   whlSubmitTestJob, whlPollTestReport, mapVerdict, whlFetchReport, whlSendMail, whlPollInbox,
@@ -470,10 +470,10 @@ interface Store {
   sendEscrowEmail: (orderId: string, purpose: EscrowSendPurpose, draft: EscrowEmailDraft, milestoneIndex?: number) => void;
 
   addPayment: (orderId: string, p: { direction: PaymentDirection; mode: PaymentMode; amount: number; triggerDoc: string; dueDate?: string }) => void;
-  setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus) => void;
+  setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus, attachment?: string) => void;
   initiatePaymentTransfer: (orderId: string, payId: string) => void; // banking adapter - T/T
 
-  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string; dimensions?: string; goodsDescription?: string; hsCode?: string; declaredValue?: number; declaredCurrency?: string; pickupReadyDate?: string; bookingDocs?: string[]; notifyFinanceBoe?: boolean; productCode?: string; productName?: string; rateAmount?: number; rateCurrency?: string; estimatedDelivery?: string; bookingMode?: "COMBINED" | "SEPARATE"; pickupDate?: string; pickupCloseTime?: string }) => string | null;
+  createShipment: (orderId: string, s: { leg: ShipmentLeg; carrier: string; fromLocation: string; toLocation: string; boxCount: number; grossWeightKg: number; lines: { mpn: string; qty: number }[]; awb?: string; dimensions?: string; goodsDescription?: string; hsCode?: string; declaredValue?: number; declaredCurrency?: string; pickupReadyDate?: string; bookingDocs?: string[]; packages?: ShipmentPackage[]; notifyCustomsBoe?: boolean; productCode?: string; productName?: string; rateAmount?: number; rateCurrency?: string; estimatedDelivery?: string; bookingMode?: "COMBINED" | "SEPARATE"; pickupDate?: string; pickupCloseTime?: string }) => string | null;
   // Pre-booking: ask the supplier for the Packing List / Commercial Invoice / COO, then parse the reply.
   requestShippingDocs: (orderId: string, body?: string) => void;
   receiveShippingDocs: (orderId: string) => void;
@@ -1838,9 +1838,9 @@ export const useStore = create<Store>()(
         const b = s.orders[orderId]; if (!b) return;
         b.payments.push({ id: uid("pay"), direction: p.direction, mode: p.mode, triggerDoc: p.triggerDoc, amount: p.amount, currency: b.currency, status: "PENDING", dueDate: p.dueDate });
       }); toast.success("Payment task created"); },
-      setPaymentStatus: (orderId, payId, status) => {
-        set((s) => { const p = s.orders[orderId]?.payments.find((x) => x.id === payId); if (p) { p.status = status; if (status === "PAID") p.paidAt = today(); } });
-        toast.success(`Payment ${status.toLowerCase()}`);
+      setPaymentStatus: (orderId, payId, status, attachment) => {
+        set((s) => { const p = s.orders[orderId]?.payments.find((x) => x.id === payId); if (p) { p.status = status; if (status === "PAID") { p.paidAt = today(); if (attachment) p.attachment = attachment; } } });
+        toast.success(`Payment ${status.toLowerCase()}${attachment ? ` · ${attachment} attached` : ""}`);
       },
       // Banking adapter: initiate the T/T → INITIATED (providerRef), then poll clearing → PAID (UTR).
       initiatePaymentTransfer: (orderId, payId) => {
@@ -1905,15 +1905,15 @@ export const useStore = create<Store>()(
           const bb = s.orders[orderId]; if (!bb) return;
           bb.shipments.push({ id, shipmentNo, leg: input.leg, awb: prebooked ? input.awb!.trim() : "booking…", carrier: input.carrier, fromLocation: input.fromLocation, toLocation: input.toLocation,
             boxCount: input.boxCount, grossWeightKg: input.grossWeightKg, status: "PLANNED", lines, updatedAt: stamp(),
-            dimensions: input.dimensions, goodsDescription: input.goodsDescription, hsCode: input.hsCode,
+            packages: input.packages, dimensions: input.dimensions, goodsDescription: input.goodsDescription, hsCode: input.hsCode,
             declaredValue: input.declaredValue, declaredCurrency: input.declaredCurrency,
             pickupReadyDate: input.pickupReadyDate, bookingDocs: input.bookingDocs,
             productCode: input.productCode, productName: input.productName, rateAmount: input.rateAmount,
             rateCurrency: input.rateCurrency, estimatedDelivery: input.estimatedDelivery, bookingMode: input.bookingMode });
         });
-        // Logistics → Finance: queue a (prior) BoE now — create the customs entry so it shows on the
-        // Customs desk immediately, and mail Finance to file it (no need to wait for arrival at port).
-        if (input.notifyFinanceBoe && input.leg === "INBOUND" && weClearImportCustoms(b)) {
+        // Logistics → Customs desk: queue a (prior) BoE now — create the customs entry so it shows on
+        // the Customs desk immediately, and mail the Customs team to file it (no wait for arrival at port).
+        if (input.notifyCustomsBoe && input.leg === "INBOUND" && weClearImportCustoms(b)) {
           const sd = b.shippingDocs;
           set((s) => {
             const bb = s.orders[orderId]; if (!bb) return;
@@ -1921,11 +1921,11 @@ export const useStore = create<Store>()(
               bb.customs.push({ id: uid("ce"), shipmentNo, portCode: "INDEL4", chaName: "Speedwing CHA", currency: "INR", assessableValue: sd?.declaredValue, docs: sd?.docs });
             }
           });
-          const ftid = toast.loading("📡 Calling Mail — notify Finance to file the BoE (Prior)…");
+          const ftid = toast.loading("📡 Calling Mail — notify the Customs team to file the BoE (Prior)…");
           void (async () => {
             try {
-              await notifyFinanceToFileBoe({ orderNo: b.orderNo, shipmentNo });
-              toast.success(`✓ Finance notified to file the BoE for ${shipmentNo} — queued on the Customs desk`, { id: ftid });
+              await notifyCustomsTeamToFileBoe({ orderNo: b.orderNo, shipmentNo });
+              toast.success(`✓ Customs team notified to file the BoE for ${shipmentNo} — queued on the Customs desk`, { id: ftid });
             } catch (e) { toast.error(`Mail — notify failed: ${errMsg(e)}`, { id: ftid }); }
           })();
         }
@@ -1938,16 +1938,23 @@ export const useStore = create<Store>()(
         // Logistics adapter: the carrier assigns the real AWB + tracking URL asynchronously
         void (async () => {
           try {
-            const booked = await bookShipment({ carrier: (input.carrier as Carrier) || "DHL", leg: input.leg, reference: shipmentNo, from: input.fromLocation, to: input.toLocation, pieces: input.boxCount, weightKg: input.grossWeightKg });
-            set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; sh.updatedAt = stamp(); } });
-            toast.success(`✓ ${bookProvider} — AWB ${booked.awb} booked`, { id: bookTid });
-            // Pickup: COMBINED = created inline with the shipment; SEPARATE = its own /pickups call.
-            if (input.pickupDate) {
+            // Pickup modes: COMBINED = scheduled inline with the shipment (pickup rides on POST /shipments,
+            // no separate call); SEPARATE = its own POST /pickups after booking. No pickupDate = no pickup.
+            const wantsPickup = !!input.pickupDate;
+            const inlinePickup = wantsPickup && input.bookingMode !== "SEPARATE";
+            const booked = await bookShipment({ carrier: (input.carrier as Carrier) || "DHL", leg: input.leg, reference: shipmentNo, from: input.fromLocation, to: input.toLocation, pieces: input.boxCount, weightKg: input.grossWeightKg, pickup: inlinePickup ? { date: input.pickupDate!, closeTime: input.pickupCloseTime ?? "18:00" } : undefined });
+            set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) {
+              sh.awb = booked.awb; sh.carrierRef = booked.carrierRef; sh.trackingUrl = booked.trackingUrl; sh.updatedAt = stamp();
+              if (inlinePickup && booked.pickupConfirmationNumber) { sh.pickupConfirmationNo = booked.pickupConfirmationNumber; sh.pickupWindow = `${input.pickupDate} · by ${booked.readyByTime}`; }
+            } });
+            toast.success(`✓ ${bookProvider} — AWB ${booked.awb} booked${inlinePickup ? ` · pickup ${booked.pickupConfirmationNumber} (combined)` : ""}`, { id: bookTid });
+            // SEPARATE only: schedule the pickup as its own POST /pickups call.
+            if (wantsPickup && input.bookingMode === "SEPARATE") {
               const ptid = toast.loading(`📡 Calling ${bookProvider} — Schedule Pickup API…`);
               try {
-                const p = await dhlCreatePickup({ from: input.fromLocation, date: input.pickupDate, closeTime: input.pickupCloseTime ?? "18:00" });
+                const p = await dhlCreatePickup({ from: input.fromLocation, date: input.pickupDate!, closeTime: input.pickupCloseTime ?? "18:00" });
                 set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) { sh.pickupConfirmationNo = p.dispatchConfirmationNumber; sh.pickupWindow = `${input.pickupDate} · by ${p.readyByTime}`; sh.updatedAt = stamp(); } });
-                toast.success(`✓ Pickup scheduled · ${p.dispatchConfirmationNumber} (${input.bookingMode === "SEPARATE" ? "separate" : "combined"})`, { id: ptid });
+                toast.success(`✓ Pickup scheduled · ${p.dispatchConfirmationNumber} (separate)`, { id: ptid });
               } catch (e) { toast.error(`${bookProvider} pickup: ${errMsg(e)}`, { id: ptid }); }
             }
           } catch (e) { set((s) => { const sh = s.orders[orderId]?.shipments.find((x) => x.id === id); if (sh) sh.awb = "booking failed"; }); toast.error(`${bookProvider} — booking failed: ${errMsg(e)}`, { id: bookTid }); }
@@ -2855,8 +2862,10 @@ export const useStore = create<Store>()(
       // 24 = Shipment.updatedAt (newest-first sorting on the Logistics/Customs desks) ·
       // 25 = DHL booking fields on Shipment (product/rate/estimatedDelivery + pickup confirmation/window/mode) ·
       // 26 = Shipment.carrierDocs (waybill + CI retrieved from DHL /invoices) ·
-      // 27 = customs filing mode (ICEGATE/CHA) + duty invoice; file auto-assesses; coarse buckets
-      version: 27,
+      // 27 = customs filing mode (ICEGATE/CHA) + duty invoice; file auto-assesses; coarse buckets ·
+      // 28 = Shipment.packages[] (per-box weight + dimensions; multi-box DHL booking) ·
+      // 29 = Payment.attachment (proof/invoice attached by Finance when marking paid)
+      version: 29,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

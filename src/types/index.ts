@@ -611,6 +611,7 @@ export interface Payment {
   paidAt?: string;
   providerRef?: string; // bank transfer ref (from the banking adapter)
   utr?: string;         // settlement UTR once cleared
+  attachment?: string;  // payment proof / invoice attached by Finance when marking paid
 }
 
 // GST e-Invoice / IRP result (from the e-invoice adapter)
@@ -657,13 +658,21 @@ export interface Shipment {
   pickupWindow?: string;       // e.g. "2026-08-25 · by 18:00"
   carrierDocs?: { typeCode: string; fileName: string }[]; // waybill + CI retrieved from DHL (/invoices)
   // ---- booking particulars (captured when 1Buy books the carrier — needed by DHL + customs) ----
-  dimensions?: string;        // L×W×H cm
+  packages?: ShipmentPackage[]; // per-box weight + dimensions (DHL packages[]); boxCount/grossWeightKg are the roll-up
+  dimensions?: string;        // L×W×H cm — combined summary across packages
   goodsDescription?: string;  // commodity on the AWB / invoice
   hsCode?: string;            // tariff heading
   declaredValue?: number;     // customs/insurance value
   declaredCurrency?: string;
   pickupReadyDate?: string;   // EXW pickup date
   bookingDocs?: string[];     // documents confirmed at booking (Commercial Invoice, Packing List, COO, …)
+}
+
+// One physical box on the shipment (DHL packages[]). `count` identical boxes of this size/weight.
+export interface ShipmentPackage {
+  count: number;      // how many identical boxes
+  weightKg: number;   // gross weight per box
+  dimensions?: string; // L×W×H cm for one box
 }
 
 // Core ICEGATE clearance stepper: file BoE → link IGM → faceless assessment → pay duty → out-of-charge.

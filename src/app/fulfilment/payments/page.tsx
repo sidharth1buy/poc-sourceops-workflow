@@ -42,6 +42,9 @@ function PaymentsInner() {
   const rows = allPayments(orders);
   const [payingId, setPayingId] = useState<string | null>(null);
   const [invoice, setInvoice] = useState("");
+  // regular payments (client/supplier) — attach-then-pay, mirrors the Customs duty flow
+  const [payRowId, setPayRowId] = useState<string | null>(null);
+  const [payDoc, setPayDoc] = useState("");
   const [tab, setTab] = useState<PayTab>(SLUG_TAB[params.get("tab") ?? ""] ?? "All");
   const goTab = (t: PayTab) => { setTab(t); router.replace(`/fulfilment/payments?tab=${TAB_SLUG[t]}`); };
 
@@ -60,7 +63,9 @@ function PaymentsInner() {
     { key: "amt", header: "Amount", align: "right", render: (r) => money(r.amount, r.currency) },
     { key: "due", header: "Due", align: "right", render: (r) => <span className="text-xs tnum">{r.dueDate ?? "—"}</span> },
     { key: "status", header: "Status", render: (r) => <StatusPill status={r.status} /> },
-    { key: "act", header: "", align: "right", render: (r) => r.status !== "PAID" ? <Button variant="outline" onClick={() => setStatus(r.orderId, r.id, "PAID")}>Mark paid</Button> : <span className="text-xs text-ok">✓ paid</span> },
+    { key: "act", header: "", align: "right", render: (r) => r.status !== "PAID"
+      ? <Button variant="outline" onClick={() => { setPayRowId(r.id); setPayDoc(`PMT-${r.orderNo}.pdf`); }}>Mark paid</Button>
+      : <span className="text-xs text-ok">✓ paid{r.attachment ? ` · ${r.attachment}` : ""}</span> },
   ];
 
   const dutyCols: Col<(typeof dutyRows)[number]>[] = [
@@ -135,6 +140,15 @@ function PaymentsInner() {
         <Panel>
           <DataTable columns={paymentCols}
             rows={tab === "Client → 1Buy" ? clientRows : tab === "1Buy → Supplier" ? supplierRows : rows}
+            isExpanded={(r) => r.id === payRowId}
+            renderExpanded={(r) => (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Attach payment proof / invoice for {money(r.amount, r.currency)}:</span>
+                <Input value={payDoc} onChange={(e) => setPayDoc(e.target.value)} className="w-56" placeholder="PMT-ORD-1234.pdf" />
+                <Button onClick={() => { setStatus(r.orderId, r.id, "PAID", payDoc.trim() || undefined); setPayRowId(null); }}>Mark paid</Button>
+                <button className="text-xs text-muted-foreground hover:underline" onClick={() => setPayRowId(null)}>cancel</button>
+              </div>
+            )}
             empty="No payment tasks in this view." />
         </Panel>
       )}

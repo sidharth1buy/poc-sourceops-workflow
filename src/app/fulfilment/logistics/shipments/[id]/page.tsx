@@ -73,6 +73,13 @@ export default function ShipmentDetailPage() {
             <Field label="Order"><Link href={`/fulfilment/orders/${row.orderId}`} className="font-mono text-primary hover:underline">{row.orderNo}</Link> · {order?.supplier.name}</Field>
             <Field label="Route">{row.fromLocation} → {row.toLocation}</Field>
             <Field label="Cargo">{row.boxCount} pcs · {row.grossWeightKg} kg{row.dimensions ? ` · ${row.dimensions}` : ""}</Field>
+            {(row.packages?.length ?? 0) > 1 && (
+              <Field label="Boxes">
+                <span className="space-y-0.5">{row.packages!.map((p, i) => (
+                  <span key={i} className="block text-xs text-muted-foreground">{p.count}× {p.dimensions || "—"} · {p.weightKg} kg/box</span>
+                ))}</span>
+              </Field>
+            )}
             <Field label="Lines">{row.lines.map((l) => `${l.mpn} ×${qtyfmt(l.qty)}`).join(" · ") || "—"}</Field>
             {row.goodsDescription && <Field label="Goods">{row.goodsDescription}{row.hsCode ? ` · HS ${row.hsCode}` : ""}</Field>}
             {!!row.declaredValue && <Field label="Declared value">{money(row.declaredValue, row.declaredCurrency)}</Field>}

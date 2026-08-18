@@ -677,7 +677,7 @@ export function CreateShipmentModal({
   const [docPacking, setDocPacking] = useState(!!sd?.docs?.includes("Packing List"));
   const [docCoo, setDocCoo] = useState(!!sd?.docs?.includes("Certificate of Origin"));
   const [docBattery, setDocBattery] = useState(false);
-  const [notifyFinance, setNotifyFinance] = useState(true);
+  const [notifyCustoms, setNotifyCustoms] = useState(true);
   const [qtys, setQtys] = useState<Record<string, number>>(() => {
     if (!prefill || !b) return {};
     const out: Record<string, number> = {};
@@ -707,7 +707,7 @@ export function CreateShipmentModal({
       leg, carrier, fromLocation: from || "—", toLocation: to || "—",
       boxCount: bookMode ? pieces : 1, grossWeightKg: bookMode ? weightKg : 0, lines,
       awb: recordMode ? awb.trim() : undefined, // supplier's AWB (record mode); otherwise we book it
-      notifyFinanceBoe: weClear ? notifyFinance : undefined,
+      notifyCustomsBoe: weClear ? notifyCustoms : undefined,
       ...(bookMode ? { dimensions: dims.trim() || undefined, goodsDescription: goods.trim(), hsCode: hsCode.trim(), declaredValue, declaredCurrency: declaredCcy, pickupReadyDate: pickupDate || undefined, bookingDocs: docs } : {}),
     });
     if (id) onClose();
@@ -725,8 +725,8 @@ export function CreateShipmentModal({
         )}
         {weClear && (
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border bg-muted/30 p-2.5 text-xs">
-            <input type="checkbox" checked={notifyFinance} onChange={(e) => setNotifyFinance(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
-            <span className="text-muted-foreground"><b className="text-foreground">Notify Finance to file the BoE (Prior)</b> — mails Finance and queues a Bill of Entry on the Customs desk now, so we don&apos;t wait for the shipment to reach port.</span>
+            <input type="checkbox" checked={notifyCustoms} onChange={(e) => setNotifyCustoms(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--primary)]" />
+            <span className="text-muted-foreground"><b className="text-foreground">Notify the Customs handling team to file the BoE (Prior)</b> — mails the Customs team and queues a Bill of Entry on the Customs desk now, so we don&apos;t wait for the shipment to reach port.</span>
           </label>
         )}
         {prefill && (

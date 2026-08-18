@@ -7,8 +7,10 @@ const LABEL = "Logistics";
 export type Carrier = "DHL" | "FEDEX" | "DELHIVERY";
 export const CARRIERS: Carrier[] = ["DHL", "FEDEX", "DELHIVERY"];
 
-export interface BookShipmentReq { carrier: Carrier; leg: ShipmentLeg; reference: string; from: string; to: string; pieces: number; weightKg: number; }
-export interface BookShipmentRes { awb: string; carrier: Carrier; carrierRef: string; trackingUrl: string; status: "PLANNED"; }
+// pickup.isRequested → DHL schedules the courier pickup inline with the shipment (one POST /shipments)
+// and returns the dispatchConfirmationNumber in the same response. Omit it to book without a pickup.
+export interface BookShipmentReq { carrier: Carrier; leg: ShipmentLeg; reference: string; from: string; to: string; pieces: number; weightKg: number; pickup?: { date: string; closeTime: string }; }
+export interface BookShipmentRes { awb: string; carrier: Carrier; carrierRef: string; trackingUrl: string; status: "PLANNED"; pickupConfirmationNumber?: string; readyByTime?: string; }
 export interface TrackingRes { awb: string; carrierStatusCode: string; mappedStatus: ShipmentStatus; lastLocation: string; checkpoints: { at: string; location: string; description: string }[]; }
 
 const AWB_PREFIX: Record<Carrier, string> = { DHL: "DHL", FEDEX: "FDX", DELHIVERY: "DLV" };
@@ -17,7 +19,9 @@ export function bookShipment(req: BookShipmentReq) {
   return mockCall<BookShipmentRes>(SYS, LABEL, "POST /shipments", req,
     () => {
       const awb = `${AWB_PREFIX[req.carrier]} ${Math.floor(10000000 + Math.random() * 89999999)}`;
-      return { awb, carrier: req.carrier, carrierRef: ref("CR"), trackingUrl: `https://track.example/${req.carrier.toLowerCase()}/${encodeURIComponent(awb)}`, status: "PLANNED" };
+      const res: BookShipmentRes = { awb, carrier: req.carrier, carrierRef: ref("CR"), trackingUrl: `https://track.example/${req.carrier.toLowerCase()}/${encodeURIComponent(awb)}`, status: "PLANNED" };
+      if (req.pickup) { res.pickupConfirmationNumber = `${Math.floor(10000000 + Math.random() * 89999999)}`; res.readyByTime = req.pickup.closeTime; }
+      return res;
     },
     { latencyMs: [400, 1200], failError: { code: "INVALID_ADDRESS", message: "Missing/invalid recipient pincode", status: 422 } });
 }
