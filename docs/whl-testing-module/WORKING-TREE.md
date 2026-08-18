@@ -119,14 +119,19 @@ per adapter.
 ```
 src/
 ├── app/fulfilment/
-│   ├── orders/[id]/page.tsx           ◈  route → order workspace → Testing tab (the main screen)
-│   ├── testing/page.tsx           76  ✦  cross-order lab board (every lot, every order)
+│   ├── orders/[id]/page.tsx           ◈  route → order workspace → Testing tab (the acting screen)
+│   ├── testing/page.tsx         160  ✦  cross-order board, order-first: pick an order, then lots
+│   ├── testing/[orderId]/page.tsx 70 ✦  the main screen's route: header + <TestingTab> + add-lot
 │   └── logistics/page.tsx        144  ◈  hand-off target for ?order=&lot= / &lots=
 │
 ├── components/order/
-│   ├── order-workspace.tsx      578  ◈  host shell; renders <TestingTab> for tab === "Testing"
-│   ├── testing-tab.tsx        1 277  ✦  the whole screen: roll-up, 3 sub-tabs, menus, density
-│   ├── testing-stages.tsx       294  ✦  lifecycle stepper + compact bar + the lab-fee panel
+│   ├── order-workspace.tsx      600  ◈  host shell; renders <TestingTab> for tab === "Testing"
+│   ├── testing-tab.tsx        1 081  ✦  the whole acting screen: roll-up, 3 sub-tabs, menus, density
+│   ├── testing-view-tab.tsx     303  ✧  PARKED — unrendered read-only shell (see its header comment)
+│   ├── testing-readonly.tsx      95  ✦  the read-only lot rendering: stepper + report, nothing else
+│   ├── report-repository.tsx    183  ✦  the report's versions + parsed fields + open/download (all 3 surfaces)
+│   ├── order-flow-page.tsx      973  ◈  the order's whole-flow page; its Testing section reuses the above
+│   ├── testing-stages.tsx       340  ✦  lifecycle stepper + compact bar + the lab-fee panel (+ readOnly)
 │   └── modals.tsx               889  ◈  7 of 19 modals belong here
 │
 ├── store/
@@ -168,9 +173,11 @@ how `testStatus` is derived can.
 
 ### Owned outright
 
-#### `components/order/testing-tab.tsx` — 1 277 lines, 18 components
+#### `components/order/testing-tab.tsx` — 1 081 lines, 15 components
 
-The screen. `TestingTab` (L113) is the only export; everything else is local.
+The acting screen, mounted **only** at `/fulfilment/testing/[orderId]`. `TestingTab` (L113) is the
+only export; everything else is local. The order workspace no longer renders it — see
+`testing-view-tab.tsx` below.
 
 | Component | L | Role |
 |---|---|---|
@@ -183,8 +190,7 @@ The screen. `TestingTab` (L113) is the only export; everything else is local.
 | `ReportRepository` / `ReportSummary` | ~960 / ~1010 | version switcher + the parsed report header on screen (no process table — see below) |
 | `NextActionsMenu` / `BulkActionsMenu` | 690 / 622 | per-lot and N-lot follow-through |
 | `LotProgressToggle` | 404 | the roll-up table's **Progress** cell |
-| `LotFeeCell` | ~430 | the roll-up table's **Lab fee** cell: gross · terms pill · held/unpaid/paid |
-| `MAIL_KIND_LABEL` / `MAIL_KIND_TONE` | ~1250 | the thread's kind pills (invoice · payment · dispatch · report) |
+| `MAIL_KIND_LABEL` / `MAIL_KIND_TONE` | ~1200 | the thread's kind pills (invoice · payment · dispatch · report) |
 | `CollapsibleCard` / `ExpandBar` | 65 / 93 | the density primitives (see Part 5) |
 | `Empty` / `Notice` / `Denied` / `Stat` | 39–109, ~455 | local presentation helpers |
 
@@ -202,17 +208,47 @@ times (MPN requirements, lot tracker, report process matrix — the same names t
   agrees, and a `passed / tracked` footer per lot.
 - `MpnFeeStrip` — the MPN's fee from `mpnFeeRollup`: gross, per-process rate, terms (or `mixed terms`),
   unpaid total, held lot codes.
+- `LotFeeCell` — a lot's **Lab fee** table cell: gross · terms pill · held/unpaid/paid. It lives here
+  rather than in `testing-tab.tsx` because both roll-ups render it, and a second copy would let the
+  acting screen and the read-only tab drift on what "held" looks like.
 
-#### `components/order/testing-stages.tsx` — ~330 lines
+#### `components/order/testing-readonly.tsx` — 95 lines
+
+The reading surface (CONTEXT §9.0) is the Testing section of `order-flow-page.tsx`, and per lot it
+renders `LotReadOnlyDetail` = `TestingStageChain readOnly` + `ReportRepository readOnly`. That's the
+whole component. It was briefly bigger — a vertical stage list, a per-test table and "result
+circulated" — and all three were cut as repeats of something already on the page or on the acting
+screen; §9.0 keeps the reasoning. `MpnRequirements` still lives here but nothing renders it (the only
+caller is the parked `testing-view-tab.tsx`).
+
+- Reads through the same selectors (`testingSummary`, `lotResults`, `lotStageProgress`, `lotTestRows`,
+  `labFeeOutstandingTotal`, the alert selectors) and reuses `TestingStageBar`, `TestingStageChain`
+  with `readOnly`, `LotFeeCell` and `ReportRepository`. It computes no number of its own — a figure
+  that disagrees with the acting screen is a bug in one shared selector.
+- The alerts are the workspace's, minus their action buttons; the lab-invoice download is absent
+  (that belongs to the fee workflow).
+- **The report is readable and downloadable here** — see §9.0: it's the deliverable these pages
+  exist to show, and every open/download writes an access-log row wherever it happens.
+- Expansion state is `{ lotId, stages }`, not just a lot id: clicking the **lifecycle bar** opens the
+  lot with `TestingStageDetail` already expanded, clicking the row opens it collapsed.
+- Note for screenshots: an action removed from `testing-tab.tsx` won't show up on these pages, and a
+  selector changed anywhere shows up on all three — check every surface you touched.
+
+#### `components/order/testing-stages.tsx` — ~340 lines
 
 - `TestingStageBar` (L34) — 7 thin segments + label + `n/7` + "waiting on X". Used in the scope
-  banner and on the cross-order board.
+  banner, on the cross-order board and in the order-flow page's lot table.
 - `TestingStageChain` (L65) — the horizontal stepper. Reuses the **Journey stepper's** markup and
   classes on purpose, so order-level and lot-level progress read as one idea at two scales. Per-stage
   detail lives in `title` tooltips; below the rail sit the current stage in words, `Next: …`, the
   action buttons, and the dispatch block.
 - `LabFeePanel` (L216) — WHL's invoice and its settlement (§9.3b in CONTEXT): status pill, amounts,
   `Request invoice` / `Download invoice` / `Send to finance` / `Mark paid`, and the access-log count.
+
+Both `TestingStageChain` and `LabFeePanel` take `readOnly`, which **removes** their action rows for the
+order's read-only tab. That is deliberately not `canEdit={false}`: `canEdit` is the persona gate and
+greys a control the operator could have if they switched persona, which would be a lie on a surface
+that has no actions at all. The callbacks are optional so a read-only caller passes none.
   Renders nothing until a work order exists — there is nothing to bill before that.
 - `STAGE_ICON` (L21) — the only place stage → icon is decided.
 
@@ -238,11 +274,14 @@ of firing a random status mail at a finished lot. Two ordering rules are load-be
 in place — the "testing commenced" mail carries **no** `testUpdates`, and the first interim update
 always lands before report preparation. Both were bugs first.
 
-#### `integrations/notify.ts` (32) · `lib/role.ts` (39) · `app/fulfilment/testing/page.tsx` (76)
+#### `integrations/notify.ts` (32) · `lib/role.ts` (39) · the two testing routes (160 + 70)
 
 Small and single-purpose: the party-notification transport, the permission hook
-(`canEditTests` / `canEmailLab`, gated in one place), and the cross-order board that renders one
-`TestingStageBar` per lot across every order.
+(`canEditTests` / `canEmailLab`, gated in one place), and the two routes —
+`app/fulfilment/testing/page.tsx`, the order-first board (order rows sorted by "has lots", then by
+what needs a human, then newest; a search box over order / party / lot / MPN; the all-lots list below
+with one `TestingStageBar` each), and `app/fulfilment/testing/[orderId]/page.tsx`, which is just an
+order header plus `<TestingTab>` and the add-lot modal it needs.
 
 ### Shared files — the module's regions
 
@@ -311,10 +350,19 @@ stepper node, the header pill, the lot summary, the roll-up cell and the order a
 ### Render tree
 
 ```
-/fulfilment/orders/[id]                    /fulfilment/testing
-  └── order-workspace.tsx                    └── page.tsx
-        └── TestingTab            (L107)           └── TestingStageBar   ← same component,
-              ├── MpnTestsSection                                          cross-order view
+READ  /fulfilment/order-flow/[orderId]         PICK  /fulfilment/testing
+  └── order-flow-page.tsx → TestingSection         └── page.tsx
+        │  (tiles · fee notice · reports strip)          ├── order rows ─ link ─┐
+        └── LotReadOnlyDetail   ← testing-readonly.tsx   └── all-lots list      │
+              ├── TestingStageChain (readOnly) → LabFeePanel (readOnly)         │
+              └── ReportRepository (readOnly: open + download, no reconcile)    │
+                                                                               │
+ACT   the SAME TestingTab behind two routes  ◄─────────────────────────────────┘
+  ├── /fulfilment/orders/[id]?tab=Testing   (order-workspace.tsx)
+  └── /fulfilment/testing/[orderId]         (its own page.tsx + AddLotModal)
+  └── page.tsx
+        └── TestingTab
+              ├── MpnTestsSection
               ├── LotsSection
               │     └── LotCard
               │           ├── TestingStageChain  ──┐
@@ -330,9 +378,12 @@ stepper node, the header pill, the lot summary, the roll-up cell and the order a
 ### Import graph (measured, not assumed)
 
 ```
-order-workspace.tsx ──► testing-tab.tsx ──┬─► testing-stages.tsx ──┬─► selectors.ts
-                                          │                        └─► enums.ts
-app/fulfilment/testing/page.tsx ──────────┘ (also imports testing-stages + selectors)
+app/fulfilment/testing/[orderId]/page.tsx ──┬► testing-tab.tsx ─┬─► report-repository.tsx
+order-workspace.tsx ────────────────────────┘                   │   (shared)
+order-flow/[orderId]/page.tsx ──► order-flow-page.tsx ──► testing-readonly.tsx ──┤
+                                                                  ├─► test-tables.tsx
+                                          ──┬─► testing-stages.tsx ──┬─► selectors.ts
+app/fulfilment/testing/page.tsx ──────────┘ │  (readOnly)            └─► enums.ts
                                           │
 testing-tab.tsx ──┬─► modals.tsx          ├─► store.ts ──┬─► lab-whl.ts ──► mock-client.ts
                   ├─► lib/role.ts         │              ├─► doc-extract.ts      └─► enums.ts
@@ -430,8 +481,10 @@ of 6"*, `Show 4 earlier message(s)`, `Show history (3)`.
 | add a notify party | `types/index.ts` (`NotifyParty`) → `enums.ts` L403 (`NOTIFY_TEMPLATES`) + the `notifyDigest` switch → `store.ts` L899 `noteFor` map → the menus in testing-tab |
 | add a WHL / notification mail template | `enums.ts` L294 / L403 — both the store action and the compose UI read the same source, so add it once |
 | add a test process or standard | `enums.ts` (`WHL_PROCESSES` / `TEST_STANDARDS`) |
-| change a report's parsed shape | `types/index.ts` (`WhlReport`) → `lab-whl.ts` L70 → `ReportSummary` (testing-tab L1025) |
-| change the roll-up table | `TestingTab` L113 (the `<table>` and its 10 columns; the expanded stepper row uses `colSpan={10}` — keep them in step) |
+| change a report's parsed shape | `types/index.ts` (`WhlReport`) → `lab-whl.ts` L70 → `ReportSummary` (report-repository.tsx) — **one place, all three surfaces** |
+| change the roll-up table | `TestingTab` L113 (the `<table>` and its 10 columns; the expanded stepper row uses `colSpan={10}` — keep them in step). The read-only tab has its own 8-column version (`colSpan={8}`) — same data, no checkbox or Progress-toggle column |
+| add or reword an alert | the alert stack in `TestingTab` L113 **and** the one in `TestingViewTab` (both render the shared `Notice` primitive) — the second has no action buttons, and an alert that only exists on one surface is a bug |
+| add / rename a lifecycle stage's *presentation* | `enums.ts` `TESTING_STAGE_META` → `STAGE_ICON` in testing-stages.tsx → nothing else: both the stepper and the compact bar read that meta |
 | change collapse behaviour | `CollapsibleCard` L65 / `ExpandBar` L93, and the `RECENT_MAILS` / clamp constants in `MailSection` L1134 |
 | add a per-lot action | `NextActionsMenu` L690 (+ `BulkActionsMenu` L622 if it batches). Note the per-lot menu is gated on a report existing — anything available earlier (like the fee) belongs in `LabFeePanel` instead |
 | adjust mock realism (weights, latency, failures) | `lab-whl.ts` L70 / L178, `doc-extract.ts` L46 |
@@ -457,10 +510,15 @@ Render checks that catch what typechecking can't:
 
 - **Collapsed *and* expanded separately.** A card that renders its body while collapsed defeats the
   density rule and is invisible in a collapsed screenshot.
-- The Testing tab isn't the default tab — to server-render it, temporarily flip
-  `useState<WorkspaceTab>("Overview")` in `order-workspace.tsx` L28 (and `useState<Sub>("lots")` in
-  testing-tab L112 for the sub-tab), fetch, then **revert**.
-- Hero order for all of this: `/fulfilment/orders/ord-148`. Cross-order board: `/fulfilment/testing`.
+- The acting screen has its own route, so it needs no tab flip: fetch `/fulfilment/testing/ord-148`
+  directly (`useState<Sub>("lots")` in testing-tab L112 still decides the sub-tab). To server-render
+  it *as the order tab* instead, flip `useState<WorkspaceTab>("Overview")` in `order-workspace.tsx`
+  L28, then **revert**.
+- **Check both kinds of surface.** Adding or removing an action touches `testing-tab.tsx` and shows up
+  on both its routes; changing a number, an alert or a lot rendering also shows up on the order-flow
+  page's Testing section, which reads the same selectors and `testing-readonly.tsx`.
+- Hero order: `/fulfilment/testing/ord-148` (acting), `/fulfilment/order-flow/ord-148#testing`
+  (reading). Cross-order board: `/fulfilment/testing`.
 
 ### The lifecycle harness — not in the tree
 

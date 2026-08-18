@@ -112,6 +112,32 @@ export function Button({
   );
 }
 
+/**
+ * Inline notice — an alert that belongs *inside* a panel rather than as a toast: a
+ * reconciliation flag, an SLA breach, an unpaid fee. `action` is the one thing to do about
+ * it (omitted on read-only surfaces, where the notice states the problem and the acting
+ * screen fixes it).
+ */
+export function Notice({
+  tone, icon, action, children,
+}: {
+  tone: "warn" | "bad" | "info" | "ok";
+  icon?: React.ReactNode;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const bg = tone === "bad" ? "border-[color-mix(in_srgb,var(--bad)_40%,transparent)] bg-bad-bg text-bad"
+    : tone === "warn" ? "border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg text-warn"
+    : tone === "ok" ? "border-[color-mix(in_srgb,var(--ok)_40%,transparent)] bg-ok-bg text-ok"
+    : "border-primary/40 bg-accent-soft text-primary";
+  return (
+    <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs", bg)}>
+      <span className="inline-flex items-start gap-1.5">{icon}<span>{children}</span></span>
+      {action}
+    </div>
+  );
+}
+
 export function Progress({ value }: { value: number }) {
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">

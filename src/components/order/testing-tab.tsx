@@ -3,24 +3,24 @@
 import { Fragment, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Pencil, History, Wand2, RefreshCw, Mail, MailQuestion, FileText, Download, Eye,
-  AlertTriangle, ShieldAlert, Lock, ChevronRight, ChevronDown, Check, FlaskConical, Clock,
+  Plus, Pencil, History, Wand2, RefreshCw, Mail, MailQuestion, FileText,
+  AlertTriangle, Lock, ChevronRight, ChevronDown, Check, FlaskConical, Clock,
   Zap, Truck, Factory, Users, Landmark, Layers, Receipt,
 } from "lucide-react";
-import type { OrderBundle, Lot, WhlReport, LabEmail, NotifyParty } from "@/types";
+import type { OrderBundle, Lot, LabEmail, NotifyParty } from "@/types";
 import {
   TEST_STANDARDS, WHL_PROCESSES, WHL_CONTACT, WHL_SLA_BUSINESS_DAYS,
-  WHL_EMAIL_TEMPLATES, statusTone, stageLabel, LAB_PAYMENT_TONE,
+  WHL_EMAIL_TEMPLATES, stageLabel, LAB_PAYMENT_TONE,
   LAB_TERMS_LABEL, LAB_TERMS_TONE, LAB_TERMS_HINT,
 } from "@/data/enums";
-import { Panel, Pill, StatusPill, Button, Progress, Field } from "@/components/ui/primitives";
+import { Panel, Pill, StatusPill, Button, Progress, Notice } from "@/components/ui/primitives";
 import { Select } from "@/components/ui/form";
 import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
 import {
   specForMpn, lotTestProgress, currentReport, lotEmails, unmatchedEmails,
   testAutofillGaps, overdueUpdateRequests, reconciliationAlerts, testingSummary, lotResults, lotStageProgress,
-  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labTerms, labFeeBlocking, labFeeGross, mpnFeeRollup,
+  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labFeeBlocking, labFeeGross, mpnFeeRollup,
 } from "@/store/selectors";
 import { qtyfmt, cn } from "@/lib/utils";
 import {
@@ -28,7 +28,8 @@ import {
   RecordDispatchModal, MarkLabFeePaidModal,
 } from "@/components/order/modals";
 import { TestingStageChain, TestingStageBar } from "@/components/order/testing-stages";
-import { LotTestTable, MpnTestMatrix, MpnFeeStrip } from "@/components/order/test-tables";
+import { LotTestTable, MpnTestMatrix, MpnFeeStrip, LotFeeCell } from "@/components/order/test-tables";
+import { ReportRepository } from "@/components/order/report-repository";
 
 type Sub = "mpns" | "lots" | "mail";
 
@@ -40,19 +41,6 @@ const SUBS: { id: Sub; label: string }[] = [
 
 function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">{text}</div>;
-}
-
-/** Small inline notice — used for the reconciliation / SLA / autofill alerts. */
-function Notice({ tone, icon, children, action }: { tone: "warn" | "bad" | "info"; icon: React.ReactNode; children: React.ReactNode; action?: React.ReactNode }) {
-  const bg = tone === "bad" ? "border-[color-mix(in_srgb,var(--bad)_40%,transparent)] bg-bad-bg text-bad"
-    : tone === "warn" ? "border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg text-warn"
-    : "border-primary/40 bg-accent-soft text-primary";
-  return (
-    <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs", bg)}>
-      <span className="inline-flex items-start gap-1.5">{icon}<span>{children}</span></span>
-      {action}
-    </div>
-  );
 }
 
 /** Current (or newest) report for a lot — used in the scope banner. */
@@ -428,33 +416,6 @@ function LotProgressToggle({ lot, open, onToggle }: { lot: Lot; open: boolean; o
       <span className="truncate">{stage ? stageLabel(stage) : "Not started"}</span>
       <span className={cn("shrink-0 tnum", complete ? "text-ok" : "text-faint")}>{Math.max(0, done)}/{total}</span>
     </button>
-  );
-}
-
-/**
- * The lab's fee for one lot in a table cell: amount, the mode the lab stated on its
- * invoice, and whether that mode makes an unpaid fee a stop sign or just a ledger item.
- */
-function LotFeeCell({ lot }: { lot: Lot }) {
-  const pay = labPaymentOf(lot);
-  const terms = labTerms(lot);
-  if (!lot.workOrderNo) return <span className="text-faint">—</span>;
-  if (!pay.invoice) {
-    return <span className="text-faint">{pay.status === "REQUESTED" ? "invoice requested" : "not invoiced"}</span>;
-  }
-  const blocked = labFeeBlocking(lot);
-  return (
-    <span className="inline-flex flex-wrap items-center gap-1.5">
-      <span className="tnum">{pay.invoice.currency} {labFeeGross(lot).toLocaleString()}</span>
-      {terms && (
-        <Pill tone={LAB_TERMS_TONE[terms]} title={LAB_TERMS_HINT[terms]}>{LAB_TERMS_LABEL[terms]}</Pill>
-      )}
-      {blocked
-        ? <Pill tone="bad"><Lock className="h-3 w-3" /> held</Pill>
-        : labFeeUnpaid(lot)
-        ? <Pill tone={LAB_PAYMENT_TONE[pay.status]}>{pay.status === "SENT_TO_FINANCE" ? "with finance" : "unpaid"}</Pill>
-        : <Pill tone="ok"><Check className="h-3 w-3" /> paid</Pill>}
-    </span>
   );
 }
 
@@ -948,143 +909,6 @@ function LotCard({
         </div>
       </div>
     </CollapsibleCard>
-  );
-}
-
-// ---- report repository (per lot) + on-screen parsed summary ----
-
-function ReportRepository({ b, orderId, lot }: { b: OrderBundle; orderId: string; lot: Lot }) {
-  const logReportAccess = useStore((s) => s.logReportAccess);
-  const reports = (lot.reports ?? []).slice().sort((a, c) => c.revision - a.revision);
-  const [shown, setShown] = useState<string | null>(null);
-  const current = currentReport(lot);
-  const active = reports.find((r) => r.id === (shown ?? current?.id));
-
-  // No chase button here: the card footer already carries "Request update" while there's
-  // no report, and two buttons firing the same mail two inches apart is just a second
-  // thing to read.
-  if (reports.length === 0) {
-    return (
-      <div className="rounded-lg border border-dashed p-4">
-        <div className="text-sm font-medium">WHL report — <span className="text-warn">Not Available</span></div>
-        <p className="text-xs text-muted-foreground">
-          Nothing received by email for WO {lot.workOrderNo ?? "—"} yet.
-          {lot.lastUpdateRequestAt && <> Update requested {lot.lastUpdateRequestAt}.</>}
-          {" "}Use <b className="text-foreground">Request update</b> below to chase {WHL_CONTACT}.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="rounded-lg border">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-card-2 px-3 py-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">WHL report repository · {reports.length} version(s)</div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          {reports.map((r) => (
-            <button key={r.id} onClick={() => { setShown(r.id); logReportAccess(orderId, lot.id, r.id, "VIEW"); }}
-              className={cn("rounded-md border px-2 py-0.5 text-xs font-medium",
-                active?.id === r.id ? "border-primary bg-accent-soft text-primary" : "hover:border-primary")}>
-              {r.reportNo}{r.current && <Check className="ml-1 inline h-3 w-3 text-ok" />}
-            </button>
-          ))}
-        </div>
-      </div>
-      {active && <ReportSummary b={b} orderId={orderId} lot={lot} r={active} />}
-    </div>
-  );
-}
-
-const CONCLUSION_TONE = (c: WhlReport["conclusion"]): "ok" | "bad" => (c === "ACCEPTABLE" ? "ok" : "bad");
-
-/** Everything the operator needs without opening the PDF. */
-function ReportSummary({ b, orderId, lot, r }: { b: OrderBundle; orderId: string; lot: Lot; r: WhlReport }) {
-  const logReportAccess = useStore((s) => s.logReportAccess);
-  const reconcileReportPo = useStore((s) => s.reconcileReportPo);
-  const [showAccess, setShowAccess] = useState(false);
-  const poOnFile = lot.clientPoNo ?? b.sourcingAllocations.find((a) => a.orderLineMpn === lot.orderLineMpn)?.clientPoNo;
-
-  return (
-    <div className="p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm font-semibold">{r.reportNo}</span>
-          {!r.current && <Pill tone="neutral">superseded</Pill>}
-          {r.current && <Pill tone="info">current</Pill>}
-          <Pill tone={CONCLUSION_TONE(r.conclusion)}>{r.conclusion.replace(/_/g, " ")}</Pill>
-          {r.anyFar && <Pill tone="warn">F.A.R. on a process — follow up</Pill>}
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={() => setShowAccess((s) => !s)} title="Access log (NDA)"><ShieldAlert className="h-4 w-4" /> {r.accessLog.length}</Button>
-          <Button variant="outline" onClick={() => logReportAccess(orderId, lot.id, r.id, "VIEW")}><Eye className="h-4 w-4" /> Open PDF</Button>
-          <Button variant="outline" onClick={() => logReportAccess(orderId, lot.id, r.id, "DOWNLOAD")}><Download className="h-4 w-4" /> Download</Button>
-        </div>
-      </div>
-
-      {r.revisionNote && <p className="mb-3 rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">{r.revisionNote}</p>}
-
-      {r.parseFlags.length > 0 && (
-        <div className="mb-3 space-y-1.5">
-          {r.parseFlags.map((f, i) => (
-            <Notice key={i} tone="warn" icon={<AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-              action={f.toLowerCase().includes("client p/o") && poOnFile
-                ? <button className="font-medium underline" onClick={() => reconcileReportPo(orderId, lot.id, r.id)}>Set to {poOnFile}</button>
-                : undefined}>
-              {f}
-            </Notice>
-          ))}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
-        <Field label="Report no · date">{r.reportNo} · {r.reportDate}</Field>
-        <Field label="Work order">{r.workOrderNo}</Field>
-        <Field label="Part number (MPN)">
-          <span className={cn("font-mono", r.partNumber !== lot.orderLineMpn && "text-bad")}>{r.partNumber}</span>
-        </Field>
-        <Field label="Manufacturer">{r.manufacturer}</Field>
-        <Field label="Lot qty">{qtyfmt(r.lotQty)}{r.lotQty !== lot.qty && <span className="ml-1 text-xs text-warn">(lot on file {qtyfmt(lot.qty)})</span>}</Field>
-        <Field label="Client">{r.client}</Field>
-        <Field label="Client P/O">
-          <span className={cn(r.clientPo === "PO Unknown" && "text-warn")}>{r.clientPo}</span>
-        </Field>
-        <Field label="Approved by">{r.approvedBy} · {r.approverTitle}</Field>
-        <Field label="Standards">{r.standards.join(", ")}</Field>
-        <Field label="Risk classification">{r.riskClass ?? "—"}</Field>
-        <Field label="MSL">{r.msl ?? "—"}</Field>
-        <Field label="Package type">{r.packageType ?? "—"}</Field>
-      </div>
-
-      {/* The process matrix used to be repeated here. It isn't any more: fetching a report
-          rolls every process onto the lot's tracker above, so that table is the matrix —
-          with the report number and the process note on each row. Only the roll-up stays. */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card-2 px-3 py-2 text-xs">
-        <span className="font-semibold uppercase tracking-wide text-muted-foreground">{r.processes.length} process(es) reported</span>
-        {(["ACCEPTABLE", "FAR", "NOT_ACCEPTABLE", "NOT_CONDUCTED"] as const).map((res) => {
-          const n = r.processes.filter((p) => p.result === res).length;
-          return n === 0 ? null : (
-            <Pill key={res} tone={statusTone(res)}>{n} {res === "FAR" ? "F.A.R." : res.replace(/_/g, " ").toLowerCase()}</Pill>
-          );
-        })}
-        <span className="text-faint">per-process results, quantities and notes are on the test tracker above</span>
-      </div>
-
-      {showAccess && (
-        <div className="mt-3 rounded-lg border bg-card-2 p-3">
-          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Access log</div>
-          {r.accessLog.length === 0 ? <p className="text-xs text-muted-foreground">No views recorded.</p> : (
-            <ul className="space-y-1 text-xs text-muted-foreground">
-              {r.accessLog.map((a, i) => <li key={i}><span className="tnum text-faint">{a.at}</span> · {a.by} · {a.action.toLowerCase()}</li>)}
-            </ul>
-          )}
-        </div>
-      )}
-      {r.confidentialityNote && (
-        <p className="mt-3 inline-flex items-start gap-1.5 text-[11px] text-muted-foreground">
-          <Lock className="mt-0.5 h-3 w-3 shrink-0" /> {r.confidentialityNote}
-        </p>
-      )}
-    </div>
   );
 }
 

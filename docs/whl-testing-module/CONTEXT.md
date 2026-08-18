@@ -16,7 +16,7 @@ Pair this file with `PROMPT.md` (the instruction to give Claude in the target re
 
 ## 1. What the module does
 
-The primary screen lives on **one order** and answers six questions:
+The primary screen is scoped to **one order** and answers six questions:
 
 1. **What tests does each MPN need, and what do they cost?** — auto-filled by parsing the PO (never
    hand-typed), with an audited manual override and an explicit "auto-fill failed — needs manual review"
@@ -858,7 +858,57 @@ Result still pending: {codes}.
 
 ## 9. UI specification
 
-### 9.1 Shell — the order's Testing tab
+### 9.0 Where the module is mounted — one acting screen (two doors), one reading surface
+
+The screen specified below is the acting screen, and it is mounted in **two** places that render
+the identical component with the identical actions:
+
+- the **order workspace's Testing tab** — `/fulfilment/orders/[id]?tab=Testing`
+- the **testing workspace route** — `/fulfilment/testing/[orderId]`, reached by picking an order on
+  the cross-order Testing board (`/fulfilment/testing`)
+
+Two doors, one screen: whichever way an operator arrives, WHL mail, report fetches, stage moves,
+lab-fee settlement, lot verdicts, adding a lot and reconciling a parse flag all behave the same.
+Never fork them — a feature added to one and not the other is a bug by construction.
+
+The one **reading** surface is the **Testing section of the order-flow page**
+(`/fulfilment/order-flow/[orderId]`, the page the Dashboard links to): seven tiles, the unpaid/held
+fee notice, a current-reports strip, and the lot table (verdict · tests · lab fee · report ·
+outstanding · lifecycle). Expanding a lot renders `LotReadOnlyDetail`, and that is deliberately
+**two things only**: the `readOnly` lifecycle stepper, and the report — parsed on screen, openable
+and downloadable.
+
+Rules that keep the split honest:
+
+- **One dataset, one rendering of each part.** The reading surface calls the same §5 selectors and
+  reuses the same components (`TestingStageBar`, `TestingStageChain`/`TestingStageDetail`,
+  `LotFeeCell`, `ReportRepository`, `LotReadOnlyDetail`); it never recomputes a number or
+  re-lays-out a report of its own.
+- **No half-disabled controls.** An action is absent there, not greyed out — `readOnly` drops the
+  whole action row on `TestingStageChain` / `LabFeePanel` and the reconcile action on a report's
+  parse flag, rather than passing `canEdit={false}`, which is the *role* gate and means something
+  different.
+- **Reading a report is not an action.** Opening and downloading a report **are** available on the
+  reading surface — the report is the deliverable that page exists to show. Both write an NDA
+  access-log row wherever they happen, which is the invariant that matters (no unlogged look at a
+  report). The download toasts what was logged, because the PDF itself is a mock.
+- **Say each thing once.** Three things were built onto the reading surface and then cut, and the
+  reasons are worth keeping so they don't come back:
+  - a **vertical stage list** ("progress stages", one row per stage with its timestamp and source
+    mail) — the lifecycle stepper directly above it already names all 7 stages with the date each
+    was established, so this was the same information twice on one screen;
+  - the **per-test table** — the report says what each process concluded, and the report is right
+    there to read and download; a reading surface doesn't need an approximation of a document it
+    can hand over;
+  - the **requirements-by-MPN roll-up** — that's a working view (auto-fill state, audit counts,
+    manual overrides) and belongs with the sub-tab that can act on it (§9.2).
+  What's left answers the two questions a reader has: *where is this lot* and *what did the lab
+  say*. Anything more granular is one link away on the acting screen.
+- The cross-order board is **order-first**: orders with lots sort above orders with only
+  testable lines, ties broken by what needs a human (mail to match, chases past SLA, lots the
+  lab is holding, bad results, unparsed MPNs), then newest.
+
+### 9.1 Shell — the testing workspace (`/fulfilment/testing/[orderId]`)
 
 ```
 ┌ Panel: "WHL testing — MPN × lot × test" ──────────────────────────────────────────┐
@@ -1347,6 +1397,7 @@ If the host route is statically pre-rendered, wrap the search-param reader in a 
 | Schema drift | a `normalizeBundle()` that defaults every new array | Mirror it: `tests`, `reports`, `notifications`, `mpnTests`, `labEmails` must default to `[]`. |
 | Persisted seed | store `version` bump + `migrate` returning `undefined` for older versions | Do the equivalent so stale local state can't hide the new demo data. |
 | Routing | Next.js App Router, `useRouter().push` + `useSearchParams` | Any router; keep the `?order=&lot=` / `?order=&lots=` contract. |
+| Mount points | acting screen at `/fulfilment/testing/[orderId]`, read-only view on the order's Testing tab (§9.0) | Two routes/panels either way; whatever the host calls them, keep the actions in exactly one of the two. |
 | UI kit | local primitives: `Panel`, `Pill`, `StatusPill`, `Button`, `Progress`, `Field`, `DataTable`, `Dialog`, `Labeled`, `Input`, `Select`, `Textarea` | Map onto the host's equivalents; do not introduce a second design language. |
 | Toasts | `sonner` | Host's notification system; keep the messages. |
 | Permissions | `useRole()` reading a persisted persona + a change event | Host's auth/permission source; keep `canEditTests` / `canEmailLab`. |
@@ -1372,12 +1423,17 @@ the reference repo; this table is what a target repo should expect to end up wit
 | `src/integrations/notify.ts` | §7.5 | 35 |
 | `src/store/store.ts` | actions §6 + the `moveStage` helper | +480 |
 | `src/store/selectors.ts` | derived state §5 incl. the lifecycle selectors | +180 |
-| `src/components/order/testing-tab.tsx` | the whole screen §9.1–9.7 + both menus + `CollapsibleCard` / `ExpandBar` / `MailRow` / `LotProgressToggle` / `LotFeeCell` | 1100 |
-| `src/components/order/test-tables.tsx` | the two — and only two — per-test tables: `LotTestTable` (§9.3 tracker, report folded in) + `MpnTestMatrix` / `MpnFeeStrip` (§9.2) | 290 |
-| `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel` | 330 |
+| `src/components/order/testing-tab.tsx` | the whole acting screen §9.1–9.7 + both menus + `CollapsibleCard` / `ExpandBar` / `MailRow` / `LotProgressToggle` | 1080 |
+| `src/components/ui/primitives.tsx` | + `Notice` — the inline alert used by the acting screen, both reading surfaces and the report's parse flags (it was copied three times before) | +25 |
+| `src/components/order/testing-readonly.tsx` | §9.0 the read-only lot rendering: `LotReadOnlyDetail` = `readOnly` lifecycle stepper + `ReportRepository`, nothing else. (`MpnRequirements` also lives here, currently unrendered — see the parked file below) | 95 |
+| `src/components/order/testing-view-tab.tsx` | **PARKED**, unrendered — a read-only shell for the order's Testing tab from when that tab was view-only. Kept in case that decision returns; delete it if not | 300 |
+| `src/components/order/report-repository.tsx` | §9.4 extracted so the report's field list exists once — `ReportRepository` + `ReportSummary`, `readOnly` drops only the reconcile action | 185 |
+| `src/components/order/test-tables.tsx` | the two — and only two — per-test tables: `LotTestTable` (§9.3 tracker, report folded in) + `MpnTestMatrix` / `MpnFeeStrip` (§9.2), plus the shared `LotFeeCell` (both roll-ups) | 320 |
+| `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel`; chain and fee panel take `readOnly` | 340 |
 | `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / shipment-prefill | +450 |
 | `src/app/fulfilment/logistics/page.tsx` | §9.8 hand-off | +90 |
-| `src/app/fulfilment/testing/page.tsx` | cross-order board — one `TestingStageBar` per lot | +10 |
+| `src/app/fulfilment/testing/page.tsx` | cross-order board, order-first (§9.0): pick an order, then the per-lot list with one `TestingStageBar` each | 150 |
+| `src/app/fulfilment/testing/[orderId]/page.tsx` | the workspace route — order header + `TestingTab` + the add-lot modal | 70 |
 | `src/data/fixtures.ts`, `src/data/order-details.ts` | demo seed §13 | +700 |
 
 ---
@@ -1445,6 +1501,22 @@ released, notifications to all four parties), and a **no-testing** order (`"PO s
 ---
 
 ## 14. Acceptance checklist
+
+Surfaces (§9.0)
+- [ ] The Testing board lists orders first; picking one opens the full screen §9.1–9.7.
+- [ ] The order's Testing tab and `/fulfilment/testing/[orderId]` render the same component with the
+      same actions — Check mail, Auto-fill, Add lot, the bulk menu and every alert action work on both.
+- [ ] The order-flow page's Testing section renders **no** order-changing control, and every number on
+      it matches the acting screen for the same order: same selectors, no second implementation.
+- [ ] That section shows exactly two things per lot: the lifecycle stepper and the report (openable +
+      downloadable). No vertical stage list, no per-test table, no requirements-by-MPN — each would
+      repeat something already on the page or on the acting screen (§9.0).
+- [ ] Absent, not disabled: `readOnly` removes the stepper/fee action rows and the report's reconcile
+      action outright; `canEdit={false}` remains the persona gate and still greys controls **in the workspace**.
+- [ ] A report can be read in full and downloaded from a reading surface, and both write an access-log
+      row there exactly as they do in the workspace.
+- [ ] The report's header-field layout exists in exactly one file — grep `Risk classification` and expect
+      one hit.
 
 Data & auto-fill
 - [ ] Auto-fill from PO populates per-MPN test lists; re-running keeps manual additions.

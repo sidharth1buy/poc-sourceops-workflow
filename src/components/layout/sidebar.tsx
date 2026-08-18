@@ -22,6 +22,10 @@ function Brand() {
   );
 }
 
+// Order Processing lives at the root path, and an order's own pages hang off two other
+// prefixes — keep the nav item lit while you're inside one of them.
+const ORDER_PROCESSING_ROUTES = ["/fulfilment/order-flow", "/fulfilment/orders"];
+
 function NavList({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   return (
@@ -31,7 +35,9 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
           {g.group && <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">{g.group}</div>}
           {g.items.map((item) => {
             const Icon = ICONS[item.icon as keyof typeof ICONS];
-            const active = item.href === "/fulfilment" ? pathname === "/fulfilment" : pathname.startsWith(item.href);
+            const active = item.href === "/fulfilment"
+              ? pathname === "/fulfilment" || ORDER_PROCESSING_ROUTES.some((r) => pathname.startsWith(r))
+              : pathname.startsWith(item.href);
             return (
               <Link key={item.href} href={item.href} onClick={onNavigate}
                 className={cn("flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition",
