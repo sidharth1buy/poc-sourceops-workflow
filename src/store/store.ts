@@ -485,12 +485,12 @@ interface Store {
   correctCarrierInvoice: (orderId: string, shipId: string) => void; // DHL /upload-image
 
   // ICEGATE core clearance stepper: file → assess → pay duty → out-of-charge.
-  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[]; awb?: string }) => void;
+  fileBOE: (orderId: string, e: { shipmentNo: string; portCode: string; chaName: string; assessableValue: number; boeType: "PRIOR" | "ON_ARRIVAL"; docs?: string[]; awb?: string; mode: "ICEGATE" | "CHA" }) => void;
   sendAwbToCha: (orderId: string, customsId: string) => void;
   linkIgm: (orderId: string, customsId: string) => void;
   assessCustoms: (orderId: string, customsId: string) => void;
   respondCustomsQuery: (orderId: string, customsId: string) => void;
-  payCustomsDuty: (orderId: string, customsId: string) => void;
+  payCustomsDuty: (orderId: string, customsId: string, invoice?: string) => void;
   clearCustoms: (orderId: string, customsId: string) => void;
 
   allocateDelivery: (orderId: string, a: { fromShipmentNo: string; clientPoNo: string; clientLineMpn: string; qty: number }) => boolean;
@@ -2041,24 +2041,37 @@ export const useStore = create<Store>()(
       // ICEGATE step 1 — file the Bill of Entry (Prior or on-arrival). Assessment / duty / OOC are
       // now separate steps (assessCustoms → payCustomsDuty → clearCustoms), so the flow mirrors the
       // real clearance sequence and the shipment stays held at customs until OOC issues the ref.
+      // File a Bill of Entry two ways — directly on ICEGATE (API) or by mailing the docs to the CHA who
+      // files it. Either way we then auto-run the IGM match (if landed) + faceless assessment so the
+      // entry lands ready for duty payment — no manual IGM/assess micro-steps.
       fileBOE: (orderId, e) => {
         const b0 = get().orders[orderId]; if (!b0) return;
+        const shp = b0.shipments.find((x) => x.shipmentNo === e.shipmentNo);
         const ceId = uid("ce");
         set((s) => {
           const b = s.orders[orderId]; if (!b) return;
           const existing = b.customs.find((c) => c.shipmentNo === e.shipmentNo);
-          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, docs: e.docs ?? b0.shippingDocs?.docs, awbSentToChaAt: existing?.awbSentToChaAt, igmStatus: "AWAITING" as const, igmNo: undefined, igmItemNo: undefined, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
+          const entry = { id: existing?.id ?? ceId, shipmentNo: e.shipmentNo, beNo: "filing…", beDate: today(), portCode: e.portCode, chaName: e.chaName, currency: "INR", boeType: e.boeType, assessableValue: e.assessableValue, docs: e.docs ?? b0.shippingDocs?.docs, filingMode: e.mode, awbSentToChaAt: e.mode === "CHA" ? today() : existing?.awbSentToChaAt, igmStatus: undefined, igmNo: undefined, igmItemNo: undefined, stage: "FILED" as const, totalDuty: undefined, duty: undefined, assessment: undefined, query: undefined, queryResolvedAt: undefined, dutyPaidAt: undefined, dutyInvoice: undefined, icegateRef: undefined, oocDate: undefined, filedAt: undefined };
           if (existing) Object.assign(existing, entry); else b.customs.push(entry);
-          // the CHA can add/correct the AWB here — it's what the IGM match keys on
           if (e.awb) { const sh = b.shipments.find((x) => x.shipmentNo === e.shipmentNo); if (sh && sh.awb !== e.awb) { sh.awb = e.awb; sh.updatedAt = stamp(); } }
         });
-        const fileTid = toast.loading("📡 Calling ICEGATE — File Bill of Entry API…");
+        const fileTid = toast.loading(e.mode === "CHA" ? "📡 Calling Mail — send BoE docs to CHA…" : "📡 Calling ICEGATE — File Bill of Entry API…");
         void (async () => {
           try {
+            if (e.mode === "CHA" && shp) await sendAwbToChaMail({ cha: e.chaName, orderNo: b0.orderNo, shipmentNo: e.shipmentNo, awb: shp.awb });
             const filed = await fileBillOfEntry({ orderId, shipmentNo: e.shipmentNo, portCode: e.portCode, chaName: e.chaName, assessableValue: e.assessableValue });
             set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo); if (c) { c.beNo = filed.beNo; c.beDate = filed.beDate; c.icegateAckNo = filed.icegateAckNo; c.stage = "FILED"; } });
-            toast.success(`✓ ICEGATE — BoE ${filed.beNo} filed (${e.boeType === "PRIOR" ? "Prior" : "on-arrival"})`, { id: fileTid });
-          } catch (err) { toast.error(`ICEGATE — filing failed: ${errMsg(err)}`, { id: fileTid }); }
+            toast.success(e.mode === "CHA" ? `✓ Docs sent to CHA — BoE ${filed.beNo} filed on ICEGATE` : `✓ BoE ${filed.beNo} filed on ICEGATE (${e.boeType === "PRIOR" ? "Prior" : "on-arrival"})`, { id: fileTid });
+            // IGM match (once the flight has landed) — informational, not a gate
+            if (shp && ["AT_CUSTOMS", "ARRIVED", "DELIVERED"].includes(shp.status)) {
+              try { const igm = await getIgmEntry({ awb: shp.awb, portCode: e.portCode }); set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo); if (c) { c.igmNo = igm.igmNo; c.igmItemNo = igm.itemNo; c.igmStatus = "MATCHED"; } }); } catch { /* manifest not found yet — Prior BoE */ }
+            }
+            // faceless assessment → duty (Pending payment)
+            const atid = toast.loading("📡 Calling ICEGATE — Faceless Assessment API…");
+            const a = await getAssessment(filed.beNo, e.assessableValue);
+            set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.shipmentNo === e.shipmentNo); if (c) { c.duty = a.duty; c.totalDuty = a.duty.totalDuty; c.stage = "ASSESSED"; } });
+            toast.success(`✓ Assessed — duty INR ${a.duty.totalDuty.toLocaleString()} · ready for payment`, { id: atid });
+          } catch (err) { toast.error(`Filing failed: ${errMsg(err)}`, { id: fileTid }); }
         })();
       },
       // CHA hand-off — send the AWB (+ docs) to the CHA so they can file the BoE and link the IGM.
@@ -2116,13 +2129,13 @@ export const useStore = create<Store>()(
         set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) c.queryResolvedAt = today(); });
         toast.success("Query response submitted to customs — assessment resolved");
       },
-      // ICEGATE step 3 — pay assessed duty (BCD + SWS + IGST) on ICEGATE.
-      payCustomsDuty: (orderId, customsId) => {
+      // Pay assessed duty (BCD + SWS + IGST) on ICEGATE — from the Payments desk, with the challan/invoice.
+      payCustomsDuty: (orderId, customsId, invoice) => {
         const c0 = get().orders[orderId]?.customs.find((x) => x.id === customsId);
-        if (!c0 || c0.stage !== "ASSESSED") { toast.error("Run the assessment first."); return; }
-        if (c0.assessment === "FLAGGED" && !c0.queryResolvedAt) { toast.error("Respond to the customs query before paying duty."); return; }
-        set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.dutyPaidAt = today(); c.stage = "DUTY_PAID"; } });
-        toast.success(`Duty paid on ICEGATE — ${c0.currency ?? "INR"} ${(c0.duty?.totalDuty ?? c0.totalDuty ?? 0).toLocaleString()}`);
+        if (!c0 || !(c0.duty || c0.stage === "ASSESSED")) { toast.error("Not assessed yet — file the BoE first."); return; }
+        if (c0.dutyPaidAt) { toast.error("Duty already paid for this BoE."); return; }
+        set((s) => { const c = s.orders[orderId]?.customs.find((x) => x.id === customsId); if (c) { c.dutyPaidAt = today(); c.dutyInvoice = invoice; c.stage = "DUTY_PAID"; } });
+        toast.success(`✓ Duty paid on ICEGATE — ${c0.currency ?? "INR"} ${(c0.duty?.totalDuty ?? c0.totalDuty ?? 0).toLocaleString()}${invoice ? ` · ${invoice}` : ""}`);
       },
       // ICEGATE step 4 — Out-of-Charge: issues the ICEGATE ref and releases the shipment's customs hold.
       clearCustoms: (orderId, customsId) => {
@@ -2841,8 +2854,9 @@ export const useStore = create<Store>()(
       // 23 = IGM↔BoE linkage: AWB→CHA + IGM_LINKED stage + igmStatus/igmNo/igmItemNo/awbSentToChaAt ·
       // 24 = Shipment.updatedAt (newest-first sorting on the Logistics/Customs desks) ·
       // 25 = DHL booking fields on Shipment (product/rate/estimatedDelivery + pickup confirmation/window/mode) ·
-      // 26 = Shipment.carrierDocs (waybill + CI retrieved from DHL /invoices)
-      version: 26,
+      // 26 = Shipment.carrierDocs (waybill + CI retrieved from DHL /invoices) ·
+      // 27 = customs filing mode (ICEGATE/CHA) + duty invoice; file auto-assesses; coarse buckets
+      version: 27,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

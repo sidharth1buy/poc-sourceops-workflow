@@ -685,6 +685,8 @@ export interface CustomsEntry {
   igmStatus?: "AWAITING" | "MATCHED";  // IGM (Import General Manifest) linkage — courier files it when the flight lands
   igmNo?: string;                      // IGM number the AWB matched to
   igmItemNo?: string;                  // line/item number within that manifest
+  filingMode?: "ICEGATE" | "CHA";      // filed directly on ICEGATE (API) or via the CHA (mail)
+  dutyInvoice?: string;                // duty payment invoice/challan attached on the Payments desk
   // ---- core clearance stepper ----
   stage?: CustomsStage;
   boeType?: "PRIOR" | "ON_ARRIVAL"; // filed before arrival (prior) or after IGM (on-arrival)

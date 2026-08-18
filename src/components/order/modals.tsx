@@ -871,6 +871,8 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const sdDocs = existing0?.docs ?? b?.shippingDocs?.docs ?? []; // docs collected from the supplier
   // AWB auto-fills from the selected shipment (blank if it's still a placeholder) — the CHA can add/correct it.
   const awbFor = (no: string) => { const a = inbound.find((s) => s.shipmentNo === no)?.awb; return a && a !== "booking…" && a !== "booking failed" ? a : ""; };
+  // DHL returns the waybill + logistics invoice at booking (Shipment.carrierDocs) — these get forwarded to the CHA.
+  const carrierDocsFor = (no: string) => inbound.find((s) => s.shipmentNo === no)?.carrierDocs ?? [];
   const [shipmentNo, setShipmentNo] = useState(firstNo);
   const [awb, setAwb] = useState(awbFor(firstNo));
   const [portCode, setPortCode] = useState(existing0?.portCode ?? "INDEL4");
@@ -880,19 +882,31 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
   const [docPL, setDocPL] = useState(sdDocs.includes("Packing List"));
   const [docCI, setDocCI] = useState(sdDocs.includes("Commercial Invoice"));
   const [docCOO, setDocCOO] = useState(sdDocs.includes("Certificate of Origin"));
+  const [docWaybill, setDocWaybill] = useState(carrierDocsFor(firstNo).length > 0);
   if (!b) return null;
   const duty = computeDuty(assessable);
-  const save = () => {
+  const carrierDocs = carrierDocsFor(shipmentNo);
+  const carrierDocNames = carrierDocs.map((d) => d.fileName).join(", ");
+  const file = (mode: "ICEGATE" | "CHA") => {
     if (!shipmentNo) return;
-    const docs = [docPL && "Packing List", docCI && "Commercial Invoice", docCOO && "Certificate of Origin"].filter(Boolean) as string[];
-    fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType, docs, awb: awb.trim() || undefined });
+    const docs = [docPL && "Packing List", docCI && "Commercial Invoice", docCOO && "Certificate of Origin", docWaybill && "Waybill + Logistics Invoice (DHL)"].filter(Boolean) as string[];
+    fileBOE(orderId, { shipmentNo, portCode, chaName, assessableValue: assessable, boeType, docs, awb: awb.trim() || undefined, mode });
     onClose();
   };
   return (
-    <Dialog open onClose={onClose} title="File Bill of Entry (ICEGATE)" footer={<Footer onClose={onClose} onSave={save} saveLabel="File via ICEGATE" disabled={!shipmentNo} />}>
+    <Dialog open onClose={onClose} title="File Bill of Entry" footer={
+      <>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="outline" onClick={() => file("CHA")} disabled={!shipmentNo}>Send to CHA &amp; mark filed</Button>
+        <Button onClick={() => file("ICEGATE")} disabled={!shipmentNo}>File on ICEGATE (API)</Button>
+      </>
+    }>
       <div className="space-y-3">
+        <div className="rounded-lg border border-primary/40 bg-accent-soft p-2.5 text-xs text-primary">
+          Attach the documents + details, then either <b>file directly on ICEGATE</b> (via API) or <b>send them to your CHA</b> to file. Either way it&apos;s auto-assessed — duty then shows on the Payments desk.
+        </div>
         <Labeled label="Shipment">
-          <Select value={shipmentNo} onChange={(e) => { const no = e.target.value; setShipmentNo(no); setAwb(awbFor(no)); }}>
+          <Select value={shipmentNo} onChange={(e) => { const no = e.target.value; setShipmentNo(no); setAwb(awbFor(no)); setDocWaybill(carrierDocsFor(no).length > 0); }}>
             {inbound.length === 0 && <option value="">— create an inbound shipment first —</option>}
             {inbound.map((s) => <option key={s.id} value={s.shipmentNo}>{s.shipmentNo} · {s.awb}</option>)}
           </Select>
@@ -914,8 +928,11 @@ export function FileBOEModal({ orderId, onClose }: { orderId: string; onClose: (
             <DocCheck label="Packing List" checked={docPL} onChange={setDocPL} />
             <DocCheck label="Commercial Invoice" checked={docCI} onChange={setDocCI} />
             <DocCheck label="Certificate of Origin (COO)" checked={docCOO} onChange={setDocCOO} />
+            <DocCheck label="Waybill + Logistics Invoice (DHL)"
+              hint={carrierDocs.length ? carrierDocNames : "retrieve from DHL on the Logistics desk after booking the shipment"}
+              checked={docWaybill} onChange={setDocWaybill} />
           </div>
-          {sdDocs.length === 0 && <p className="mt-1.5 text-xs text-faint">Tip: collect these from the supplier on the Logistics desk to auto-attach.</p>}
+          {sdDocs.length === 0 && <p className="mt-1.5 text-xs text-faint">Tip: collect the trade docs from the supplier and the waybill from DHL on the Logistics desk to auto-attach.</p>}
         </div>
       </div>
     </Dialog>

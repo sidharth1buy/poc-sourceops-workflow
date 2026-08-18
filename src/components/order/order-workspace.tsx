@@ -18,7 +18,7 @@ import { useStore } from "@/store/store";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
 import { incotermPlan, supplierHandlesCustoms, weClearImportCustoms } from "@/lib/incoterm";
 import { TrackingTimeline } from "@/components/order/tracking-timeline";
-import { CustomsEntryCard } from "@/components/order/customs-card";
+import { customsBucket, BUCKET_META } from "@/lib/customs-bucket";
 import {
   AddStepModal, AddLotModal, AddPaymentModal,
   AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
@@ -491,7 +491,19 @@ function CustomsTab({ b, id }: { b: OrderBundle; id: string }) {
       </div>
       {b.customs.length === 0
         ? <Empty text="No BoE yet — the Customs desk files it against the inbound shipment to start clearance." />
-        : <div className="space-y-3">{b.customs.map((c) => <CustomsEntryCard key={c.id} c={c} id={id} readOnly />)}</div>}
+        : <div className="space-y-2">{b.customs.map((c) => {
+            const bk = customsBucket(c);
+            return (
+              <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-lg border p-2.5 text-sm">
+                <span className="font-mono text-xs">{c.shipmentNo}</span>
+                <Pill tone={BUCKET_META[bk].tone}>{BUCKET_META[bk].label}</Pill>
+                {c.beNo && c.beNo !== "filing…" ? <span className="text-xs text-muted-foreground">BE {c.beNo}</span> : null}
+                {c.filingMode ? <span className="text-xs text-muted-foreground">{c.filingMode === "CHA" ? "via CHA" : "ICEGATE API"}</span> : null}
+                {c.duty ? <span className="text-xs text-muted-foreground">duty {money(c.duty.totalDuty, c.currency)}{c.dutyPaidAt ? " · paid" : " · due"}</span> : null}
+                {c.icegateRef ? <span className="text-xs text-ok">OOC {c.icegateRef}</span> : null}
+              </div>
+            );
+          })}</div>}
       {a19 && <p className="mt-3 text-xs text-warn">Domestic order, but testing uses a lab abroad — customs applies on export &amp; re-import (A19).</p>}
     </Panel>
   );

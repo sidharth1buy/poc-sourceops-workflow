@@ -6,7 +6,7 @@ import { ArrowLeft, RefreshCw, Stamp, FileDown } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allShipments } from "@/store/selectors";
 import { shipmentStage, STAGE_META } from "@/lib/shipment-stage";
-import { cStageIdx } from "@/components/order/customs-card";
+import { customsBucket, BUCKET_META } from "@/lib/customs-bucket";
 import { Panel, Pill, StatusPill, Button, Field } from "@/components/ui/primitives";
 import { TrackingTimeline } from "@/components/order/tracking-timeline";
 import { qtyfmt, money } from "@/lib/utils";
@@ -33,7 +33,6 @@ export default function ShipmentDetailPage() {
   const booked = row.awb !== "booking…" && row.awb !== "booking failed";
   const terminal = row.status === "DELIVERED" || row.status === "CANCELLED";
   const ce = order?.customs.find((c) => c.shipmentNo === row.shipmentNo);
-  const ceStage = ce ? (ce.stage ?? (ce.beNo && ce.beNo !== "filing…" ? "FILED" : undefined)) : undefined;
 
   return (
     <div className="space-y-5">
@@ -101,8 +100,8 @@ export default function ShipmentDetailPage() {
               {ce
                 ? <div className="flex flex-wrap items-center gap-2 text-sm">
                     <span>BE {ce.beNo || "—"}</span>
-                    <Pill tone={ce.icegateRef ? "ok" : "warn"}>{ce.icegateRef ? "out of charge" : ceStage ? `stage ${((cStageIdx(ceStage) + 1))}/5` : "not filed"}</Pill>
-                    {ce.igmNo && <span className="text-xs text-muted-foreground">IGM {ce.igmNo}/{ce.igmItemNo}</span>}
+                    <Pill tone={BUCKET_META[customsBucket(ce)].tone}>{BUCKET_META[customsBucket(ce)].label}</Pill>
+                    {ce.duty && <span className="text-xs text-muted-foreground">duty {money(ce.duty.totalDuty, ce.currency)}{ce.dutyPaidAt ? " · paid" : " · due"}</span>}
                     <Link href={`/fulfilment/customs?order=${row.orderId}`} className="text-primary hover:underline">open Customs desk →</Link>
                   </div>
                 : <p className="text-sm text-muted-foreground">No BoE filed yet. <Link href={`/fulfilment/customs?order=${row.orderId}`} className="text-primary hover:underline">Customs desk →</Link></p>}
