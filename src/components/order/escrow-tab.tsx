@@ -105,10 +105,10 @@ function InvoicePanel({
   if (!e.invoice) {
     return (
       <Panel title="Escrow invoice">
-        <Empty text={sellerAccepted ? "No invoice yet — arrives once HKin invoices the order, or upload one manually as a fallback." : "The invoice only arrives once the seller has accepted the order — see the step above."} />
+        <Empty text={sellerAccepted ? "No invoice yet — arrives once HKin invoices the order, or fetch the same details from the Order document instead of waiting." : "The invoice only arrives once the seller has accepted the order — see the step above."} />
         <div className="mt-3 flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => simulateEscrowInvoiceEmail(id)} disabled={!sellerAccepted}><Inbox className="h-4 w-4" /> Fetch from Escrow Agent</Button>
-          <Button variant="outline" onClick={onUploadInvoice} disabled={!sellerAccepted}><Upload className="h-4 w-4" /> Upload manually</Button>
+          <Button variant="outline" onClick={onUploadInvoice} disabled={!sellerAccepted}><Upload className="h-4 w-4" /> Upload invoice / Order</Button>
         </div>
       </Panel>
     );
@@ -261,10 +261,10 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
 
   return (
     <Panel title={needsTesting ? "WHL testing — shipment & verdict" : "Shipment & receipt (no testing agreed on this PO)"}>
-      {needsTesting && <div className="mb-3"><Field label="Goods received (at 1Buy's hub)">{e.goodsReceivedAt ?? "—"}</Field></div>}
+      {needsTesting && <div className="mb-3"><Field label={isWhl ? "Goods received (at WHL, for testing)" : "Goods received (at 1Buy's hub)"}>{e.goodsReceivedAt ?? "—"}</Field></div>}
 
       {idx === escrowStatusIndex("TT_PAYMENT_RECEIVED") && <p className="text-xs text-muted-foreground">Waiting on the supplier&apos;s shipment notice — check inbox above.</p>}
-      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on 1Buy&apos;s hub to confirm goods received — check inbox above.</p>}
+      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on {isWhl ? "WHL" : "1Buy's hub"} to confirm goods received — check inbox above.</p>}
 
       {needsTesting && idx === escrowStatusIndex("RECIPIENT_INSPECTION") && (
         <div className="mt-4 border-t pt-3">
@@ -695,7 +695,7 @@ export function EscrowTab({
             )}
             <p className="mt-3 text-sm text-muted-foreground">{NEXT_STEP_HINT[e.status]}</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {e.status === "DRAFT" && <Button onClick={() => onCompose("ORDER_TO_SELLER")}><Send className="h-4 w-4" /> Send: order to seller for acceptance</Button>}
+              {e.status === "DRAFT" && !!e.hkinRpaStartedAt && <Button onClick={() => onCompose("ORDER_TO_SELLER")}><Send className="h-4 w-4" /> Send: order to seller for acceptance</Button>}
               {!isFinal && <Button variant="outline" onClick={() => checkEscrowInbox(id)}><Inbox className="h-4 w-4" /> Check inbox</Button>}
               {!isFinal && <Button variant="outline" onClick={() => syncRealInbox(id)}><Inbox className="h-4 w-4" /> Sync real inbox</Button>}
               {canCancel && <Button variant="ghost" onClick={() => { if (confirm("Cancel this escrow order?")) cancelEscrowOrder(id); }}>Cancel order</Button>}

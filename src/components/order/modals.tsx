@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
+import { Upload } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
 import { Button, Pill } from "@/components/ui/primitives";
@@ -9,6 +11,7 @@ import { useStore } from "@/store/store";
 import { remainingToShipLeg, remainingToAllocate, sourcedForClientLine, orderSourcedForClient, deliveredForClientLine } from "@/store/selectors";
 import { incotermPlan, weClearImportCustoms } from "@/lib/incoterm";
 import { shippingDocList } from "@/integrations/shipping-docs";
+import { extractEscrowInvoiceFromOrder } from "@/integrations/doc-extract";
 import { computeDuty } from "@/lib/fx";
 import { money, fmtAddress, cn } from "@/lib/utils";
 import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, CURRENCIES, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
@@ -541,6 +544,8 @@ export function MatchLabEmailModal({ orderId, email, onClose }: { orderId: strin
 export function UploadEscrowInvoiceModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
   const b = useStore((s) => s.orders[orderId]);
   const uploadEscrowInvoiceManually = useStore((s) => s.uploadEscrowInvoiceManually);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [parsing, setParsing] = useState(false);
   const [invoiceNo, setInvoiceNo] = useState("");
   const [feeToBuyer, setFeeToBuyer] = useState(60);
   const [wiringFeeToBuyer, setWiringFeeToBuyer] = useState(40);
@@ -557,6 +562,29 @@ export function UploadEscrowInvoiceModal({ orderId, onClose }: { orderId: string
   const [milestone2Pct, setMilestone2Pct] = useState(70);
   const [milestone2Trigger, setMilestone2Trigger] = useState("On WHL PASS report");
   if (!b || !b.escrow) return null;
+
+  async function parseOrder() {
+    const file = fileRef.current?.files?.[0];
+    const name = file?.name ?? "order.pdf";
+    setParsing(true);
+    try {
+      const res = await extractEscrowInvoiceFromOrder({ fileName: name, bytesLen: file?.size ?? 0 });
+      setInvoiceNo(res.invoiceNo);
+      setFeeToBuyer(res.fees.feeToBuyer); setWiringFeeToBuyer(res.fees.wiringFeeToBuyer);
+      setFeeToSeller(res.fees.feeToSeller); setWiringFeeToSeller(res.fees.wiringFeeToSeller);
+      setForwarder(res.conditions.forwarder); setForwarderAccountNo(res.conditions.forwarderAccountNo ?? "");
+      setShipWithinDays(res.conditions.shipWithinDays); setInspectionPeriod(res.conditions.inspectionPeriod);
+      setFeeSharingLabel(res.conditions.feeSharingLabel); setReturnCondition(res.conditions.returnCondition);
+      if (res.conditions.releaseMilestones[0]) { setMilestone1Pct(res.conditions.releaseMilestones[0].percent); setMilestone1Trigger(res.conditions.releaseMilestones[0].trigger); }
+      if (res.conditions.releaseMilestones[1]) { setMilestone2Pct(res.conditions.releaseMilestones[1].percent); setMilestone2Trigger(res.conditions.releaseMilestones[1].trigger); }
+      toast.success(`Parsed ${name} (${Math.round(res.overallConfidence * 100)}% confidence) — review below`);
+    } catch (e) {
+      toast.error(`Parse failed: ${e instanceof Error ? e.message : String(e)} — enter manually`);
+    } finally {
+      setParsing(false);
+    }
+  }
+
   const save = () => {
     if (!invoiceNo.trim()) return;
     uploadEscrowInvoiceManually(orderId, {
@@ -570,9 +598,16 @@ export function UploadEscrowInvoiceModal({ orderId, onClose }: { orderId: string
     onClose();
   };
   return (
-    <Dialog open onClose={onClose} title="Upload escrow invoice manually" footer={<Footer onClose={onClose} onSave={save} saveLabel="Attach invoice" disabled={!invoiceNo.trim()} />}>
+    <Dialog open onClose={onClose} title="Upload escrow invoice" footer={<Footer onClose={onClose} onSave={save} saveLabel="Attach invoice" disabled={!invoiceNo.trim()} />}>
       <div className="space-y-3">
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">Fallback for when the Escrow Agent misses the provider&apos;s email. PO total is fixed from this order: <b className="text-foreground tnum">{money(b.escrow.poAmount, b.escrow.currency)}</b>. Wire instructions use the provider&apos;s standing demo bank account.</div>
+        <div className="rounded-lg border p-2.5">
+          <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Upload the Order — parse it instead of typing the fields below</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input ref={fileRef} type="file" accept=".pdf,.xlsx,.csv" className="text-xs" />
+            <Button variant="outline" onClick={parseOrder} disabled={parsing}><Upload className="h-4 w-4" /> {parsing ? "Parsing…" : "Parse & pre-fill"}</Button>
+          </div>
+        </div>
         <Labeled label="Invoice no."><Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="AE2607-1188" /></Labeled>
         <div className="grid grid-cols-2 gap-3">
           <Labeled label="Escrow fee to buyer"><Input type="number" value={feeToBuyer} onChange={(e) => setFeeToBuyer(+e.target.value)} /></Labeled>

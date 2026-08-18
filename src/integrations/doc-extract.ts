@@ -71,6 +71,39 @@ export function extractPoTestRequirements(req: { sourceDoc: string; mpns: string
     { latencyMs: [700, 2000], failError: { code: "UNPARSEABLE_FILE", message: "Could not parse the PO test table — needs manual review", status: 422 } });
 }
 
+// ---- escrow invoice, derived from the underlying Order doc (fee %s are usually agreed on the PO) ----
+
+export interface ExtractEscrowInvoiceRes {
+  invoiceNo: string;
+  fees: { feeToBuyer: number; wiringFeeToBuyer: number; feeToSeller: number; wiringFeeToSeller: number };
+  conditions: {
+    forwarder: string; forwarderAccountNo?: string; shipWithinDays: string; inspectionPeriod: string;
+    feeSharingLabel: string; returnCondition: string;
+    releaseMilestones: { percent: number; trigger: string }[];
+  };
+  overallConfidence: number;
+}
+
+// Escrow fee % and release milestones are usually already agreed on the underlying Order, so an
+// operator can parse that doc instead of waiting on (or re-typing) HKin's invoice by hand.
+export function extractEscrowInvoiceFromOrder(req: { fileName: string; bytesLen: number }) {
+  return mockCall<ExtractEscrowInvoiceRes>(SYS, LABEL, "POST /extract/escrow-invoice", req,
+    () => ({
+      invoiceNo: `AE${2600 + Math.floor(Math.random() * 20)}-${1000 + Math.floor(Math.random() * 9000)}`,
+      fees: { feeToBuyer: 60, wiringFeeToBuyer: 40, feeToSeller: 0, wiringFeeToSeller: 0 },
+      conditions: {
+        forwarder: "DHL", shipWithinDays: "7 business days", inspectionPeriod: "5 business days",
+        feeSharingLabel: "100% Buyer / 0% Seller", returnCondition: "7 business days, shipping fees to Seller",
+        releaseMilestones: [
+          { percent: 30, trigger: "On shipment to WHL for testing" },
+          { percent: 70, trigger: "On WHL PASS report" },
+        ],
+      },
+      overallConfidence: 0.91,
+    }),
+    { latencyMs: [800, 2200], failError: { code: "UNPARSEABLE_FILE", message: "Could not parse the Order document — enter manually", status: 422 } });
+}
+
 export interface ExtractedSupplierLine { mpn: string; make: string; qty: number; buy: number; margin: number; confidence: number; }
 export interface ExtractSupplierPoRes {
   fields: {
