@@ -169,11 +169,11 @@ export function OrderFlowPage({ id }: { id: string }) {
     return (
       <div className="space-y-4">
         <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Order Processing
+          <ArrowLeft className="h-4 w-4" /> Orders Overview
         </Link>
         <div className="rounded-[var(--radius)] border bg-card p-6 text-center text-sm text-muted-foreground shadow-sm">
           Order not found (it may have been reset).{" "}
-          <Link href="/fulfilment" className="text-primary hover:underline">Back to Order Processing</Link>.
+          <Link href="/fulfilment" className="text-primary hover:underline">Back to Orders Overview</Link>.
         </div>
       </div>
     );
@@ -191,7 +191,7 @@ export function OrderFlowPage({ id }: { id: string }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="h-4 w-4" /> Order Processing
+          <ArrowLeft className="h-4 w-4" /> Orders Overview
         </Link>
         <Link href={`/fulfilment/orders/${id}`}>
           <Button variant="outline">Open order workspace <ExternalLink className="h-3.5 w-3.5" /></Button>

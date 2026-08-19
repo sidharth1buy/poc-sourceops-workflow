@@ -48,10 +48,8 @@ export function prettyStatus(s?: string) {
 
 // Grouped navigation. Each group renders under a heading in the sidebar.
 export const NAV_GROUPS = [
-  { group: "Admin", items: [
-    { href: "/fulfilment", label: "Order Processing", icon: "Package" },
-  ] },
   { group: "Supply Chain", items: [
+    { href: "/fulfilment", label: "Orders Overview", icon: "Package" },
     { href: "/fulfilment/client-pos", label: "Sales Orders", icon: "FileText" },
     { href: "/fulfilment/supplier-pos", label: "Purchase Orders", icon: "ClipboardList" },
     { href: "/fulfilment/testing", label: "Testing", icon: "FlaskConical" },

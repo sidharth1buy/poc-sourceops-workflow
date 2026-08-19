@@ -77,7 +77,7 @@ every change, role-gated actions and an NDA access log on reports.
 | **Three identifiers** | Client PO no., WHL work-order no., WHL report no. (with revision) are *separate* keys and must all be tracked; email routing and reconciliation depend on them. |
 | **Testing lifecycle** | The physical journey of a lot while it's at the lab, distinct from its test results: we raise a work order, settle the lab's fee, the **supplier** ships samples to the lab, the lab confirms receipt, tests it, and shares the report. Every step is established by an inbound mail — the lab's, or the supplier's dispatch advice relayed onto the same thread. |
 | **Testing fee** | WHL bills for the testing itself — a separate invoice from the test report, issued on booking, payable by our finance team. Nothing to do with the supplier's material payment or the escrow; it is our cost against the order. Priced per process, so the fee is the test list × a rate. |
-| **Advance vs credit** | The two modes the lab bills on, stated on its invoice mail and **never chosen by us** — it's the lab's call per work order. **Advance:** the fee clears before the bench starts, so the lot sits in the lab's store and the fee is a genuine gate. **Credit:** the lab tests on account and bills on terms, so the fee is a parallel track that must block nothing. |
+| **Advance vs credit** | The two modes the lab bills on, stated on its invoice and **never chosen by us** — it's the lab's call per work order. (If the invoice arrives by some other medium and has to be typed in, the operator *transcribes* the lab's terms; the record is flagged `entered by hand` so a transcription is never mistaken for the lab's own mail — see §6 `uploadLabInvoiceManually`.) **Advance:** the fee clears before the bench starts, so the lot sits in the lab's store and the fee is a genuine gate. **Credit:** the lab tests on account and bills on terms, so the fee is a parallel track that must block nothing. |
 | **On account** | Credit terms in practice: the lab starts testing before the fee clears, so the physical chain legitimately runs ahead of the payment stage with the invoice still outstanding. Does **not** apply on advance terms. |
 | **Bench-vs-report lag** | Testing finishing and the report arriving are different events, often days apart — the lab is done but the signed report is with its reviewer. Keep them as separate stages so the gap is visible in the timestamps; it does **not** need a "report being written" stage of its own. |
 
@@ -702,6 +702,22 @@ pending → ok/error, (b) sleeps a random latency in a given range, (c) can inje
 "chaos" rate plus a per-call rate, (d) throws a typed error `{ code, message, status }`. Keep that seam —
 swapping in `fetch` later must be a one-line change per adapter.
 
+### 6.x `uploadLabInvoiceManually(orderId, lotId, input)`
+
+`input = { invoiceNo, currency, amount, taxAmount?, terms, creditDays?, dueDate?, processCount?,
+ratePerProcess?, fileName?, receivedVia?, note? }`
+
+Writes `lot.labPayment.invoice` (replacing any existing one), stamps
+`source: "MANUAL" · enteredBy · receivedVia`, moves the status to `INVOICE_RECEIVED` unless the fee is
+already `PAID`, files the document in the order's vault as `WHL_INVOICE` / `uploadedBy: "<me> (by hand)"`,
+and logs an order event naming the terms and the medium. Rejects an empty invoice number or a
+non-positive net amount.
+
+It does **not** touch the lifecycle stage: an invoice arriving has never moved `WHL_PAYMENT` — paying it
+does (`markLabFeePaid` → `settleStage`), by mail or by hand. The modal pre-computes
+`processCount × ratePerProcess` (+ `WHL_INVOICE_TAX_PCT`) off the lab's rate card so a typo stands out,
+and warns when the net doesn't match that arithmetic instead of silently "correcting" the lab.
+
 ### 7.1 `extractPoTestRequirements({ sourceDoc, mpns[], testingModes })`
 Latency 700–2000 ms · failure `UNPARSEABLE_FILE / "Could not parse the PO test table — needs manual review" / 422`.
 
@@ -1143,9 +1159,16 @@ and [Send to finance] is promoted to the primary button.
 
 - **Terms pill first**, before the status pill: it is what makes an unpaid fee urgent or not. Reads
   `Advance` (warn) or `Credit · {creditDays}d` (info), tooltip = `LAB_TERMS_HINT`.
-- **No invoice yet** → the copy says so and offers `[✉ Request invoice]`; if already requested it
-  states *"it arrives on the WHL thread, so **Check mail for updates** pulls it in, terms and all"*.
-  Otherwise: *"…that mail is what tells us whether this work order is advance or credit."*
+- **No invoice yet** → the copy says so and offers `[✉ Request invoice]` **and `[⬆ Upload invoice]`**; if
+  already requested it states *"it arrives on the WHL thread, so **Check mail for updates** pulls it in,
+  terms and all. If it never lands, **Upload invoice** takes it by hand."* Otherwise: *"…that mail is what
+  tells us whether this work order is advance or credit. Came by another medium? **Upload invoice**."*
+- **`[⬆ Upload invoice]` / `[⬆ Replace invoice]`** (role-gated, ghost once an invoice exists) opens the
+  hand-entry modal — the way out when the lab's mail never arrives, never parses, or the bill came by
+  WhatsApp/phone/portal. Without it the fee track dead-ends at *invoice requested*, and on advance terms
+  the lot stays held with nothing anyone can do about it. A hand-entered invoice carries a
+  **`entered by hand`** pill beside the status (tooltip: who typed it, how it arrived) and its amount line
+  reads `received <at> · by hand via <medium>`.
 - The amount line shows `({processCount} × {ratePerProcess})` so the fee reads as the priced test list.
 - **`[Download invoice]`** writes a `DOWNLOAD` row to the invoice's `accessLog`, like the report's.
   The access count is shown with the full log in its tooltip.
@@ -1338,21 +1361,33 @@ The lab fee is a **third money leg**: the client pays 1Buy, 1Buy pays the suppli
 and WHL bills separately for the test itself. So it gets its own tab on the Payments board next to those:
 `/fulfilment/payments?tab=whl` ("WHL testing"), fed by `allLabFees(orders)`.
 
-Two KPI tiles (`WHL fees paid` / `WHL fees due`, the latter labelled `· N lot(s) held` when any advance
-fee is blocking) and one table, one row per work order:
+The board's summary row carries **one card per money leg**, and the lab fee is the fourth: outstanding
+(warn) beside settled (ok), an `N open` pill — or `N lot(s) held` when an advance fee is blocking — and a
+`The lab's own fee, per work order` caption. Then one table, one row per work order:
 
 | Order | Lot · MPN | Lab · work order | Invoice | Net + tax | Payable | Terms · due | Status | |
 |---|---|---|---|---|---|---|---|---|
-| links to the order flow's `#testing` | lot code over MPN | lab site over `WO n` | invoice no + `received at`, or `awaited · asked <date>` | net `+` tax, with `processes × rate` beneath | gross, bold | terms pill + due date | `LAB_PAYMENT_LABEL` pill, plus a `lot held` pill when blocking | `Mark paid` / `✓ paid · ref` / `Testing workspace` |
+| links to the order flow's `#testing` | lot code over MPN | lab site over `WO n` | invoice no + `received at` (+ `entered by hand` when transcribed), or `awaited · asked <date>` | net `+` tax, with `processes × rate` beneath | gross, bold | terms pill + due date | `LAB_PAYMENT_LABEL` pill, plus a `lot held` pill when blocking | `Mark paid` / `✓ paid · ref` / `Enter / chase invoice` |
 
 - **Same action, not a second one.** `Mark paid` expands the row (the board's attach-then-pay shape, as
   used for customs duty) for a transfer reference and calls the module's own `markLabFeePaid` — the
   workspace's per-lot button and this row cannot diverge.
 - The expansion states what the lab needs quoted on the transfer (`WO n / LOT-x`), because a payment the
   lab can't reconcile is the reason a settled fee still reads unpaid.
-- Terms are **displayed, never chosen** here either — same rule as everywhere else (§4).
-- A row with no invoice yet offers `Testing workspace` instead of `Mark paid`: nothing to pay until the
-  lab bills it, and chasing the invoice is a mail action that belongs on the acting screen.
+- Terms are **displayed, never chosen** here either — same rule as everywhere else (§4). A transcribed
+  invoice carries the `entered by hand` pill in the Invoice cell, because whoever pays it should know
+  whether they're looking at the lab's mail or our typing.
+- A row with no invoice yet offers `Enter / chase invoice` instead of `Mark paid`: nothing to pay until the
+  lab bills it, and chasing the invoice (or transcribing it) is a mail action that belongs on the acting screen.
+- **The board's page-wide status filter and ordering apply to this ledger too** (added 2026-08-19): the
+  `Show: All statuses / Pending / Settled` control cuts the fee rows by `unpaid`, and unpaid fees always sort
+  above settled ones — same rule the client/supplier/duty ledgers follow, so "what still owes money" reads
+  first on every tab. When a table holds both, `DataTable`'s `sectionOf` prop bands them under
+  `Pending · N` / `Settled · N` subheads and `rowMuted` dims the settled ones — one ordered table, not two.
+- The board's **By order** tab folds this fee in as one leg among four (client collection, supplier payout,
+  customs duty, WHL fee) under each order, carrying the *same* status pill, `Mark paid` button and
+  attach-then-pay editor — it is a different cut of `allLabFees`, never a second implementation. An order
+  counts as fully settled there only once its lab fees are paid too.
 
 ---
 
@@ -1472,7 +1507,7 @@ the reference repo; this table is what a target repo should expect to end up wit
 | `src/components/order/report-repository.tsx` | §9.4 extracted so the report's field list exists once — `ReportRepository` + `ReportSummary`, `readOnly` drops only the reconcile action | 185 |
 | `src/components/order/test-tables.tsx` | the two — and only two — per-test tables: `LotTestTable` (§9.3 tracker, report folded in) + `MpnTestMatrix` / `MpnFeeStrip` (§9.2), plus the shared `LotFeeCell` (both roll-ups) | 320 |
 | `src/components/order/testing-stages.tsx` | §9.3a/§9.3b — `TestingStageChain` (stepper) + `TestingStageBar` (compact) + `LabFeePanel`; chain and fee panel take `readOnly` | 340 |
-| `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / shipment-prefill | +450 |
+| `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / **upload-invoice** / shipment-prefill | +560 |
 | `src/app/fulfilment/logistics/page.tsx` | §9.8 hand-off | +90 |
 | `src/app/fulfilment/payments/page.tsx` | §9.9 the "WHL testing" tab — the finance-side fee ledger (tiles, table, attach-then-pay row) | +95 |
 | `src/app/fulfilment/testing/page.tsx` | cross-order board, order-first (§9.0): pick an order, then the per-lot list with one `TestingStageBar` each | 150 |
@@ -1607,7 +1642,13 @@ Lifecycle
 
 Lab fee — amount, terms, settlement
 - [ ] The lab's invoice arrives by mail on booking — before any report — and is filed in the document vault.
-- [ ] The invoice mail is the **only** source of the terms: advance vs credit is never chosen in the UI.
+- [ ] The terms always come from the lab's document — parsed off its mail, or transcribed from whatever
+      medium it arrived on. Nothing in the UI lets an operator pick terms for a fee the lab hasn't stated.
+- [ ] A hand-entered invoice makes the fee payable (status `INVOICE_RECEIVED`), files its document, and is
+      labelled `entered by hand` on the lot **and** on the finance ledger — never indistinguishable from
+      one the lab mailed.
+- [ ] An advance-terms invoice entered by hand holds the lot exactly as a mailed one does; paying it
+      releases it and writes the `WHL_PAYMENT` history row.
 - [ ] The amount reads as the priced test list: `processCount × ratePerProcess`, with the rate shown on
       the MPN matrix and the per-MPN fee strip.
 - [ ] It is downloadable per lot and the download is access-logged.

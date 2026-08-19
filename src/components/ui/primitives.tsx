@@ -163,9 +163,16 @@ export type Col<T> = {
   render: (row: T) => React.ReactNode;
 };
 
+/**
+ * Optional grouping/emphasis props (all default to the plain table):
+ * - `sectionOf` labels a row's band; when the label changes between consecutive rows a subhead
+ *   row is inserted, which is how a single ordered table shows "these first, those after"
+ *   (e.g. the Payments board's pending-then-settled ledgers) without splitting into two tables.
+ * - `rowMuted` dims a row that is a record rather than work — same data, less ink.
+ */
 export function DataTable<T>({
-  columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded,
-}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode }) {
+  columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded, sectionOf, rowMuted,
+}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode; sectionOf?: (row: T) => string | null; rowMuted?: (row: T) => boolean }) {
   if (rows.length === 0) {
     return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{empty}</div>;
   }
@@ -175,7 +182,7 @@ export function DataTable<T>({
         <thead>
           <tr className="border-b bg-card-2">
             {columns.map((c) => (
-              <th key={c.key} className={cn("px-3 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground",
+              <th key={c.key} className={cn("px-3 py-2.5 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground",
                 c.align === "right" && "text-right", c.align === "center" && "text-center")}>
                 {c.header}
               </th>
@@ -185,9 +192,17 @@ export function DataTable<T>({
         <tbody>
           {rows.map((row, i) => (
             <React.Fragment key={i}>
+              {sectionOf && sectionOf(row) && sectionOf(row) !== (i > 0 ? sectionOf(rows[i - 1]) : null) && (
+                <tr className="border-b bg-muted/40">
+                  <td colSpan={columns.length} className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    {sectionOf(row)}
+                  </td>
+                </tr>
+              )}
               <tr
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={cn(!(isExpanded?.(row)) && "border-b last:border-0", onRowClick && "cursor-pointer hover:bg-muted/60", isExpanded?.(row) && "bg-muted/40")}>
+                className={cn(!(isExpanded?.(row)) && "border-b last:border-0", onRowClick && "cursor-pointer hover:bg-muted/60", isExpanded?.(row) && "bg-muted/40",
+                  rowMuted?.(row) && "text-muted-foreground")}>
                 {columns.map((c) => (
                   <td key={c.key} className={cn("px-3 py-2.5 align-middle",
                     c.align === "right" && "text-right tnum", c.align === "center" && "text-center", c.className)}>

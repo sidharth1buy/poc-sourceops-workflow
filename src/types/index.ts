@@ -348,6 +348,15 @@ export interface LabInvoice {
   ratePerProcess?: number;
   /** processes billed — amount === processCount × ratePerProcess */
   processCount?: number;
+  /**
+   * How this invoice reached us. `MAIL` is the normal path (the lab's own mail on the WHL
+   * thread, parsed on sync). `MANUAL` means an operator transcribed it because the mail never
+   * arrived or the lab sent it some other way — the terms are still the lab's, but a
+   * transcription is not the same evidence as the mail, so it says so wherever it shows.
+   */
+  source?: "MAIL" | "MANUAL";
+  enteredBy?: string;        // MANUAL only — who transcribed it
+  receivedVia?: string;      // MANUAL only — "WhatsApp from WHL accounts", "handed over at the lab", …
   accessLog: { at: string; by: string; action: "VIEW" | "DOWNLOAD" }[];
 }
 

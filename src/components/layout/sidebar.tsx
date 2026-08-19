@@ -22,7 +22,7 @@ function Brand() {
   );
 }
 
-// Order Processing lives at the root path, and an order's own pages hang off two other
+// Orders Overview lives at the root path, and an order's own pages hang off two other
 // prefixes — keep the nav item lit while you're inside one of them.
 const ORDER_PROCESSING_ROUTES = ["/fulfilment/order-flow", "/fulfilment/orders"];
 

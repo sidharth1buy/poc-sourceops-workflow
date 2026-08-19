@@ -2,7 +2,7 @@
 
 import {
   ClipboardList, Truck, PackageCheck, FlaskConical, Activity, BadgeCheck, FileText,
-  Check, CircleDot, RefreshCw, Hourglass, Receipt, Mail, Download, Landmark, Lock,
+  Check, CircleDot, RefreshCw, Hourglass, Receipt, Mail, Download, Landmark, Lock, Upload,
 } from "lucide-react";
 import type { Lot, TestingStage } from "@/types";
 import {
@@ -61,14 +61,15 @@ export function TestingStageBar({ lot, className }: { lot: Lot; className?: stri
  * than showing them done without a timestamp.
  */
 export function TestingStageChain({
-  orderId, lot, canEdit, readOnly, onRecordDispatch, onSendToFinance, onMarkPaid,
+  orderId, lot, canEdit, readOnly, onRecordDispatch, onSendToFinance, onMarkPaid, onUploadInvoice,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
-  /** view-only rendering (the order workspace's Testing tab) — no action row at all */
+  /** view-only rendering (the order-flow page) — no action row at all */
   readOnly?: boolean;
   onRecordDispatch?: () => void;
   onSendToFinance?: () => void;
   onMarkPaid?: () => void;
+  onUploadInvoice?: () => void;
 }) {
   const syncWhlInbox = useStore((s) => s.syncWhlInbox);
   const setLotStage = useStore((s) => s.setLotStage);
@@ -205,7 +206,7 @@ export function TestingStageChain({
 
       {/* the lab's own bill — a different document from the report, on its own track */}
       <LabFeePanel orderId={orderId} lot={lot} canEdit={canEdit} readOnly={readOnly}
-        onSendToFinance={onSendToFinance} onMarkPaid={onMarkPaid} />
+        onSendToFinance={onSendToFinance} onMarkPaid={onMarkPaid} onUploadInvoice={onUploadInvoice} />
 
       {lot.dispatch && (
         <div className="mt-3 rounded-lg border bg-card-2 p-3 text-xs">
@@ -237,13 +238,15 @@ export function TestingStageChain({
  * fee is a ledger item (credit) or a stop sign (advance).
  */
 export function LabFeePanel({
-  orderId, lot, canEdit, readOnly, onSendToFinance, onMarkPaid,
+  orderId, lot, canEdit, readOnly, onSendToFinance, onMarkPaid, onUploadInvoice,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
   /** view-only: the invoice and its terms still show, the settlement controls don't */
   readOnly?: boolean;
   onSendToFinance?: () => void;
   onMarkPaid?: () => void;
+  /** enter the lab's invoice by hand — the way out when its mail never arrives */
+  onUploadInvoice?: () => void;
 }) {
   const requestWhlInvoice = useStore((s) => s.requestWhlInvoice);
   const logInvoiceAccess = useStore((s) => s.logInvoiceAccess);
@@ -271,6 +274,12 @@ export function LabFeePanel({
           </Pill>
         )}
         <Pill tone={LAB_PAYMENT_TONE[pay.status]}>{LAB_PAYMENT_LABEL[pay.status]}</Pill>
+        {/* a transcription is not the lab's mail — say which one this is */}
+        {inv?.source === "MANUAL" && (
+          <Pill tone="neutral" title={`Transcribed by ${inv.enteredBy ?? "an operator"}${inv.receivedVia ? ` — received via ${inv.receivedVia}` : ""}. The terms are the lab's; the typing is ours.`}>
+            entered by hand
+          </Pill>
+        )}
         {inv && <span className="font-mono text-foreground">{inv.invoiceNo}</span>}
         {inv && <span className="tnum text-muted-foreground">{inv.currency} {gross.toLocaleString()}</span>}
         {inv?.dueDate && unpaid && <span className="text-faint">due {inv.dueDate}</span>}
@@ -279,8 +288,8 @@ export function LabFeePanel({
       {!inv ? (
         <p className="text-muted-foreground">
           {pay.status === "REQUESTED"
-            ? <>Invoice requested{pay.requestedAt ? <> <span className="tnum text-faint">{pay.requestedAt}</span></> : null} — it arrives on the WHL thread, so <b className="text-foreground">Check mail for updates</b> pulls it in, terms and all.</>
-            : <>No invoice on file yet. The lab bills on booking, so it normally arrives with the first inbox sync — and that mail is what tells us whether this work order is advance or credit.</>}
+            ? <>Invoice requested{pay.requestedAt ? <> <span className="tnum text-faint">{pay.requestedAt}</span></> : null} — it arrives on the WHL thread, so <b className="text-foreground">Check mail for updates</b> pulls it in, terms and all. If it never lands, <b className="text-foreground">Upload invoice</b> takes it by hand.</>
+            : <>No invoice on file yet. The lab bills on booking, so it normally arrives with the first inbox sync — and that mail is what tells us whether this work order is advance or credit. Came by another medium? <b className="text-foreground">Upload invoice</b>.</>}
         </p>
       ) : (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
@@ -288,7 +297,7 @@ export function LabFeePanel({
             {inv.currency} {inv.amount.toLocaleString()} net{inv.taxAmount ? ` + tax ${inv.taxAmount.toLocaleString()}` : ""}
             {inv.processCount && inv.ratePerProcess ? <span className="text-faint"> ({inv.processCount} × {inv.ratePerProcess})</span> : null}
           </span>
-          <span>received {inv.receivedAt}</span>
+          <span>received {inv.receivedAt}{inv.source === "MANUAL" ? ` · by hand${inv.receivedVia ? ` via ${inv.receivedVia}` : ""}` : ""}</span>
           {pay.sentToFinanceAt && <span>to finance {pay.sentToFinanceAt}{pay.sentToFinanceBy ? ` · ${pay.sentToFinanceBy}` : ""}</span>}
           {pay.paidAt && <span className="text-ok">paid {pay.paidAt}{pay.paidRef ? ` · ref ${pay.paidRef}` : ""}</span>}
         </div>
@@ -309,6 +318,15 @@ export function LabFeePanel({
           <Button variant="outline" disabled={!canEdit} onClick={() => requestWhlInvoice(orderId, lot.id)}
             title={canEdit ? "Email WHL for the testing invoice" : "Only SC / Mgmt may email WHL"}>
             <Mail className="h-4 w-4" /> Request invoice
+          </Button>
+        )}
+        {/* the mail is the normal source; this is the way out when it never arrives */}
+        {!readOnly && onUploadInvoice && (
+          <Button variant={inv ? "ghost" : "outline"} disabled={!canEdit} onClick={onUploadInvoice}
+            title={canEdit
+              ? inv ? "Replace this invoice with one entered by hand" : "Enter the lab's invoice by hand — for when its mail never arrived or the bill came another way"
+              : "Only SC / Mgmt may enter an invoice"}>
+            <Upload className="h-4 w-4" /> {inv ? "Replace invoice" : "Upload invoice"}
           </Button>
         )}
         {!readOnly && inv && (

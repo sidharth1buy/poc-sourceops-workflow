@@ -14,9 +14,13 @@ import { shippingDocList } from "@/integrations/shipping-docs";
 import { extractEscrowInvoiceFromOrder } from "@/integrations/doc-extract";
 import { computeDuty } from "@/lib/fx";
 import { money, fmtAddress, cn } from "@/lib/utils";
-import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, CURRENCIES, type WhlMailCtx, type NotifyCtx } from "@/data/enums";
+import {
+  WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, CURRENCIES,
+  WHL_TEST_FEE_PER_PROCESS, WHL_INVOICE_TAX_PCT, WHL_CREDIT_DAYS, type WhlMailCtx, type NotifyCtx,
+} from "@/data/enums";
 import type {
   PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty, OrderBundle,
+  LabPaymentTerms,
 } from "@/types";
 
 const PHASES: JourneyPhase[] = ["KICKOFF", "PAYMENT", "TESTING", "EXPORT", "IMPORT", "CUSTOMS", "RELABEL", "DELIVERY", "CLOSE"];
@@ -144,6 +148,141 @@ export function RecordDispatchModal({
  * this is the fallback for when finance confirms out of band and the lab hasn't caught up,
  * which is why it's the ghost button and not the primary one.
  */
+/**
+ * The lab's invoice, typed in. Normally `syncWhlInbox` parses it off WHL's own mail; this is the
+ * way out when that mail never arrives, never parsed, or the lab sent the bill by another medium
+ * — otherwise the fee track dead-ends at "invoice requested" and an advance-terms lot stays held
+ * with no way to release it.
+ *
+ * The operator is **transcribing** the lab's document, not deciding its terms: the amount is
+ * pre-computed from the lab's own rate card so a typo stands out, `How it reached us` is required
+ * reading for whoever pays it, and the saved invoice is flagged `entered by hand` everywhere it
+ * shows so nobody mistakes it for the mail.
+ */
+export function UploadLabInvoiceModal({
+  orderId, lotId, onClose,
+}: { orderId: string; lotId: string; onClose: () => void }) {
+  const b = useStore((s) => s.orders[orderId]);
+  const lot = b?.lots.find((l) => l.id === lotId);
+  const upload = useStore((s) => s.uploadLabInvoiceManually);
+  const existing = lot?.labPayment?.invoice;
+
+  const defaultProcesses = existing?.processCount ?? (lot?.tests?.length || 4);
+  const [invoiceNo, setInvoiceNo] = useState(existing?.invoiceNo ?? "");
+  const [currency, setCurrency] = useState(existing?.currency ?? "USD");
+  const [processCount, setProcessCount] = useState(String(defaultProcesses));
+  const [ratePerProcess, setRatePerProcess] = useState(String(existing?.ratePerProcess ?? WHL_TEST_FEE_PER_PROCESS));
+  const [amount, setAmount] = useState(String(existing?.amount ?? defaultProcesses * WHL_TEST_FEE_PER_PROCESS));
+  const [taxAmount, setTaxAmount] = useState(String(existing?.taxAmount ?? Math.round(defaultProcesses * WHL_TEST_FEE_PER_PROCESS * WHL_INVOICE_TAX_PCT)));
+  const [terms, setTerms] = useState<LabPaymentTerms>(existing?.terms ?? "CREDIT");
+  const [creditDays, setCreditDays] = useState(String(existing?.creditDays ?? WHL_CREDIT_DAYS));
+  const [dueDate, setDueDate] = useState(existing?.dueDate ?? "");
+  const [fileName, setFileName] = useState(existing?.fileName ?? "");
+  const [receivedVia, setReceivedVia] = useState(existing?.receivedVia ?? "");
+  const [note, setNote] = useState("");
+
+  if (!lot) return null;
+  const net = Number(amount) || 0;
+  const tax = Number(taxAmount) || 0;
+  const ok = invoiceNo.trim().length > 0 && net > 0;
+
+  // keep the priced-test-list arithmetic honest as the operator edits processes × rate
+  const reprice = (pc: string, rate: string) => {
+    const n = (Number(pc) || 0) * (Number(rate) || 0);
+    if (n > 0) { setAmount(String(n)); setTaxAmount(String(Math.round(n * WHL_INVOICE_TAX_PCT))); }
+  };
+
+  const save = () => {
+    upload(orderId, lotId, {
+      invoiceNo, currency, amount: net, taxAmount: tax || undefined, terms,
+      creditDays: Number(creditDays) || undefined, dueDate: dueDate || undefined,
+      processCount: Number(processCount) || undefined, ratePerProcess: Number(ratePerProcess) || undefined,
+      fileName: fileName.trim() || undefined, receivedVia, note,
+    });
+    onClose();
+  };
+
+  return (
+    <Dialog open onClose={onClose} title={existing ? "Replace WHL testing invoice" : "Upload WHL testing invoice"}
+      footer={<Footer onClose={onClose} onSave={save} saveLabel={existing ? "Replace invoice" : "Save invoice"} disabled={!ok} />}>
+      <div className="space-y-3">
+        <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
+          <b className="text-foreground">{lot.lotCode}</b> · <span className="font-mono">{lot.orderLineMpn}</span>
+          {lot.workOrderNo ? <> · WO {lot.workOrderNo}</> : null} · {lot.lab ?? "WHL"}
+          <p className="mt-1">
+            Use this when the lab&apos;s invoice mail never arrived or the bill came another way. You&apos;re
+            copying <b className="text-foreground">WHL&apos;s</b> document — the terms below are whatever it states,
+            not a choice we make. It saves flagged <b className="text-foreground">entered by hand</b>, and the
+            file is added to the order&apos;s documents.
+          </p>
+          {existing && (
+            <p className="mt-1 text-warn">
+              {existing.invoiceNo} is already on file{existing.source === "MANUAL" ? " (also entered by hand)" : " (from the lab's mail)"} — saving replaces it.
+            </p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="Invoice number *" hint="exactly as the lab wrote it">
+            <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="WHL-INV-352146" />
+          </Labeled>
+          <Labeled label="How it reached us" hint="mail that never parsed, WhatsApp, a call, the portal…">
+            <Input value={receivedVia} onChange={(e) => setReceivedVia(e.target.value)} placeholder="WhatsApp from WHL accounts" />
+          </Labeled>
+          <Labeled label="Processes billed" hint="the invoice is the test list priced">
+            <Input value={processCount} inputMode="numeric"
+              onChange={(e) => { setProcessCount(e.target.value); reprice(e.target.value, ratePerProcess); }} />
+          </Labeled>
+          <Labeled label="Rate per process">
+            <Input value={ratePerProcess} inputMode="numeric"
+              onChange={(e) => { setRatePerProcess(e.target.value); reprice(processCount, e.target.value); }} />
+          </Labeled>
+          <Labeled label="Net amount *">
+            <Input value={amount} inputMode="decimal" onChange={(e) => setAmount(e.target.value)} />
+          </Labeled>
+          <Labeled label="Tax">
+            <Input value={taxAmount} inputMode="decimal" onChange={(e) => setTaxAmount(e.target.value)} />
+          </Labeled>
+          <Labeled label="Currency">
+            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
+              {CURRENCIES.map((c) => <option key={c}>{c}</option>)}
+            </Select>
+          </Labeled>
+          <Labeled label="Terms *" hint="read off the invoice — advance holds the lot, credit doesn't">
+            <Select value={terms} onChange={(e) => setTerms(e.target.value as LabPaymentTerms)}>
+              <option value="CREDIT">{LAB_TERMS_LABEL.CREDIT}</option>
+              <option value="ADVANCE">{LAB_TERMS_LABEL.ADVANCE}</option>
+            </Select>
+          </Labeled>
+          {terms === "CREDIT" && (
+            <Labeled label="Credit days">
+              <Input value={creditDays} inputMode="numeric" onChange={(e) => setCreditDays(e.target.value)} />
+            </Labeled>
+          )}
+          <Labeled label="Due date">
+            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+          </Labeled>
+          <Labeled label="File name" hint="filed in the order's documents; defaults to the invoice no">
+            <Input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="WHL-INV-352146.pdf" />
+          </Labeled>
+        </div>
+
+        <Labeled label="Note" hint="anything the payer needs — e.g. bank details differ from the usual">
+          <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Labeled>
+
+        <p className="text-xs text-muted-foreground">
+          Payable: <b className="text-foreground">{currency} {(net + tax).toLocaleString()}</b>
+          {net > 0 && Number(processCount) > 0 && Number(ratePerProcess) > 0 && Number(processCount) * Number(ratePerProcess) !== net
+            ? <span className="text-warn"> — doesn&apos;t match {processCount} × {ratePerProcess}; check the invoice.</span>
+            : null}
+          {" "}The fee becomes payable on {terms === "ADVANCE" ? "advance terms, so the lot stays held until it clears" : "credit terms, so nothing is blocked"}.
+        </p>
+      </div>
+    </Dialog>
+  );
+}
+
 export function MarkLabFeePaidModal({
   orderId, lotId, onClose,
 }: { orderId: string; lotId: string; onClose: () => void }) {

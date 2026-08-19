@@ -11,7 +11,7 @@ import { money, cn } from "@/lib/utils";
 import type { Order, OrderBundle } from "@/types";
 
 /**
- * Order Processing — the console's landing page and the one list of orders.
+ * Orders Overview — the console's landing page and the one list of orders.
  *
  * It used to be a "Dashboard" with a six-row teaser plus a separate Orders page holding the
  * real list; the two were the same table at different lengths. The work itself now happens on
@@ -126,7 +126,7 @@ export default function OrderProcessingPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="Order Processing"
+        title="Orders Overview"
         description="Every fulfilment order (Mode 4), each spun from a Purchase Order. Click one to open its flow — the whole journey on a single page. The work itself is done on the boards in the sidebar."
         actions={
           <div className="flex items-center gap-2">
@@ -137,9 +137,8 @@ export default function OrderProcessingPage() {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         <KpiCard label="Open orders" value={k.open} />
-        <KpiCard label="Approvals" value={k.pendingApprovals} hint="pending" tone="warn" />
         <KpiCard label="Payments due" value={k.paymentsDue} hint="action" tone="warn" />
         <KpiCard label="Tests pending" value={k.testsPending} hint="quality" tone="warn" />
         <KpiCard label="Blocked" value={k.blocked} hint="on hold" tone="bad" />

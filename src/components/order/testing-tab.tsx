@@ -25,7 +25,7 @@ import {
 import { qtyfmt, cn } from "@/lib/utils";
 import {
   ComposeWhlEmailModal, MatchLabEmailModal, NotifyLotResultModal, BulkNotifyModal,
-  RecordDispatchModal, MarkLabFeePaidModal,
+  RecordDispatchModal, MarkLabFeePaidModal, UploadLabInvoiceModal,
 } from "@/components/order/modals";
 import { TestingStageChain, TestingStageBar } from "@/components/order/testing-stages";
 import { LotTestTable, MpnTestMatrix, MpnFeeStrip, LotFeeCell } from "@/components/order/test-tables";
@@ -111,7 +111,8 @@ export function TestingTab({
   const [match, setMatch] = useState<LabEmail | null>(null);
   const [dispatch, setDispatch] = useState<string | null>(null); // lot id whose dispatch is being recorded
   const [track, setTrack] = useState<string | null>(null);
-  const [paid, setPaid] = useState<string | null>(null);           // lot id whose lab fee is being marked paid       // lot id whose lifecycle is expanded in the roll-up
+  const [paid, setPaid] = useState<string | null>(null);           // lot id whose lab fee is being marked paid
+  const [invoiceFor, setInvoiceFor] = useState<string | null>(null); // lot id whose lab invoice is being typed in       // lot id whose lifecycle is expanded in the roll-up
   const { canEditTests, canEmailLab } = useRole();
   const fees = labFeeOutstandingTotal(b);   // lab fees still owed across the order
 
@@ -287,7 +288,8 @@ export function TestingTab({
                         <TestingStageChain orderId={id} lot={r.lot} canEdit={canEditTests}
                           onRecordDispatch={() => setDispatch(r.lot.id)}
                           onSendToFinance={() => setNotify({ lotId: r.lot.id, party: "FINANCE" })}
-                          onMarkPaid={() => setPaid(r.lot.id)} />
+                          onMarkPaid={() => setPaid(r.lot.id)}
+                          onUploadInvoice={() => setInvoiceFor(r.lot.id)} />
                       </td>
                     </tr>
                   )}
@@ -388,7 +390,7 @@ export function TestingTab({
       {sub === "mpns" && <MpnTestsSection b={b} id={id} canEdit={canEditTests} onlyMpn={scoped?.orderLineMpn} />}
       {sub === "lots" && <LotsSection b={b} id={id} onlyLotId={lotId} canEdit={canEditTests} canEmail={canEmailLab}
         onCompose={(l, t) => setCompose({ lotId: l, templateId: t })} onNotify={(l, p) => setNotify({ lotId: l, party: p })}
-        onDispatch={setDispatch} onMarkPaid={setPaid} />}
+        onDispatch={setDispatch} onMarkPaid={setPaid} onUploadInvoice={setInvoiceFor} />}
       {sub === "mail" && <MailSection key={lotId ?? "ALL"} b={b} id={id} defaultLotId={lotId} canEmail={canEmailLab} onCompose={(l, t) => setCompose({ lotId: l, templateId: t })} onMatch={setMatch} />}
 
       {compose && <ComposeWhlEmailModal orderId={id} lotId={compose.lotId} templateId={compose.templateId} onClose={() => setCompose(null)} />}
@@ -397,6 +399,7 @@ export function TestingTab({
       {match && <MatchLabEmailModal orderId={id} email={match} onClose={() => setMatch(null)} />}
       {dispatch && <RecordDispatchModal orderId={id} lotId={dispatch} onClose={() => setDispatch(null)} />}
       {paid && <MarkLabFeePaidModal orderId={id} lotId={paid} onClose={() => setPaid(null)} />}
+      {invoiceFor && <UploadLabInvoiceModal orderId={id} lotId={invoiceFor} onClose={() => setInvoiceFor(null)} />}
     </div>
   );
 }
@@ -595,8 +598,8 @@ function MpnTestsSection({ b, id, canEdit, onlyMpn }: { b: OrderBundle; id: stri
 // ==================== 2 · lots: status tracker + report repository ====================
 
 function LotsSection({
-  b, id, onlyLotId, canEdit, canEmail, onCompose, onNotify, onDispatch, onMarkPaid,
-}: { b: OrderBundle; id: string; onlyLotId?: string; canEdit: boolean; canEmail: boolean; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
+  b, id, onlyLotId, canEdit, canEmail, onCompose, onNotify, onDispatch, onMarkPaid, onUploadInvoice,
+}: { b: OrderBundle; id: string; onlyLotId?: string; canEdit: boolean; canEmail: boolean; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void; onUploadInvoice: (lotId: string) => void }) {
   const [openLots, setOpenLots] = useState<Set<string>>(new Set());
   if (b.lots.length === 0) return <Empty text="No lots yet — add one to start a WHL / self-test record." />;
   const lots = onlyLotId ? b.lots.filter((l) => l.id === onlyLotId) : b.lots;
@@ -619,7 +622,8 @@ function LotsSection({
       {lots.map((lot) => (
         <LotCard key={lot.id} b={b} id={id} lot={lot} canEdit={canEdit} canEmail={canEmail}
           open={isOpen(lot.id)} onToggle={() => toggle(lot.id)}
-          onCompose={onCompose} onNotify={onNotify} onDispatch={onDispatch} onMarkPaid={onMarkPaid} />
+          onCompose={onCompose} onNotify={onNotify} onDispatch={onDispatch} onMarkPaid={onMarkPaid}
+          onUploadInvoice={onUploadInvoice} />
       ))}
     </div>
   );
@@ -745,8 +749,8 @@ function NextActionsMenu({
 }
 
 function LotCard({
-  b, id, lot, canEdit, canEmail, open, onToggle, onCompose, onNotify, onDispatch, onMarkPaid,
-}: { b: OrderBundle; id: string; lot: Lot; canEdit: boolean; canEmail: boolean; open: boolean; onToggle: () => void; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
+  b, id, lot, canEdit, canEmail, open, onToggle, onCompose, onNotify, onDispatch, onMarkPaid, onUploadInvoice,
+}: { b: OrderBundle; id: string; lot: Lot; canEdit: boolean; canEmail: boolean; open: boolean; onToggle: () => void; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void; onUploadInvoice: (lotId: string) => void }) {
   const setLotStatus = useStore((s) => s.setLotStatus);
   const fetchWhlReport = useStore((s) => s.fetchWhlReport);
   const requestWhlUpdate = useStore((s) => s.requestWhlUpdate);
@@ -808,7 +812,8 @@ function LotCard({
         <TestingStageChain orderId={id} lot={lot} canEdit={canEdit}
           onRecordDispatch={() => onDispatch(lot.id)}
           onSendToFinance={() => onNotify(lot.id, "FINANCE")}
-          onMarkPaid={() => onMarkPaid(lot.id)} />
+          onMarkPaid={() => onMarkPaid(lot.id)}
+          onUploadInvoice={() => onUploadInvoice(lot.id)} />
       </div>
 
       {/* ---- the one per-test table: requirement, live status, and the report line

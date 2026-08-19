@@ -48,8 +48,8 @@ export function OrderWorkspace({ id }: { id: string }) {
   if (!b) {
     return (
       <div className="space-y-4">
-        <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Order Processing</Link>
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">Order not found (it may have been reset). <Link href="/fulfilment" className="text-primary hover:underline">Back to Order Processing</Link>.</div></Panel>
+        <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Orders Overview</Link>
+        <Panel><div className="p-6 text-center text-sm text-muted-foreground">Order not found (it may have been reset). <Link href="/fulfilment" className="text-primary hover:underline">Back to Orders Overview</Link>.</div></Panel>
       </div>
     );
   }
@@ -62,7 +62,7 @@ export function OrderWorkspace({ id }: { id: string }) {
 
   return (
     <div className="space-y-5">
-      <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Order Processing</Link>
+      <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Orders Overview</Link>
 
       <div className="rounded-[var(--radius)] border bg-card p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">

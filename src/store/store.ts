@@ -6,7 +6,7 @@ import type {
   Order, OrderBundle, OrderLine, ClientPO, SupplierPO, SupplierPoLine, PoTerms, Address, JourneyPhase, TestStatus, TestingMode, PaymentMode, PaymentDirection,
   PaymentStatus, ShipmentLeg, ShipmentStatus, ShipmentPackage, TradeType, ApprovalState,
   LotTest, MpnTestSpec, TestAuditEntry, TestProcessStatus, WhlReport, LabEmail, NotifyParty,
-  Lot, TestingStage, LotDispatch,
+  Lot, TestingStage, LotDispatch, LabPaymentTerms,
   DemandLine, RfqBundle, SupplierQuote, ClientQuoteDecision, ClientQuote, QuoteEmail, RfqBundleStatus,
   DemandLinesMap, RfqBundlesMap, SupplierQuotesMap, ClientQuoteDecisionsMap, ClientQuotesMap,
 } from "@/types";
@@ -417,6 +417,13 @@ interface Store {
   setLotStage: (orderId: string, lotId: string, stage: TestingStage, note?: string) => void;
   // ---- WHL's testing fee: ask for the invoice, hand it to finance, record the payment ----
   requestWhlInvoice: (orderId: string, lotId: string) => void;
+  // fallback for when the lab's invoice never arrives by mail (or came by another medium)
+  uploadLabInvoiceManually: (orderId: string, lotId: string, input: {
+    invoiceNo: string; currency: string; amount: number; taxAmount?: number;
+    terms: LabPaymentTerms; creditDays?: number; dueDate?: string;
+    processCount?: number; ratePerProcess?: number; fileName?: string;
+    receivedVia?: string; note?: string;
+  }) => void;
   markLabFeePaid: (orderId: string, lotId: string, d: { paidRef?: string; paidAt?: string; note?: string }) => void;
   logInvoiceAccess: (orderId: string, lotId: string, action: "VIEW" | "DOWNLOAD") => void;
   fetchWhlReport: (orderId: string, lotId: string) => void;           // pull (or revise) the report + parse it on screen
@@ -1010,6 +1017,51 @@ export const useStore = create<Store>()(
           l.labPayment.requestedAt = stamp();
         });
         get().sendLabEmail(orderId, { lotId, subject: tpl.subject(ctx), body: tpl.body(ctx) });
+      },
+
+      /**
+       * The lab's invoice, entered by hand. The mail sync is the normal source, but a fee that
+       * arrived by WhatsApp, on a call, or on a mail that never parsed still has to be payable —
+       * without this the fee track dead-ends at "invoice requested" and, on advance terms, the
+       * lot stays held with nothing anyone can do about it.
+       *
+       * The operator transcribes the lab's document; they don't invent its terms. That's why the
+       * invoice records `source: "MANUAL"`, who entered it and how it arrived, and the UI labels
+       * it as transcribed wherever the terms are shown.
+       */
+      uploadLabInvoiceManually: (orderId, lotId, input) => {
+        if (!input.invoiceNo.trim() || !(input.amount > 0)) { toast.error("Invoice number and net amount are required."); return; }
+        let replaced = false;
+        set((s) => {
+          const b = s.orders[orderId]; if (!b) return;
+          const lot = b.lots.find((x) => x.id === lotId); if (!lot) return;
+          lot.labPayment ??= { status: "NOT_REQUESTED" };
+          replaced = !!lot.labPayment.invoice;
+          const fileName = input.fileName?.trim() || `${input.invoiceNo.trim()}.pdf`;
+          lot.labPayment.invoice = {
+            id: uid("inv"), invoiceNo: input.invoiceNo.trim(),
+            amount: input.amount, taxAmount: input.taxAmount, currency: input.currency,
+            fileName, receivedAt: stamp(), dueDate: input.dueDate || undefined,
+            terms: input.terms, creditDays: input.terms === "CREDIT" ? input.creditDays : undefined,
+            ratePerProcess: input.ratePerProcess, processCount: input.processCount,
+            note: input.note?.trim()
+              || `Entered by hand${input.receivedVia ? ` — received via ${input.receivedVia}` : ""}.`,
+            source: "MANUAL", enteredBy: ME, receivedVia: input.receivedVia?.trim() || undefined,
+            accessLog: [],
+          };
+          // a paid fee stays paid; otherwise this invoice is now ours to settle
+          if (lot.labPayment.status !== "PAID") lot.labPayment.status = "INVOICE_RECEIVED";
+          b.documents.push({
+            id: uid("doc"), subjectType: "LOT", docType: "WHL_INVOICE",
+            fileName, uploadedBy: `${ME} (by hand)`, uploadedAt: today(),
+          });
+          b.events.unshift({
+            id: uid("ev"), eventType: "GENERAL",
+            message: `WHL testing invoice ${input.invoiceNo.trim()} entered by hand for ${lot.lotCode} (${lot.orderLineMpn}) — ${LAB_TERMS_LABEL[input.terms].toLowerCase()} terms${input.receivedVia ? `, received via ${input.receivedVia}` : ""}.`,
+            source: "WHL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success(replaced ? "Testing invoice replaced" : "Testing invoice recorded — the fee is now payable");
       },
 
       /** Finance confirms the transfer — this is what closes the Payment-to-WHL stage. */
@@ -2864,8 +2916,9 @@ export const useStore = create<Store>()(
       // 26 = Shipment.carrierDocs (waybill + CI retrieved from DHL /invoices) ·
       // 27 = customs filing mode (ICEGATE/CHA) + duty invoice; file auto-assesses; coarse buckets ·
       // 28 = Shipment.packages[] (per-box weight + dimensions; multi-box DHL booking) ·
-      // 29 = Payment.attachment (proof/invoice attached by Finance when marking paid)
-      version: 29,
+      // 29 = Payment.attachment (proof/invoice attached by Finance when marking paid) ·
+      // 30 = LabInvoice provenance (source/enteredBy/receivedVia) for hand-entered testing invoices
+      version: 30,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than
