@@ -48,28 +48,28 @@ export function prettyStatus(s?: string) {
 
 // Grouped navigation. Each group renders under a heading in the sidebar.
 export const NAV_GROUPS = [
-  { group: null, items: [
-    { href: "/fulfilment", label: "Order Processing", icon: "Package" },
-  ] },
-  { group: "Create", items: [
+  { group: "Supply Chain", items: [
     { href: "/fulfilment/client-pos", label: "Sales Orders", icon: "FileText" },
     { href: "/fulfilment/supplier-pos", label: "Purchase Orders", icon: "ClipboardList" },
-  ] },
-  { group: "Operate", items: [
     { href: "/fulfilment/testing", label: "Testing", icon: "FlaskConical" },
-    { href: "/fulfilment/logistics", label: "Logistics", icon: "Truck" },
-    { href: "/fulfilment/customs", label: "Customs", icon: "Stamp" },
-    { href: "/fulfilment/warehouse", label: "Warehouse", icon: "Warehouse" },
-    { href: "/fulfilment/delivery", label: "Delivery", icon: "PackageCheck" },
-  ] },
-  { group: "Finance & Tax", items: [
-    { href: "/fulfilment/payments", label: "Payments", icon: "Wallet" },
     { href: "/fulfilment/escrow", label: "Escrow", icon: "Landmark" },
   ] },
-  { group: "Reference", items: [
+  { group: "Logistics", items: [
+    { href: "/fulfilment/logistics", label: "Logistics", icon: "Truck" },
+    { href: "/fulfilment/customs", label: "Customs", icon: "Stamp" },
+  ] },
+  { group: "Warehouse", items: [
+    { href: "/fulfilment/warehouse", label: "Warehouse", icon: "Warehouse" },
+  ] },
+  { group: "Finance", items: [
+    { href: "/fulfilment/payments", label: "Payments", icon: "Wallet" },
+  ] },
+  { group: "Admin", items: [
+    { href: "/fulfilment", label: "Order Processing", icon: "Package" },
+  ] },
+  { group: "Techops", items: [
     { href: "/fulfilment/directory", label: "Directory", icon: "Users" },
     { href: "/fulfilment/integrations", label: "Integrations", icon: "Webhook" },
-    { href: "/fulfilment/guide", label: "Guide", icon: "BookOpen" },
   ] },
 ] as const;
 

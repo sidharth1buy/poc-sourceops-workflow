@@ -74,7 +74,7 @@ function confirmPendingMilestone(e: Escrow): { changed: boolean; allConfirmed?: 
 
 type TickAction = "advanced" | "waiting" | "blocked" | "nothing";
 
-function simulateInbound(e: Escrow, verdict?: "PASS" | "FAIL", isWhl?: boolean): { action: TickAction; detail: string; escrow: Escrow } {
+function simulateInbound(e: Escrow, verdict?: "PASS" | "FAIL", needsTesting?: boolean): { action: TickAction; detail: string; escrow: Escrow } {
   if (e.cancelledAt) return { action: "blocked", detail: "This escrow order was cancelled.", escrow: e };
 
   if (verdict && e.status === "RECIPIENT_INSPECTION") {
@@ -123,14 +123,15 @@ function simulateInbound(e: Escrow, verdict?: "PASS" | "FAIL", isWhl?: boolean):
       return { action: "advanced", detail: "Supplier's shipment notice received.", escrow: next };
     }
     case "GOODS_SHIPPED": {
-      // Testing-required lines go to WHL first (independent lab receipt, before relabel/forwarding
-      // to 1Buy's hub); only self-test/no-test lines ship straight to 1Buy's hub.
-      const next = isWhl
+      // Any testing (WHL-lab or supplier-self-test) means the supplier ships to WHL first; only
+      // once testing clears does a separate onward shipment go to 1Buy's own hub. Only NONE-testing
+      // lines skip WHL and ship straight to 1Buy's hub.
+      const next = needsTesting
         ? withEmail({ ...e, status: "RECIPIENT_INSPECTION", goodsReceivedAt: nowIso() }, "RECEIVED", "Goods received",
             "WHL confirms physical receipt of the goods for testing.", "reports@whl-labs.example")
         : withEmail({ ...e, status: "RECIPIENT_INSPECTION", goodsReceivedAt: nowIso() }, "RECEIVED", "Goods received",
             "1Buy's hub confirms physical receipt of the goods.", "hub@1buy.example");
-      return { action: "advanced", detail: isWhl ? "Goods received at WHL — testing can begin." : "Goods received at 1Buy's hub — inspection can begin.", escrow: next };
+      return { action: "advanced", detail: needsTesting ? "Goods received at WHL — testing can begin." : "Goods received at 1Buy's hub — inspection can begin.", escrow: next };
     }
     case "RECIPIENT_INSPECTION": {
       if (e.whlVerdict === "FAIL" && !e.refundRequestedAt) {
@@ -152,8 +153,8 @@ export async function mockSimulateNextInbound(orderId: string, verdict?: "PASS" 
   await fakeLatency();
   const b = await currentBundle(orderId);
   const e = await requireEscrow(orderId);
-  const isWhl = !!b?.lines.some((l) => l.testingMode === "WHL");
-  const { action, detail, escrow } = simulateInbound(e, verdict, isWhl);
+  const needsTesting = !!b?.lines.some((l) => l.testingMode !== "NONE");
+  const { action, detail, escrow } = simulateInbound(e, verdict, needsTesting);
   return { action, detail, data: {}, escrow };
 }
 

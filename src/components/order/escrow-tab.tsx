@@ -21,11 +21,12 @@ function Empty({ text }: { text: string }) {
 // Strict linear progression, Draft → Released to Seller — no backward moves, no branching (spec §3).
 function EscrowStepper({ status }: { status: EscrowOrderStatus }) {
   const idx = escrowStatusIndex(status);
+  const isTerminal = idx === ESCROW_STATUS_ORDER.length - 1; // RELEASED_TO_SELLER has nothing after it to mark it done
   return (
     <ol className="no-scrollbar flex items-start gap-0 overflow-x-auto pb-1">
       {ESCROW_STATUS_ORDER.map((s, i) => {
-        const done = i < idx;
-        const current = i === idx;
+        const done = i < idx || (isTerminal && i === idx);
+        const current = i === idx && !isTerminal;
         const node = done ? "border-primary bg-primary text-primary-foreground"
           : current ? "border-primary text-primary ring-2 ring-accent-soft" : "border-border text-faint";
         return (
@@ -261,10 +262,13 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
 
   return (
     <Panel title={needsTesting ? "WHL testing — shipment & verdict" : "Shipment & receipt (no testing agreed on this PO)"}>
-      {needsTesting && <div className="mb-3"><Field label={isWhl ? "Goods received (at WHL, for testing)" : "Goods received (at 1Buy's hub)"}>{e.goodsReceivedAt ?? "—"}</Field></div>}
+      {/* Any testing (WHL-lab or supplier-self-test) means goods land at WHL first — 1Buy's hub
+          only receives the goods afterward, on the separate onward shipment once testing clears.
+          Only NONE-testing lines skip WHL and ship straight to 1Buy's hub. */}
+      {needsTesting && <div className="mb-3"><Field label="Goods received (at WHL, for testing)">{e.goodsReceivedAt ?? "—"}</Field></div>}
 
       {idx === escrowStatusIndex("TT_PAYMENT_RECEIVED") && <p className="text-xs text-muted-foreground">Waiting on the supplier&apos;s shipment notice — check inbox above.</p>}
-      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on {isWhl ? "WHL" : "1Buy's hub"} to confirm goods received — check inbox above.</p>}
+      {idx === escrowStatusIndex("GOODS_SHIPPED") && <p className="text-xs text-muted-foreground">Waiting on {needsTesting ? "WHL" : "1Buy's hub"} to confirm goods received — check inbox above.</p>}
 
       {needsTesting && idx === escrowStatusIndex("RECIPIENT_INSPECTION") && (
         <div className="mt-4 border-t pt-3">
