@@ -3,11 +3,10 @@
 import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, FlaskConical, Search, Stamp } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, FlaskConical, Search, Stamp, Upload } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allPayments, allLabFees } from "@/store/selectors";
 import { Panel, Button, StatusPill, Pill, DataTable, PageHeader, Pagination, type Col } from "@/components/ui/primitives";
-import { Input, Select } from "@/components/ui/form";
 import { LAB_PAYMENT_LABEL, LAB_PAYMENT_TONE } from "@/data/enums";
 import type { Tone } from "@/data/enums";
 import { money, cn } from "@/lib/utils";
@@ -67,8 +66,7 @@ const LEG: Record<LegKind, { label: string; tone: Tone }> = {
   DUTY: { label: "Customs duty", tone: "active" },
   WHL: { label: "WHL testing", tone: "neutral" },
 };
-const LEG_FILTERS = ["ALL", "CLIENT", "SUPPLIER", "DUTY", "WHL"] as const;
-type LegFilter = (typeof LEG_FILTERS)[number];
+type LegFilter = "ALL" | LegKind;
 
 interface Leg {
   id: string;
@@ -267,11 +265,18 @@ function PaymentsInner() {
   const ActionCell = (l: Leg) => {
     if (!l.open) return l.paidLabel;
     if (!l.payable) return l.awaiting;
-    const val = proofByRow[l.id] ?? l.defaultProof;
+    const chosen = proofByRow[l.id];
+    const val = chosen ?? l.defaultProof;
+    const inputId = `proof-${l.id}`;
     return (
       <div className="flex items-center justify-end gap-1.5">
-        <Input value={val} onChange={(e) => setProofByRow((m) => ({ ...m, [l.id]: e.target.value }))}
-          className="h-7 w-32 px-2 py-1 text-xs" placeholder="proof / ref" />
+        <label htmlFor={inputId} title={chosen ? val : "Upload payment proof"}
+          className="flex h-7 max-w-[9rem] cursor-pointer items-center gap-1 truncate rounded-lg border bg-card px-2 text-xs text-muted-foreground transition hover:border-primary hover:text-foreground">
+          <Upload className="h-3 w-3 shrink-0" />
+          <span className="truncate">{chosen ?? "Upload proof"}</span>
+        </label>
+        <input id={inputId} type="file" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) setProofByRow((m) => ({ ...m, [l.id]: f.name })); }} />
         <Button variant={l.blocking ? "default" : "outline"} className="h-7 whitespace-nowrap px-2 text-xs"
           onClick={() => {
             l.onMarkPaid(val.trim() || undefined);
@@ -293,6 +298,27 @@ function PaymentsInner() {
   };
   const queried = legs.filter(matchesQuery);
   const totalUrgent = legs.filter((l) => l.urgency).length;
+
+  // ---- tab bar: each tab is a fixed (view, leg) combo, badge counts respect every filter
+  // except the leg itself — so a tab's own count doesn't change just because it's not selected ----
+  const matchesExceptLeg = (l: Leg) => {
+    if (urgentOnly && !l.urgency) return false;
+    const q = search.trim().toLowerCase();
+    if (q && !l.orderNo.toLowerCase().includes(q) && !l.party.toLowerCase().includes(q)) return false;
+    return true;
+  };
+  const countForLeg = (k: LegFilter) => keep(legs.filter((l) => matchesExceptLeg(l) && (k === "ALL" || l.kind === k)), (l) => l.open, filter).length;
+  const orderCountForByOrder = new Set(keep(legs.filter(matchesExceptLeg), (l) => l.open, filter).map((l) => l.orderId)).size;
+  const tabDefs: { key: string; label: string; view: "worklist" | "byOrder"; leg: LegFilter; count: number }[] = [
+    { key: "all", label: "All", view: "worklist", leg: "ALL", count: countForLeg("ALL") },
+    { key: "order", label: "By order", view: "byOrder", leg: "ALL", count: orderCountForByOrder },
+    { key: "client", label: "Client → 1Buy", view: "worklist", leg: "CLIENT", count: countForLeg("CLIENT") },
+    { key: "supplier", label: "1Buy → Supplier", view: "worklist", leg: "SUPPLIER", count: countForLeg("SUPPLIER") },
+    { key: "customs", label: "Customs / ICEGATE", view: "worklist", leg: "DUTY", count: countForLeg("DUTY") },
+    { key: "whl", label: "WHL testing", view: "worklist", leg: "WHL", count: countForLeg("WHL") },
+  ];
+  const activeTab = view === "byOrder" ? "order"
+    : legFilter === "ALL" ? "all" : legFilter === "CLIENT" ? "client" : legFilter === "SUPPLIER" ? "supplier" : legFilter === "DUTY" ? "customs" : "whl";
 
   const worklistCols: Col<Leg>[] = [
     { key: "leg", header: "Leg", render: (l) => <Pill tone={LEG[l.kind].tone}>{LEG[l.kind].label}</Pill> },
@@ -368,27 +394,28 @@ function PaymentsInner() {
           settled={feePaid} held={feeHeld} />
       </div>
 
-      {/* sticky control bar: view toggle, search, filters — stays in view no matter how far
-          the list is scrolled, so "what's urgent" is never lost below the fold */}
+      {/* sticky control bar: tabs, search, filters — stays in view no matter how far the list
+          is scrolled, so "what's urgent" is never lost below the fold */}
       <div className="sticky top-16 z-10 -mx-6 space-y-3 border-b bg-background/95 px-6 py-3 backdrop-blur">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border bg-card p-0.5">
-            {(["worklist", "byOrder"] as const).map((v) => (
-              <button key={v} onClick={() => { setView(v); resetPaging(); }}
-                className={cn("rounded-md px-3 py-1 text-xs font-semibold transition",
-                  view === v ? "bg-accent-soft text-primary shadow-sm" : "text-muted-foreground hover:text-foreground")}>
-                {v === "worklist" ? "Worklist" : "By order"}
+          <div className="no-scrollbar flex gap-1.5 overflow-x-auto">
+            {tabDefs.map((t) => (
+              <button key={t.key} onClick={() => { setView(t.view); setLegFilter(t.leg); resetPaging(); }}
+                className={cn("inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border-b-2 px-3 py-1.5 text-sm transition",
+                  activeTab === t.key ? "border-primary bg-accent-soft font-semibold text-primary" : "border-transparent font-medium text-muted-foreground hover:bg-muted hover:text-foreground")}>
+                {t.label}
+                {t.count > 0 && (
+                  <span className={cn("rounded-full px-1.5 text-[10px] font-bold",
+                    activeTab === t.key ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{t.count}</span>
+                )}
               </button>
             ))}
           </div>
           <button onClick={() => { setUrgentOnly((v) => !v); resetPaging(); }}
-            className={cn("inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition",
+            className={cn("ml-auto inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition",
               urgentOnly ? "border-bad bg-bad-bg text-bad" : "bg-card text-muted-foreground hover:text-foreground")}>
             🔴 {totalUrgent} urgent{urgentOnly ? " — showing only these" : ""}
           </button>
-          <span className="ml-auto text-xs text-faint">
-            {view === "byOrder" ? "pending orders first, and pending legs first inside each" : "pending rows sort above settled, most urgent first"}
-          </span>
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <label className="flex flex-col gap-1">
@@ -398,12 +425,6 @@ function PaymentsInner() {
               <input value={search} onChange={(e) => { setSearch(e.target.value); resetPaging(); }} placeholder="Order no. or party…"
                 className={cn(filterInput, "w-52 pl-8")} />
             </span>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={filterLabel}>Leg</span>
-            <Select value={legFilter} onChange={(e) => { setLegFilter(e.target.value as LegFilter); resetPaging(); }} className={cn(filterInput, "w-44")}>
-              {LEG_FILTERS.map((f) => <option key={f} value={f}>{f === "ALL" ? "All legs" : LEG[f].label}</option>)}
-            </Select>
           </label>
           <label className="flex flex-col gap-1">
             <span className={filterLabel}>Status</span>
@@ -423,6 +444,9 @@ function PaymentsInner() {
               Clear filters
             </button>
           )}
+          <span className="ml-auto self-center text-xs text-faint">
+            {view === "byOrder" ? "pending orders first, and pending legs first inside each" : "pending rows sort above settled, most urgent first"}
+          </span>
         </div>
       </div>
 
