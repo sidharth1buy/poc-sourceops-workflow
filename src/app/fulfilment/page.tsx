@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { useStore } from "@/store/store";
-import { kpis, allApprovals, allLots, gateReason } from "@/store/selectors";
+import { kpis, allApprovals, allLots, gateReason, orderPhaseTimings } from "@/store/selectors";
 import { KpiCard, Panel, StatusPill, Pill, DataTable, PageHeader, Button, type Col } from "@/components/ui/primitives";
 import { money, cn } from "@/lib/utils";
 import type { Order, OrderBundle } from "@/types";
@@ -69,7 +69,23 @@ export default function OrderProcessingPage() {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
 
-  const list = useMemo(() => Object.values(orders).sort((a, b) => (a.orderNo < b.orderNo ? 1 : -1)), [orders]);
+  // Every phase currently stalled specifically on 1Buy's own side (not supplier/client/external
+  // waits) — same fulfilment-clock check the per-discipline boards each show for their own phase,
+  // rolled up here so a delay shows up regardless of which phase it's sitting in.
+  const riskByOrder = useMemo(() => {
+    const m: Record<string, ReturnType<typeof orderPhaseTimings>[number]["atRisk"]> = {};
+    for (const b of Object.values(orders)) {
+      const risk = orderPhaseTimings(b).find((p) => p.atRisk)?.atRisk;
+      if (risk) m[b.id] = risk;
+    }
+    return m;
+  }, [orders]);
+
+  // Orders overview is worth-looking-at-first: an order stalled on our own side outranks plain
+  // order-number recency, since that's the one thing that actually needs a human today.
+  const list = useMemo(() => Object.values(orders).sort((a, b) =>
+    (riskByOrder[b.id] ? 1 : 0) - (riskByOrder[a.id] ? 1 : 0) || (a.orderNo < b.orderNo ? 1 : -1)
+  ), [orders, riskByOrder]);
 
   const rows = useMemo(() => list.filter((o) => {
     const okStatus = status === "All" || o.status === status;
@@ -84,9 +100,12 @@ export default function OrderProcessingPage() {
   const from = (current - 1) * PAGE_SIZE;
   const shown = rows.slice(from, from + PAGE_SIZE);
 
-  // Everything that wants a human, newest-first-ish: blocked gates, pending approvals, and
-  // lots the lab flagged MAYBE (which need a client decision, not a retest).
-  const attention = [
+  // Everything that wants a human, newest-first-ish: blocked gates, pending approvals, lots the
+  // lab flagged MAYBE (client decision, not a retest), and phases stalled on 1Buy's own side.
+  const attention: { id: string; orderNo: string; text: string; tone: "bad" | "warn"; href?: string }[] = [
+    ...Object.entries(riskByOrder).map(([id, risk]) => ({
+      id, orderNo: orders[id]?.orderNo ?? id, text: risk!.reason, tone: "bad" as const, href: risk!.actionHref,
+    })),
     ...list.filter((o) => o.status === "ON_HOLD" || o.journey.some((s) => s.status === "BLOCKED"))
       .map((o) => ({ id: o.id, orderNo: o.orderNo, text: `Blocked / on hold (${o.supplier.name})`, tone: "bad" as const })),
     ...allApprovals(orders).filter((a) => a.status === "PENDING")
@@ -111,12 +130,16 @@ export default function OrderProcessingPage() {
     { key: "stage", header: "Stage", render: (o) => {
       const b = o as OrderBundle;
       const cur = b.journey?.find((s) => s.status === "IN_PROGRESS" || s.status === "BLOCKED");
-      if (!cur) return <span className="text-xs text-faint">{b.status === "CANCELLED" ? "Cancelled" : "Complete"}</span>;
+      const risk = riskByOrder[o.id];
+      if (!cur) {
+        return <span className="text-xs text-faint">{b.status === "CANCELLED" ? "Cancelled" : "Complete"}</span>;
+      }
       const blocked = gateReason(b, cur);
       return (
-        <span className="flex items-center gap-1.5 text-xs">
+        <span className="flex flex-wrap items-center gap-1.5 text-xs">
           {blocked ? <Pill tone="bad">Blocked</Pill> : <Pill tone="active">On track</Pill>}
           <span className="max-w-[150px] truncate text-muted-foreground" title={blocked ?? cur.name}>{cur.name}</span>
+          {risk && <Pill tone="bad" title={risk.reason}>delay risk — ours</Pill>}
         </span>
       );
     } },
@@ -158,7 +181,7 @@ export default function OrderProcessingPage() {
               <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-1">
                 {attention.slice(0, ATTENTION_SHOWN).map((a, i) => (
                   <li key={i}>
-                    <Link href={`/fulfilment/order-flow/${a.id}`} className="flex h-full items-start gap-2 rounded-lg border p-2.5 text-sm hover:border-primary">
+                    <Link href={a.href ?? `/fulfilment/order-flow/${a.id}`} className="flex h-full items-start gap-2 rounded-lg border p-2.5 text-sm hover:border-primary">
                       <AlertTriangle className={cn("mt-0.5 h-4 w-4 shrink-0", a.tone === "bad" ? "text-bad" : "text-warn")} />
                       <span className="min-w-0 flex-1">
                         <span className="font-mono text-[11px] text-muted-foreground">{a.orderNo}</span>
@@ -193,6 +216,7 @@ export default function OrderProcessingPage() {
 
           <DataTable columns={cols} rows={shown}
             onRowClick={(o) => router.push(`/fulfilment/order-flow/${o.id}`)}
+            rowAccent={(o) => riskByOrder[o.id] ? "bad" : undefined}
             empty="No orders match those filters." />
 
           {rows.length > 0 && (
