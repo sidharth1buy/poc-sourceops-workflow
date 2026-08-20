@@ -11,6 +11,7 @@ import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, type Tone } from "@/data/enums";
 import { Pill, StatusPill, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
+import { PhaseTimelineList } from "@/components/order/phase-timeline";
 import { LotFeeCell } from "@/components/order/test-tables";
 import { LotReadOnlyDetail } from "@/components/order/testing-readonly";
 import { useStore } from "@/store/store";
@@ -56,6 +57,7 @@ import { usd, toUSD } from "@/lib/fx";
  * off the journey rail above it and off every section's own heading pill.
  */
 const JUMP: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "timeline", label: "Timeline", icon: Clock },
   { id: "deal", label: "Deal", icon: Users },
   { id: "demand", label: "Demand", icon: Package },
   { id: "money", label: "Money", icon: Landmark },
@@ -343,6 +345,7 @@ export function OrderFlowPage({ id }: { id: string }) {
 
       <SectionRail />
 
+      <TimelineSection b={b} />
       <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
       <DemandSection b={b} reason={reason} />
       <MoneySection b={b} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
@@ -357,6 +360,18 @@ export function OrderFlowPage({ id }: { id: string }) {
         Incoterm {plan.incoterm} · {plan.summary}
       </p>
     </div>
+  );
+}
+
+// ---------- 0 · timeline ----------
+
+function TimelineSection({ b }: { b: OrderBundle }) {
+  return (
+    <FlowSection id="timeline" title="Timeline — 6-phase fulfilment clock"
+      hint="Estimated vs. actual for every phase, and where a delay sits on 1Buy's own side."
+      icon={<Clock className="h-4 w-4" />} steps={[]} reason={null}>
+      <PhaseTimelineList b={b} />
+    </FlowSection>
   );
 }
 

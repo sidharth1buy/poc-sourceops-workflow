@@ -6,7 +6,7 @@ import { FileText, MailQuestion, AlertTriangle, ChevronRight, FlaskConical, Lock
 import { useStore } from "@/store/store";
 import {
   allLots, lotTestProgress, currentReport, unmatchedEmails, testingSummary,
-  labFeeOutstandingTotal, overdueUpdateRequests,
+  labFeeOutstandingTotal, overdueUpdateRequests, orderPhaseTimings,
 } from "@/store/selectors";
 import { Panel, Pill, StatusPill, PageHeader, Progress } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
@@ -31,10 +31,11 @@ export default function TestingPage() {
         const sum = testingSummary(b);
         const fees = labFeeOutstandingTotal(b);
         const overdue = overdueUpdateRequests(b).length;
+        const testingRisk = orderPhaseTimings(b).find((p) => p.phase === "TESTING")?.atRisk;
         // What needs a human: mail to match, a chase past SLA, a lot the lab is holding,
         // a bad result, an MPN whose test list never parsed.
-        const attention = sum.unmatched + overdue + fees.blocking.length + sum.failed + sum.far + sum.gaps;
-        return { b, sum, fees, overdue, attention };
+        const attention = sum.unmatched + overdue + fees.blocking.length + sum.failed + sum.far + sum.gaps + (testingRisk ? 1 : 0);
+        return { b, sum, fees, overdue, testingRisk, attention };
       })
       // Live testing first, then whatever needs a human, then newest — an order with no lot
       // and no tests is nothing to work on yet, so it doesn't belong at the top of a
@@ -76,7 +77,7 @@ export default function TestingPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {orderRows.map(({ b, sum, fees, overdue }) => {
+            {orderRows.map(({ b, sum, fees, overdue, testingRisk }) => {
               const pct = sum.tests ? Math.round((sum.passed / sum.tests) * 100) : 0;
               return (
                 <Link key={b.id} href={`/fulfilment/testing/${b.id}`}
@@ -104,6 +105,7 @@ export default function TestingPage() {
                       ? <Pill tone="bad"><Lock className="h-3 w-3" /> {fees.blocking.length} lot(s) held</Pill>
                       : fees.count > 0 && <Pill tone="warn"><Receipt className="h-3 w-3" /> {fees.currency} {fees.gross.toLocaleString()} fee unpaid</Pill>}
                     {sum.gaps > 0 && <Pill tone="warn">{sum.gaps} MPN gap(s)</Pill>}
+                    {testingRisk && <Pill tone="bad" title={testingRisk.reason}>action needed</Pill>}
                     {sum.lots > 0 && sum.open === 0 && sum.failed === 0 && sum.far === 0 && <Pill tone="ok">all settled</Pill>}
                   </div>
                   <ChevronRight className="h-4 w-4 shrink-0 text-faint" />

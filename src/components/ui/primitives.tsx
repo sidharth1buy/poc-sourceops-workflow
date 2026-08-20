@@ -146,6 +146,28 @@ export function Progress({ value }: { value: number }) {
   );
 }
 
+/**
+ * Estimated-vs-actual duration bar — what Progress can't express: a fill for how far actual
+ * (or the running elapsed count, while a phase is still open) has gone, plus a fixed marker for
+ * where the estimate said it should land. The fill turns bad once the shown value passes it.
+ */
+export function DurationBar({
+  estimatedDays, actualDays, elapsedDays, className,
+}: { estimatedDays: number; actualDays: number | null; elapsedDays?: number; className?: string }) {
+  const shown = actualDays ?? elapsedDays ?? 0;
+  const denom = Math.max(estimatedDays, shown, 1);
+  const fillPct = Math.min(100, (shown / denom) * 100);
+  const markerPct = Math.min(100, (estimatedDays / denom) * 100);
+  const over = shown > estimatedDays;
+  const fillClass = actualDays == null ? "bg-primary/60" : over ? "bg-bad" : "bg-ok";
+  return (
+    <div className={cn("relative h-2 w-full overflow-hidden rounded-full bg-muted", className)}>
+      <div className={cn("h-full rounded-full transition-all", fillClass)} style={{ width: `${fillPct}%` }} />
+      <div className="absolute top-0 h-full w-px bg-foreground/50" style={{ left: `${markerPct}%` }} title={`Estimated: ${estimatedDays}d`} />
+    </div>
+  );
+}
+
 export function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="flex justify-between gap-4 border-b border-dashed py-2 text-sm last:border-0">

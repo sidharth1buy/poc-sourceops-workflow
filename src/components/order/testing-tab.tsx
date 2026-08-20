@@ -20,7 +20,7 @@ import { useRole } from "@/lib/role";
 import {
   specForMpn, lotTestProgress, currentReport, lotEmails, unmatchedEmails,
   testAutofillGaps, overdueUpdateRequests, reconciliationAlerts, testingSummary, lotResults, lotStageProgress,
-  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labFeeBlocking, labFeeGross, mpnFeeRollup,
+  labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labFeeBlocking, labFeeGross, mpnFeeRollup, orderPhaseTimings,
 } from "@/store/selectors";
 import { qtyfmt, cn } from "@/lib/utils";
 import {
@@ -121,6 +121,8 @@ export function TestingTab({
   const requestWhlUpdate = useStore((s) => s.requestWhlUpdate);
   const escalateLabEmail = useStore((s) => s.escalateLabEmail);
   const reconcileReportPo = useStore((s) => s.reconcileReportPo);
+  const markTestingReturnedToSupplier = useStore((s) => s.markTestingReturnedToSupplier);
+  const testingPhase = orderPhaseTimings(b).find((p) => p.phase === "TESTING");
 
   // ALL = order-wide total; a lot id scopes every number, alert and section below to that lot
   const [scope, setScope] = useState<string>("ALL");
@@ -138,6 +140,19 @@ export function TestingTab({
 
   return (
     <div className="space-y-4">
+      {testingPhase?.atRisk && (
+        <Notice tone="bad"
+          action={testingPhase.status === "in_progress" && !b.whlReturnedToSupplierAt ? (
+            <Button variant="outline" onClick={() => markTestingReturnedToSupplier(id)}>Mark returned to supplier</Button>
+          ) : undefined}>
+          {testingPhase.atRisk.reason}
+        </Notice>
+      )}
+      {!testingPhase?.atRisk && testingPhase?.status === "in_progress" && !b.whlReturnedToSupplierAt && (
+        <Notice tone="info" action={<Button variant="outline" onClick={() => markTestingReturnedToSupplier(id)}>Mark returned to supplier</Button>}>
+          Once WHL testing is done and the goods are physically back with the supplier, confirm it here to close out the Testing phase clock.
+        </Notice>
+      )}
       {/* ---- roll-up + the two automated actions ---- */}
       <Panel title="WHL testing — MPN × lot × test"
         actions={

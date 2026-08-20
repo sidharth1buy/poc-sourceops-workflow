@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Lock } from "lucide-react";
 import { useStore } from "@/store/store";
-import { allEscrow } from "@/store/selectors";
+import { allEscrow, orderPhaseTimings } from "@/store/selectors";
 import { Panel, Pill, StatusPill, DataTable, PageHeader, Pagination, type Col } from "@/components/ui/primitives";
 import { prettyStatus } from "@/data/enums";
 import { money, cn } from "@/lib/utils";
@@ -23,7 +23,9 @@ export default function EscrowBoardPage() {
   const orders = useStore((s) => s.orders);
   const { canAccessEscrow } = useRole();
   const escrowMock = useEscrowMockMode();
-  const all = allEscrow(orders);
+  const all = allEscrow(orders).map((r) => ({
+    ...r, funding: orderPhaseTimings(orders[r.orderId]).find((p) => p.phase === "FUNDING"),
+  }));
   const title = <span className="inline-flex items-center gap-2">Escrow board{escrowMock && <Pill tone="warn">Mock mode</Pill>}</span>;
 
   // Stable option list regardless of other active filters, so the dropdown
@@ -61,6 +63,7 @@ export default function EscrowBoardPage() {
     { key: "inv", header: "Invoice no.", render: (r) => <span className="font-mono text-xs">{r.e.invoice?.invoiceNo ?? "—"}</span> },
     { key: "amt", header: "PO amount", align: "right", render: (r) => money(r.e.poAmount, r.e.currency) },
     { key: "status", header: "Status", render: (r) => r.e.cancelledAt ? <Pill tone="bad">Cancelled</Pill> : <StatusPill status={r.e.status} /> },
+    { key: "risk", header: "", render: (r) => r.funding?.atRisk ? <Pill tone="bad" title={r.funding.atRisk.reason}>action needed</Pill> : null },
     { key: "act", header: "", align: "right", render: (r) => <Link href={`/fulfilment/escrow/${r.orderId}`} className="text-xs font-medium text-primary hover:underline">Open →</Link> },
   ];
 
@@ -111,7 +114,7 @@ export default function EscrowBoardPage() {
             </button>
           )}
         </div>
-        <DataTable columns={cols} rows={rows} empty="No escrow orders match these filters." />
+        <DataTable columns={cols} rows={rows} empty="No escrow orders match these filters." rowAccent={(r) => r.funding?.atRisk ? "bad" : undefined} />
         <Pagination page={pageSafe} totalPages={totalPages} onChange={setPage} />
       </Panel>
       <p className="text-xs text-faint">{filtered.length} of {all.length} escrow order{all.length === 1 ? "" : "s"}{hasFilters ? " match the current filters" : ""}.</p>

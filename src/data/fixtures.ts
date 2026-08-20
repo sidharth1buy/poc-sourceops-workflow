@@ -809,6 +809,7 @@ const HERO_ESCROW: Escrow = {
   },
   paymentInstructedAt: "2026-07-19", financeConfirmedAt: "2026-07-19", financeSwiftReference: "SWIFT20260719A912",
   paymentSentToHkinAt: "2026-07-20",
+  fundedAt: "2026-07-20",
   goodsReceivedAt: "2026-07-24",
   whlVerdict: "PASS", whlVerdictAt: "2026-07-25", whlReportRef: "352146.2", // LOT-A's current WHL report on the Testing tab
   // First tranche (30% on shipment) already settled; second (70% on PASS) is the one action away
@@ -1135,6 +1136,7 @@ export function getOrderBundle(id: string): OrderBundle | undefined {
         financeConfirmedAt: paymentDone ? addDays(o.createdAt, 4) : undefined,
         financeSwiftReference: paymentDone ? `SWIFT${o.createdAt.replace(/-/g, "")}${o.id.toUpperCase()}` : undefined,
         paymentSentToHkinAt: paymentDone ? addDays(o.createdAt, 5) : undefined,
+        fundedAt: paymentDone ? addDays(o.createdAt, 5) : undefined,
         goodsReceivedAt: idx >= ESCROW_STATUS_ORDER.indexOf("RECIPIENT_INSPECTION") ? addDays(o.createdAt, 8) : undefined,
         whlVerdict: finalVerdict,
         whlVerdictAt: finalVerdict ? addDays(o.createdAt, 9) : undefined,
