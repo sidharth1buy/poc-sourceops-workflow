@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toneClass, statusTone, prettyStatus, type Tone } from "@/data/enums";
 
@@ -164,6 +165,16 @@ export function DurationBar({
     <div className={cn("relative h-2 w-full overflow-hidden rounded-full bg-muted", className)}>
       <div className={cn("h-full rounded-full transition-all", fillClass)} style={{ width: `${fillPct}%` }} />
       <div className="absolute top-0 h-full w-px bg-foreground/50" style={{ left: `${markerPct}%` }} title={`Estimated: ${estimatedDays}d`} />
+    </div>
+  );
+}
+
+/** Persona lock message for a role-restricted desk — wrap in the caller's own Panel/PageHeader. */
+export function RoleLocked({ roleLabel, action }: { roleLabel: string; action: string }) {
+  return (
+    <div className="p-6 text-center text-sm text-muted-foreground">
+      <Lock className="mx-auto mb-2 h-5 w-5 text-warn" />
+      This is {roleLabel}-only. Switch to the {roleLabel} persona (top right) to {action}.
     </div>
   );
 }

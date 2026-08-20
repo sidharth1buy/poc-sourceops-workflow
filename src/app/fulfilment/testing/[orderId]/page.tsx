@@ -5,9 +5,10 @@ import { useParams } from "next/navigation";
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { useStore } from "@/store/store";
-import { PageHeader, Panel, Pill, StatusPill } from "@/components/ui/primitives";
+import { PageHeader, Panel, Pill, StatusPill, RoleLocked } from "@/components/ui/primitives";
 import { TestingTab } from "@/components/order/testing-tab";
 import { AddLotModal } from "@/components/order/modals";
+import { useRole } from "@/lib/role";
 
 /**
  * Testing for one order, reached from the Testing board: the full testing module.
@@ -21,6 +22,18 @@ export default function OrderTestingWorkspacePage() {
   const orderId = params.orderId as string;
   const b = useStore((s) => s.orders[orderId]);
   const [addLot, setAddLot] = useState(false);
+  const { canAccessTesting } = useRole();
+
+  if (!canAccessTesting) {
+    return (
+      <div className="space-y-5">
+        <Link href="/fulfilment/testing" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Testing
+        </Link>
+        <Panel><RoleLocked roleLabel="SC" action="view or act on testing" /></Panel>
+      </div>
+    );
+  }
 
   if (!b) {
     return (

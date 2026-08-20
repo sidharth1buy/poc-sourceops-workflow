@@ -11,12 +11,12 @@ const PHASES: {
     { name: "Order received for fulfilment (already approved, PI in hand)", owner: "SC", cond: "PO review, sending the PO & supplier ACK+PI are done on the upstream sourcing platform — this console is fulfilment-only. Upload the confirmed PI to the order." },
   ] },
   { phase: "Payment", tone: "warn", steps: [
-    { name: "Escrow: T/T payment received", owner: "Finance", gate: "escrow must reach T/T Payment Received", cond: "when payment = Escrow / LC" },
+    { name: "Escrow: T/T payment received", owner: "SC", gate: "escrow must reach T/T Payment Received", cond: "when payment = Escrow / LC" },
     { name: "Pay supplier (advance / credit)", owner: "Finance", gate: "supplier payment INITIATED / PAID", cond: "when payment = Advance / Credit" },
   ] },
   { phase: "Testing", tone: "info", steps: [
     { name: "Testing — WHL lab or supplier self-test", owner: "Lab / Supplier", gate: "at least one lot must PASS", cond: "when testing ≠ None" },
-    { name: "Release escrow (to seller)", owner: "Finance", gate: "escrow must reach Released to Seller", cond: "when payment = Escrow (always)" },
+    { name: "Release escrow (to seller)", owner: "SC", gate: "escrow must reach Released to Seller", cond: "when payment = Escrow (always)" },
   ] },
   { phase: "Import / Customs", tone: "info", steps: [
     { name: "Ship to India (inbound AWB)", owner: "SC", gate: "an inbound shipment must exist", cond: "when international / A19" },
@@ -46,7 +46,7 @@ const BRANCHES = [
 ];
 
 const OUTCOMES = [
-  { r: "PASS", tone: "ok" as const, icon: Check, text: "Quality proven → ship in (escrow release runs on its own state machine — see the Escrow board, Finance persona)." },
+  { r: "PASS", tone: "ok" as const, icon: Check, text: "Quality proven → ship in (escrow release runs on its own state machine — see the Escrow board, SC persona)." },
   { r: "FAIL", tone: "bad" as const, icon: X, text: "Material reject → supplier takes it back." },
   { r: "MAYBE", tone: "warn" as const, icon: HelpCircle, text: "Edge case → reported to the client; client approves (continue) or rejects (return)." },
 ];
@@ -71,8 +71,8 @@ const SCENARIOS: { title: string; when: string; steps: { name: string; gate?: bo
 ];
 
 const ROLES = [
-  { role: "SC (supply chain)", does: "Creates sales & purchase orders, spins up the order from a purchase order, drives the journey, records shipments, relabel, delivery & PoD." },
-  { role: "Finance", does: "Advances each escrow order through its invoice/confirmation states, acknowledges terms, runs both-sided payments, sits on release gates." },
+  { role: "SC (supply chain)", does: "Creates sales & purchase orders, spins up the order from a purchase order, drives the journey, records shipments, relabel, delivery & PoD. Also advances each escrow order through its invoice/confirmation states, acknowledges terms, and sits on release gates." },
+  { role: "Finance", does: "Runs both-sided payments (client collection, supplier/customs/lab settlement) and confirms the money side of each escrow instruction." },
   { role: "Approver (upstream)", does: "PO review & approval happen on the sourcing platform — orders arrive in this console already approved, with the PI in hand." },
   { role: "Lab (WHL)", does: "Runs testing; the PASS/FAIL/MAYBE result drives the TESTING journey gate." },
   { role: "CHA", does: "Customs broker — files the BOE in ICEGATE (closes the import/FEMA loop)." },

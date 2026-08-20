@@ -594,7 +594,7 @@ function MoneySection({
             {e.refundInstructedAt && <Field label="Refund instructed">{e.refundInstructedAt}</Field>}
           </Facts>
 
-          {/* amounts are Finance's business — the persona gate is the same one the board uses */}
+          {/* amounts are Supply Chain's business — the persona gate is the same one the board uses */}
           {canAccessEscrow ? (
             <Facts>
               <Field label="Under escrow (PO amount)">{money(e.poAmount, e.currency)}</Field>
@@ -615,7 +615,7 @@ function MoneySection({
           ) : (
             <p className="inline-flex items-start gap-1.5 rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
               <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-              Escrow amounts, fees and wire details are Finance-only — switch persona to see them on the escrow board.
+              Escrow amounts, fees and wire details are SC-only — switch persona to see them on the escrow board.
               The status, triggers and release state above are visible to everyone because the rest of the flow depends on them.
             </p>
           )}

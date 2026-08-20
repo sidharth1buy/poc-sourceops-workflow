@@ -8,13 +8,15 @@ import {
   allLots, lotTestProgress, currentReport, unmatchedEmails, testingSummary,
   labFeeOutstandingTotal, overdueUpdateRequests, orderPhaseTimings,
 } from "@/store/selectors";
-import { Panel, Pill, StatusPill, PageHeader, Progress } from "@/components/ui/primitives";
+import { Panel, Pill, StatusPill, PageHeader, Progress, RoleLocked } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
+import { useRole } from "@/lib/role";
 import { cn } from "@/lib/utils";
 
 export default function TestingPage() {
   const orders = useStore((s) => s.orders);
   const setLotStatus = useStore((s) => s.setLotStatus);
+  const { canAccessTesting } = useRole();
   const rows = allLots(orders);
   const unmatched = Object.values(orders).flatMap((b) => unmatchedEmails(b).map((m) => ({ ...m, orderId: b.id, orderNo: b.orderNo })));
   const [q, setQ] = useState("");
@@ -45,6 +47,15 @@ export default function TestingPage() {
         || y.attention - x.attention
         || (x.b.orderNo < y.b.orderNo ? 1 : -1));
   }, [orders, q]);
+
+  if (!canAccessTesting) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="Testing" description="WHL testing — restricted to Supply Chain." />
+        <Panel><RoleLocked roleLabel="SC" action="view or act on testing" /></Panel>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">

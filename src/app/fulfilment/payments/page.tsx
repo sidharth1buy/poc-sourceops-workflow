@@ -6,10 +6,11 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, FlaskConical, Search, Stamp, Upload } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allPayments, allLabFees } from "@/store/selectors";
-import { Panel, Button, StatusPill, Pill, DataTable, PageHeader, Pagination, type Col } from "@/components/ui/primitives";
+import { Panel, Button, StatusPill, Pill, DataTable, PageHeader, Pagination, RoleLocked, type Col } from "@/components/ui/primitives";
 import { LAB_PAYMENT_LABEL, LAB_PAYMENT_TONE } from "@/data/enums";
 import type { Tone } from "@/data/enums";
 import { money, cn } from "@/lib/utils";
+import { useRole } from "@/lib/role";
 import type { PaymentMode, PaymentStatus } from "@/types";
 
 /**
@@ -154,6 +155,7 @@ function PaymentsInner() {
   const setStatus = useStore((s) => s.setPaymentStatus);
   const payDuty = useStore((s) => s.payCustomsDuty);
   const markLabFeePaid = useStore((s) => s.markLabFeePaid);
+  const { canAccessPayments } = useRole();
   const router = useRouter();
   const params = useSearchParams();
   const rows = allPayments(orders);
@@ -175,6 +177,15 @@ function PaymentsInner() {
   // per-row proof/reference value for the inline "attach & mark paid" action — every open, payable
   // leg keeps its own draft here regardless of which other rows are mid-edit; nothing is bulk.
   const [proofByRow, setProofByRow] = useState<Record<string, string>>({});
+
+  if (!canAccessPayments) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="Payments" description="Payments move real money — restricted to Finance." />
+        <Panel><RoleLocked roleLabel="Finance" action="view or act on payments" /></Panel>
+      </div>
+    );
+  }
 
   const resetPaging = () => setPage(1);
 
