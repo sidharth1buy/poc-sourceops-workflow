@@ -1,10 +1,11 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, FileText,
-  FlaskConical, Landmark, Lock, Package, Plane, Receipt, ShieldCheck, Stamp, Truck, Users,
+  FlaskConical, Landmark, Lock, Package, Plane, Receipt, Stamp, Truck, Users,
+  type LucideIcon,
 } from "lucide-react";
 import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, type Tone } from "@/data/enums";
@@ -27,16 +28,16 @@ import { usd, toUSD } from "@/lib/fx";
 /**
  * One order, one page, top to bottom in the order things actually happen: the deal, the
  * demand it serves, the money, testing, the two freight legs, customs, the hub, delivery,
- * approvals, and the evidence/history behind all of it.
+ * and the evidence/history behind all of it. (There is no Approvals section — it was removed
+ * 2026-08-20; order-level approvals are read on the Approvals board.)
  *
  * This is a **reading** page — the dashboard's orders link here rather than into the tabbed
  * workspace, because "what is happening on this order" is a different question from "let me
  * change something on this order", and answering the first shouldn't take twelve tab clicks.
- * Every section therefore ends where the acting surface begins — and that acting surface is
- * always a **board from the sidebar** (Testing, Escrow, Logistics, Customs, Warehouse,
- * Delivery, Payments, Approvals, Integrations), never a tab of the old per-order workspace:
- * links back into `/fulfilment/orders/[id]` were removed 2026-08-20, so reading an order and
- * working it stay on separate rails. Nothing here mutates state.
+ * The page carries **no outbound navigation at all**: the per-section "go to the board" links
+ * were removed 2026-08-20 along with `FlowSection`'s `action` slot, so reading an order never
+ * doors into a surface that acts on it. The only links left are the Orders Overview breadcrumb
+ * and the sticky in-page section rail. Nothing here mutates state.
  *
  * Each section is keyed to the journey phase(s) that own it, so its heading carries that
  * phase's real state (done / in progress / blocked, with the gate reason) instead of a
@@ -45,19 +46,26 @@ import { usd, toUSD } from "@/lib/fx";
 
 // ---------- shells ----------
 
-const JUMP: { id: string; label: string }[] = [
-  { id: "deal", label: "Deal" },
-  { id: "demand", label: "Demand" },
-  { id: "money", label: "Money" },
-  { id: "testing", label: "Testing" },
-  { id: "freight", label: "Freight" },
-  { id: "customs", label: "Customs" },
-  { id: "hub", label: "Hub" },
-  { id: "delivery", label: "Delivery" },
-  { id: "approvals", label: "Approvals" },
-  { id: "evidence", label: "Evidence" },
+/**
+ * The page's sections, in the order they render — each with the same icon its section heading
+ * uses. Single source of truth for the rail below: adding or removing a section means editing
+ * this list, not starting a second one.
+ *
+ * Deliberately state-free. Chips painted with each phase's status (green/red tones, ✓/lock
+ * glyphs) were tried and cut 2026-08-20 — the rail is navigation, and the status already reads
+ * off the journey rail above it and off every section's own heading pill.
+ */
+const JUMP: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "deal", label: "Deal", icon: Users },
+  { id: "demand", label: "Demand", icon: Package },
+  { id: "money", label: "Money", icon: Landmark },
+  { id: "testing", label: "Testing", icon: FlaskConical },
+  { id: "freight", label: "Freight", icon: Plane },
+  { id: "customs", label: "Customs", icon: Stamp },
+  { id: "hub", label: "Hub", icon: Building2 },
+  { id: "delivery", label: "Delivery", icon: Truck },
+  { id: "evidence", label: "Evidence", icon: FileText },
 ];
-
 function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed p-5 text-center text-sm text-muted-foreground">{text}</div>;
 }
@@ -75,6 +83,82 @@ function phaseState(
   return { tone: "neutral", label: "not started" };
 }
 
+/**
+ * The section rail — this page is long by design, so its table of contents is **sticky** and
+ * stays on screen the whole way down. `top-14` (56px) is deliberately a few px *less* than the
+ * app header's measured 59px height so the rail's own top edge tucks under it (header is `z-20`,
+ * the rail `z-10`): erring the other way leaves a sliver of scrolling content showing through
+ * the gap. Sections carry `scroll-mt-32` to clear both bars when jumped to.
+ *
+ * It is navigation and nothing else — every chip looks the same, and the only chip that stands
+ * out is the section you are actually reading, tracked by an IntersectionObserver over the
+ * section elements rather than by scroll maths. Don't colour the chips by phase state or hang
+ * ✓/lock glyphs off them: that was tried and cut, because the journey rail directly above and
+ * each section's own heading pill already report exactly that.
+ */
+function SectionRail() {
+  const [active, setActive] = useState<string>(JUMP[0].id);
+
+  useEffect(() => {
+    const els = JUMP.map((j) => document.getElementById(j.id)).filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) return;
+    const onScreen = new Set<string>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) onScreen.add(e.target.id);
+          else onScreen.delete(e.target.id);
+        }
+        // the topmost section still in the band is the one being read
+        const first = JUMP.find((j) => onScreen.has(j.id));
+        if (first) setActive(first.id);
+      },
+      // band = just under the sticky chrome down to a bit past the middle of the viewport
+      { rootMargin: "-150px 0px -55% 0px", threshold: 0 },
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+
+  const jump = (e: React.MouseEvent, id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    e.preventDefault();
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.history.replaceState(null, "", `#${id}`);
+    setActive(id);
+  };
+
+  return (
+    <nav aria-label="Sections of this order"
+      className="sticky top-14 z-10 rounded-[var(--radius)] border bg-card/95 px-3 py-2.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
+      <div className="flex items-center gap-3">
+        <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-wider text-faint sm:block">
+          Sections
+        </span>
+        <div className="no-scrollbar -my-1 flex flex-1 items-center gap-1.5 overflow-x-auto py-1">
+          {JUMP.map(({ id, label, icon: Icon }) => {
+            const isActive = id === active;
+            return (
+              <a key={id} href={`#${id}`} onClick={(e) => jump(e, id)}
+                aria-current={isActive ? "true" : undefined}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+                  isActive
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-border bg-card text-muted-foreground hover:border-primary hover:bg-accent-soft hover:text-primary",
+                )}>
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{label}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    </nav>
+  );
+}
+
 function FlowSection({
   id, title, hint, icon, steps, currentId, reason, children,
 }: {
@@ -90,7 +174,7 @@ function FlowSection({
   const st = phaseState(steps, currentId, reason);
   const blocked = st.label === "blocked";
   return (
-    <section id={id} className="scroll-mt-4 rounded-[var(--radius)] border bg-card shadow-sm">
+    <section id={id} className="scroll-mt-32 rounded-[var(--radius)] border bg-card shadow-sm">
       <div className={cn("flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b px-4 py-3",
         blocked && "bg-bad-bg/40")}>
         <div className="min-w-0">
@@ -203,7 +287,7 @@ export function OrderFlowPage({ id }: { id: string }) {
               {b.maskingEntity} <ChevronRight className="inline h-3 w-3" /> {b.supplier.name} <span className="text-faint">(supplier)</span>
             </p>
             <p className="mt-0.5 text-xs text-faint">
-              The whole fulfilment flow on one page — read-only. Each section links to where that step is worked.
+              The whole fulfilment flow on one page — read-only. Use the section rail below to jump straight to a phase.
             </p>
           </div>
           <div className="grid w-full max-w-md grid-cols-2 gap-3 sm:grid-cols-4">
@@ -255,18 +339,9 @@ export function OrderFlowPage({ id }: { id: string }) {
             })}
           </ol>
         </div>
-
-        {/* jump bar — the page is long by design; don't make anyone scroll to find a phase */}
-        <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t pt-3 text-xs">
-          <span className="uppercase tracking-wide text-faint">Jump to</span>
-          {JUMP.map((j) => (
-            <a key={j.id} href={`#${j.id}`}
-              className="rounded-full border px-2 py-0.5 font-medium text-muted-foreground hover:border-primary hover:text-primary">
-              {j.label}
-            </a>
-          ))}
-        </div>
       </div>
+
+      <SectionRail />
 
       <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
       <DemandSection b={b} reason={reason} />
@@ -276,7 +351,6 @@ export function OrderFlowPage({ id }: { id: string }) {
       <CustomsSection b={b} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
       <HubSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
       <DeliverySection b={b} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
-      <ApprovalsSection b={b} steps={stepsOf("CLOSE")} currentId={current?.id} reason={reason} />
       <EvidenceSection b={b} reason={reason} />
 
       <p className="pb-2 text-center text-xs text-faint">
@@ -842,38 +916,7 @@ function DeliverySection({
   );
 }
 
-// ---------- 9 · approvals & close ----------
-
-function ApprovalsSection({
-  b, steps, currentId, reason,
-}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
-  const pending = b.approvals.filter((a) => a.status === "PENDING").length;
-  return (
-    <FlowSection id="approvals" title="Approvals &amp; close" hint={b.approvals.length === 0
-      ? "No approval was raised on this order, so the close gate is vacuously satisfied."
-      : `${b.approvals.length} approval(s) on this order; the close gate needs every one decided.`}
-      icon={<ShieldCheck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
-      {b.approvals.length === 0 ? <Empty text="No approvals on this order." /> : (
-        <div className="space-y-2">
-          {b.approvals.map((a) => (
-            <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{prettyStatus(a.kind)}</div>
-                <div className="text-xs text-muted-foreground">
-                  role: {a.role}{a.notes ? ` · ${a.notes}` : ""}{a.decidedBy ? ` · by ${a.decidedBy}` : ""}
-                </div>
-              </div>
-              <StatusPill status={a.status} />
-            </div>
-          ))}
-        </div>
-      )}
-      {pending > 0 && <p className="text-xs text-warn">{pending} still pending — the order can&apos;t close until they&apos;re decided.</p>}
-    </FlowSection>
-  );
-}
-
-// ---------- 10 · evidence & history ----------
+// ---------- 9 · evidence & history ----------
 
 function EvidenceSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const docCols: Col<OrderBundle["documents"][number]>[] = [
