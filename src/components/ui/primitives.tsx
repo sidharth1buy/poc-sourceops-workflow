@@ -169,10 +169,12 @@ export type Col<T> = {
  *   row is inserted, which is how a single ordered table shows "these first, those after"
  *   (e.g. the Payments board's pending-then-settled ledgers) without splitting into two tables.
  * - `rowMuted` dims a row that is a record rather than work — same data, less ink.
+ * - `rowAccent` tints a row's background ("bad"/"warn") — for rows that need attention first,
+ *   e.g. an overdue or soon-due payment.
  */
 export function DataTable<T>({
-  columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded, sectionOf, rowMuted,
-}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode; sectionOf?: (row: T) => string | null; rowMuted?: (row: T) => boolean }) {
+  columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded, sectionOf, rowMuted, rowAccent,
+}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode; sectionOf?: (row: T) => string | null; rowMuted?: (row: T) => boolean; rowAccent?: (row: T) => "bad" | "warn" | undefined }) {
   if (rows.length === 0) {
     return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{empty}</div>;
   }
@@ -202,7 +204,9 @@ export function DataTable<T>({
               <tr
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
                 className={cn(!(isExpanded?.(row)) && "border-b last:border-0", onRowClick && "cursor-pointer hover:bg-muted/60", isExpanded?.(row) && "bg-muted/40",
-                  rowMuted?.(row) && "text-muted-foreground")}>
+                  rowMuted?.(row) && "text-muted-foreground",
+                  !isExpanded?.(row) && rowAccent?.(row) === "bad" && "bg-bad-bg/60",
+                  !isExpanded?.(row) && rowAccent?.(row) === "warn" && "bg-warn-bg/60")}>
                 {columns.map((c) => (
                   <td key={c.key} className={cn("px-3 py-2.5 align-middle",
                     c.align === "right" && "text-right tnum", c.align === "center" && "text-center", c.className)}>

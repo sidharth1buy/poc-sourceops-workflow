@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/form";
 import { LAB_PAYMENT_LABEL, LAB_PAYMENT_TONE, LAB_TERMS_LABEL, LAB_TERMS_TONE, LAB_TERMS_HINT } from "@/data/enums";
 import type { Tone } from "@/data/enums";
 import { money, cn } from "@/lib/utils";
-import type { PaymentStatus } from "@/types";
+import type { PaymentMode, PaymentStatus } from "@/types";
 
 const TABS = ["All", "By order", "Client → 1Buy", "1Buy → Supplier", "Customs / ICEGATE", "WHL testing"] as const;
 type PayTab = (typeof TABS)[number];
@@ -35,12 +35,35 @@ const paymentOpen = (s: PaymentStatus) => s === "PENDING" || s === "INITIATED";
 const MONEY_FILTERS = ["All", "Pending", "Settled"] as const;
 type MoneyFilter = (typeof MONEY_FILTERS)[number];
 
-/** Pending first, everywhere: what still owes money is the work, the rest is the record. */
-const openFirst = <T,>(arr: T[], isOpen: (r: T) => boolean) =>
-  [...arr].sort((a, b) => Number(isOpen(b)) - Number(isOpen(a)));
+/**
+ * Pending first, everywhere: what still owes money is the work, the rest is the record. Within
+ * the open group, the most urgent (overdue, then due-soon/escrow) sort to the very top — so
+ * Finance sees what needs doing first without having to scan the whole list.
+ */
+const openFirst = <T,>(arr: T[], isOpen: (r: T) => boolean, urgencyRank?: (r: T) => number) =>
+  [...arr].sort((a, b) => Number(isOpen(b)) - Number(isOpen(a)) || (urgencyRank ? urgencyRank(a) - urgencyRank(b) : 0));
 
 const keep = <T,>(arr: T[], isOpen: (r: T) => boolean, f: MoneyFilter) =>
   f === "All" ? arr : arr.filter((r) => isOpen(r) === (f === "Pending"));
+
+/**
+ * Which open payments Finance should act on first: overdue by date, due within
+ * URGENT_WITHIN_DAYS, or ESCROW mode — funding the escrow account is time-critical the moment
+ * it's pending, regardless of any stated due date, since it blocks the whole order until funded.
+ */
+const URGENT_WITHIN_DAYS = 5;
+function paymentUrgency(mode: PaymentMode, dueDate: string | undefined, open: boolean): { tone: "bad" | "warn"; label: string; rank: 0 | 1 } | undefined {
+  if (!open) return undefined;
+  if (dueDate) {
+    const days = Math.ceil((new Date(dueDate).getTime() - Date.now()) / 86400000);
+    if (days < 0) return { tone: "bad", label: `Overdue ${Math.abs(days)}d`, rank: 0 };
+    if (days <= URGENT_WITHIN_DAYS) return { tone: "warn", label: days <= 0 ? "Due today" : `${days}d left`, rank: 1 };
+  }
+  if (mode === "ESCROW") return { tone: "warn", label: "Fund escrow", rank: 1 };
+  return undefined;
+}
+const urgencyRankOf = (r: { mode: PaymentMode; dueDate?: string; status: PaymentStatus }) =>
+  paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status))?.rank ?? 2;
 
 // ---- the By-order view's unified leg -------------------------------------------------
 // All four ledgers answer the same three questions per order (what leg, how much, still owed?),
@@ -69,6 +92,7 @@ interface Leg {
   action: React.ReactNode;
   expanded: boolean;
   editor: React.ReactNode;
+  urgency?: { tone: "bad" | "warn"; label: string; rank: 0 | 1 }; // only CLIENT/SUPPLIER legs carry a PaymentMode
 }
 
 /** Legs land in different currencies (duty in INR, material in USD) — never add them up. */
@@ -84,21 +108,23 @@ function totalsByCurrency(legs: Leg[]) {
  * replaced were eight equal boxes that never said which pair belonged together.
  */
 function LegSummary({
-  icon: Icon, label, note, due, dueCount, settled, currency, held,
-}: { icon: typeof ArrowDownLeft; label: string; note: string; due: number; dueCount: number; settled: number; currency: string; held?: number }) {
+  icon: Icon, label, note, due, dueCount, settled, currency, held, urgentCount,
+}: { icon: typeof ArrowDownLeft; label: string; note: string; due: number; dueCount: number; settled: number; currency: string; held?: number; urgentCount?: number }) {
   // an open leg with no amount yet is a real state (a BoE awaiting assessment, an invoice not in)
   const dueText = due > 0 ? money(due, currency) : dueCount > 0 ? "not assessed" : "—";
   return (
     <div className="flex overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
       {/* the accent is a painted strip, not a coloured border: `border-l-warn` &co. are overridden
           app-wide by the unlayered `* { border-color }` rule in globals.css */}
-      <span className={cn("w-1 shrink-0", dueCount > 0 ? "bg-warn" : "bg-ok")} aria-hidden />
+      <span className={cn("w-1 shrink-0", urgentCount ? "bg-bad" : dueCount > 0 ? "bg-warn" : "bg-ok")} aria-hidden />
       <div className="min-w-0 flex-1 p-4">
       <div className="flex items-start justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
           <Icon className="h-3.5 w-3.5" /> {label}
         </span>
-        {held ? <Pill tone="bad">{held} lot(s) held</Pill> : dueCount > 0 ? <Pill tone="warn">{dueCount} open</Pill> : <Pill tone="ok">clear</Pill>}
+        {held ? <Pill tone="bad">{held} lot(s) held</Pill>
+          : urgentCount ? <Pill tone="bad">{urgentCount} urgent</Pill>
+          : dueCount > 0 ? <Pill tone="warn">{dueCount} open</Pill> : <Pill tone="ok">clear</Pill>}
       </div>
       <div className="mt-3 flex items-end justify-between gap-3">
         <span>
@@ -245,7 +271,15 @@ function PaymentsInner() {
     ) },
     { key: "mode", header: "Mode", render: (r) => <span className="text-xs text-muted-foreground">{r.mode}</span> },
     { key: "amt", header: "Amount", align: "right", render: (r) => <b>{money(r.amount, r.currency)}</b> },
-    { key: "due", header: "Due", align: "right", render: (r) => <span className="text-xs tnum">{r.dueDate ?? "—"}</span> },
+    { key: "due", header: "Due", align: "right", render: (r) => {
+      const u = paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status));
+      return (
+        <span className="inline-flex flex-col items-end gap-0.5">
+          <span className="text-xs tnum">{r.dueDate ?? "—"}</span>
+          {u && <Pill tone={u.tone}>{u.label}</Pill>}
+        </span>
+      );
+    } },
     { key: "status", header: "Status", render: payStatusCell },
     { key: "act", header: "", align: "right", render: payAction },
   ];
@@ -320,6 +354,7 @@ function PaymentsInner() {
       open: paymentOpen(r.status),
       status: payStatusCell(r), action: payAction(r),
       expanded: r.id === payRowId, editor: payEditor(r),
+      urgency: paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status)),
     })),
     ...dutyRows.map((r): Leg => ({
       id: `duty:${r.ce.id}`,
@@ -357,19 +392,25 @@ function PaymentsInner() {
     { key: "leg", header: "Leg", render: (l) => <Pill tone={LEG[l.kind].tone}>{LEG[l.kind].label}</Pill> },
     { key: "detail", header: "Against", render: (l) => l.detail },
     { key: "amt", header: "Amount", align: "right", render: (l) => l.amount ? <b>{money(l.amount, l.currency)}</b> : <span className="text-xs text-faint">not assessed</span> },
-    { key: "due", header: "Due", align: "right", render: (l) => <span className="text-xs tnum">{l.due ?? "—"}</span> },
+    { key: "due", header: "Due", align: "right", render: (l) => (
+      <span className="inline-flex flex-col items-end gap-0.5">
+        <span className="text-xs tnum">{l.due ?? "—"}</span>
+        {l.urgency && <Pill tone={l.urgency.tone}>{l.urgency.label}</Pill>}
+      </span>
+    ) },
     { key: "status", header: "Status", render: (l) => l.status },
     { key: "act", header: "", align: "right", render: (l) => l.action },
   ];
 
-  // Orders with money still owed float to the top, and inside each group so do the open legs.
+  // Orders with money still owed float to the top, and inside each group so do the open legs
+  // (the most urgent — overdue, then due-soon/escrow — sort first within the open ones).
   const groups = Object.values(orders)
     .map((o) => {
       const mine = legs.filter((l) => l.orderId === o.id);
       const open = mine.filter((l) => l.open);
       return {
         order: o,
-        legs: keep(openFirst(mine, (l) => l.open), (l) => l.open, filter),
+        legs: keep(openFirst(mine, (l) => l.open, (l) => l.urgency?.rank ?? 2), (l) => l.open, filter),
         open, settled: mine.filter((l) => !l.open),
       };
     })
@@ -382,9 +423,9 @@ function PaymentsInner() {
     toggled[g.order.id] ?? (g.open.length > 0 || filter === "Settled");
 
   // ---- filtered per-leg ledgers -------------------------------------------------------
-  const fClient = keep(openFirst(clientRows, (r) => paymentOpen(r.status)), (r) => paymentOpen(r.status), filter);
-  const fSupplier = keep(openFirst(supplierRows, (r) => paymentOpen(r.status)), (r) => paymentOpen(r.status), filter);
-  const fAll = keep(openFirst(rows, (r) => paymentOpen(r.status)), (r) => paymentOpen(r.status), filter);
+  const fClient = keep(openFirst(clientRows, (r) => paymentOpen(r.status), urgencyRankOf), (r) => paymentOpen(r.status), filter);
+  const fSupplier = keep(openFirst(supplierRows, (r) => paymentOpen(r.status), urgencyRankOf), (r) => paymentOpen(r.status), filter);
+  const fAll = keep(openFirst(rows, (r) => paymentOpen(r.status), urgencyRankOf), (r) => paymentOpen(r.status), filter);
   const fDuty = keep(openFirst(dutyRows, dutyOpen), dutyOpen, filter);
   const fFee = keep(openFirst(feeRows, (r) => r.unpaid), (r) => r.unpaid, filter);
 
@@ -427,10 +468,10 @@ function PaymentsInner() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <LegSummary icon={ArrowDownLeft} label="Client → 1Buy" note="What our buyers owe us, per PI" currency={ccy(clientRows)}
           due={sum(clientRows, false)} dueCount={clientRows.filter((r) => paymentOpen(r.status)).length}
-          settled={sum(clientRows, true)} />
+          settled={sum(clientRows, true)} urgentCount={clientRows.filter((r) => paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status))).length} />
         <LegSummary icon={ArrowUpRight} label="1Buy → Supplier" note="What we owe suppliers, per their PI" currency={ccy(supplierRows)}
           due={sum(supplierRows, false)} dueCount={supplierRows.filter((r) => paymentOpen(r.status)).length}
-          settled={sum(supplierRows, true)} />
+          settled={sum(supplierRows, true)} urgentCount={supplierRows.filter((r) => paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status))).length} />
         <LegSummary icon={Stamp} label="Customs duty" note="BCD + SWS + IGST, per Bill of Entry" currency="INR"
           due={dutyDue} dueCount={dutyRows.filter(dutyOpen).length} settled={dutyPaid} />
         <LegSummary icon={FlaskConical} label="WHL testing" note="The lab's own fee, per work order" currency={ccy(feeRows)}
@@ -527,6 +568,7 @@ function PaymentsInner() {
                       renderExpanded={(l) => l.editor}
                       sectionOf={bandsFor(g.legs, (l) => l.open)}
                       rowMuted={(l) => !l.open}
+                      rowAccent={(l) => l.urgency?.tone}
                       empty="No payment leg in this view." />
                   </div>
                 )}
@@ -583,6 +625,7 @@ function PaymentsInner() {
             renderExpanded={payEditor}
             sectionOf={bandsFor(tab === "Client → 1Buy" ? fClient : tab === "1Buy → Supplier" ? fSupplier : fAll, (r) => paymentOpen(r.status))}
             rowMuted={(r) => !paymentOpen(r.status)}
+            rowAccent={(r) => paymentUrgency(r.mode, r.dueDate, paymentOpen(r.status))?.tone}
             empty="No payment tasks in this view." />
         </Ledger>
       )}

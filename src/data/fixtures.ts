@@ -841,6 +841,9 @@ const HERO_ESCROW: Escrow = {
 const HERO_PAYMENTS: Payment[] = [
   { id: "pay1", direction: "CLIENT_TO_1BUY", mode: "ADVANCE", triggerDoc: "Our PI", amount: 8775, currency: "USD", status: "PAID", dueDate: "2026-07-16", paidAt: "2026-07-16" },
   { id: "pay2", direction: "1BUY_TO_SUPPLIER", mode: "ESCROW", triggerDoc: "Supplier PI", amount: 7013, currency: "USD", status: "INITIATED", dueDate: "2026-07-18" },
+  // illustrates the due-date urgency tiers: due-soon (within 5 days) and overdue
+  { id: "pay3", direction: "CLIENT_TO_1BUY", mode: "CREDIT", triggerDoc: "Our PI", amount: 4200, currency: "USD", status: "PENDING", dueDate: "2026-08-24" },
+  { id: "pay4", direction: "1BUY_TO_SUPPLIER", mode: "CREDIT", triggerDoc: "Supplier PI", amount: 3100, currency: "USD", status: "PENDING", dueDate: "2026-08-10" },
 ];
 
 // Only the PASSED lot moved — the TPS lots (LOT-B F.A.R., LOT-C untested) are still at the
