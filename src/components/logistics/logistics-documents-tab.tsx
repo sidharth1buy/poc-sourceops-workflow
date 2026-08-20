@@ -18,7 +18,7 @@
 // coming in is chased from the Communication tab, not buttoned here.
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Check, FileText, Minus, PenLine, Send } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, ArrowRight, Check, Clock, FileText, Minus, PenLine, Send, Zap } from "lucide-react";
 import { useStore } from "@/store/store";
 import {
   COUNTERPARTY_LABEL,
@@ -231,43 +231,54 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
     },
   ];
 
+  /*
+   * ONE GRAMMAR FOR THE ACTION RAIL. Every going-out row gets exactly one
+   * slot of identical size: a real button when there is an act to perform, a
+   * quiet chip when the act is automatic, blocked, or already done. Mixed
+   * buttons and floating text made the column ragged; a fixed-width slot
+   * keeps the rail straight and every state scannable.
+   */
+  const SLOT = "inline-flex h-8 w-40 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg text-xs font-medium";
+
+  function ActionButton({ icon: Icon, label, onClick }: { icon: typeof Send; label: string; onClick: (e: React.MouseEvent) => void }) {
+    return (
+      <button type="button" onClick={onClick} className={cn(SLOT, "border bg-card text-primary transition hover:border-primary hover:bg-muted")}>
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </button>
+    );
+  }
+
+  function ActionChip({ icon: Icon, label, title, tone = "muted" }: { icon: typeof Send; label: string; title: string; tone?: "muted" | "ok" }) {
+    return (
+      <span title={title} className={cn(SLOT, "cursor-help border border-dashed", tone === "ok" ? "border-emerald-400/40 bg-ok-bg/50 text-ok" : "bg-muted/30 text-muted-foreground")}>
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </span>
+    );
+  }
+
   function RowAction({ r }: { r: Row }) {
     if (!r.outstanding) {
-      return <span className="text-[11px] text-muted-foreground">Sent — open to view</span>;
+      return <ActionChip icon={Check} label="Sent · open to view" title="Done. Click the row to open the document." tone="ok" />;
     }
     if (r.spec?.id === "DOC_REQUEST") {
-      return (
-        <Button variant="outline" onClick={(e) => { e.stopPropagation(); requestShippingDocs(b.id); }}>
-          <Send className="mr-1.5 h-3.5 w-3.5" /> Send request
-        </Button>
-      );
+      return <ActionButton icon={Send} label="Send request" onClick={(e) => { e.stopPropagation(); requestShippingDocs(b.id); }} />;
     }
     if (r.spec?.id === "AWB_TO_CHA") {
       const c = b.customs?.[0];
-      return c ? (
-        <Button variant="outline" onClick={(e) => { e.stopPropagation(); sendAwbToCha(b.id, c.id); }}>
-          <Send className="mr-1.5 h-3.5 w-3.5" /> Send to broker
-        </Button>
-      ) : (
-        <span className="text-[11px] text-muted-foreground">Needs a customs entry first</span>
-      );
+      return c
+        ? <ActionButton icon={Send} label="Send to broker" onClick={(e) => { e.stopPropagation(); sendAwbToCha(b.id, c.id); }} />
+        : <ActionChip icon={Clock} label="Awaiting entry" title="Needs a customs entry to attach to — the Customs desk files it." />;
     }
     if (r.spec?.id === "GRN") {
-      return (
-        <Button variant="outline" onClick={(e) => { e.stopPropagation(); onGoToShipment(); }}>
-          Issue on Shipment tab
-        </Button>
-      );
+      return <ActionButton icon={ArrowRight} label="Issue GRN" onClick={(e) => { e.stopPropagation(); onGoToShipment(); }} />;
     }
     if (r.spec?.id === "SHIPPING_INSTRUCTION") {
-      return <span className="text-[11px] text-muted-foreground">Sent by the booking form</span>;
+      return <ActionChip icon={Zap} label="Via booking" title="Produced and sent automatically by the booking form on the Shipment tab." />;
     }
     /* Pre-alert / damage notice — composed in the pop-up. */
-    return (
-      <Button variant="outline" onClick={(e) => { e.stopPropagation(); setOpen(r.key); }}>
-        <PenLine className="mr-1.5 h-3.5 w-3.5" /> Prepare & send
-      </Button>
-    );
+    return <ActionButton icon={PenLine} label="Prepare & send" onClick={(e) => { e.stopPropagation(); setOpen(r.key); }} />;
   }
 
   return (
