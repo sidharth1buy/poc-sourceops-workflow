@@ -32,7 +32,7 @@ export default function WarehouseBoardPage() {
         needsCustoms: customsApplies(b), hasCustoms: b.customs.some((c) => !!c.icegateRef),
         atRisk: orderPhaseTimings(b).find((p) => p.phase === "WAREHOUSING")?.atRisk,
       }];
-    });
+    }).sort((a, b) => (a.atRisk ? 0 : 1) - (b.atRisk ? 0 : 1));
   }, [orders]);
 
   const cols: Col<Row>[] = [
