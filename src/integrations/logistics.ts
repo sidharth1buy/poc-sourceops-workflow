@@ -153,3 +153,93 @@ export function dhlUploadImage(req: { awb: string; typeCode: string }) {
     () => ({ shipmentTrackingNumber: req.awb, status: "document updated" }),
     { latencyMs: [400, 1200] });
 }
+
+// ---- Logistics-desk correspondence ------------------------------------------
+// The desk's own mail seam — order-scoped messages to the carrier, the broker,
+// the supplier or the dock, plus its outbound documents (pre-alerts, damage
+// notices). Same mockCall seam as every adapter, so each send and each inbox
+// poll shows on the Integrations board.
+
+export type LogisticsParty = "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE";
+
+export const LOGISTICS_PARTY_LABEL: Record<LogisticsParty, string> = {
+  SUPPLIER: "Supplier",
+  CARRIER: "Logistics partner",
+  CHA: "Customs broker (CHA)",
+  WAREHOUSE: "Warehouse",
+  CLIENT: "Client",
+  INSURER: "Insurer",
+  FINANCE: "Finance",
+};
+
+export interface LogisticsMailReq {
+  party: LogisticsParty;
+  to: string;
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body: string;
+  orderNo: string;
+  attachments?: string[];
+}
+export interface LogisticsMailRes { messageId: string; to: string; queuedAt: string }
+
+export function sendLogisticsMail(req: LogisticsMailReq) {
+  return mockCall<LogisticsMailRes>(SYS, LABEL, `POST /mail/${req.party.toLowerCase()}`, req,
+    () => ({ messageId: ref("LGM"), to: req.to, queuedAt: new Date().toISOString().slice(0, 16).replace("T", " ") }),
+    { latencyMs: [350, 1100], failError: { code: "MAIL_RELAY_DOWN", message: "Mail relay unavailable — retry", status: 503 } });
+}
+
+/*
+ * Poll the desk mailbox for replies to what we sent. One canned acknowledgement
+ * per counterparty — enough for the to-and-fro to be visible end to end without
+ * pretending the mock can hold a conversation.
+ */
+const REPLY_BODY: Record<LogisticsParty, string> = {
+  SUPPLIER: "Noted — please find the shipping set attached. Originals follow by courier.",
+  CARRIER: "Acknowledged. The latest shipment status report is attached; milestones will also reflect on tracking.",
+  CHA: "Acknowledged. The filed copy and our checklist are attached — we will flag anything missing for this consignment.",
+  WAREHOUSE: "Noted — the dock has been informed; the slot confirmation is attached.",
+  CLIENT: "Thank you for the update.",
+  INSURER: "Noted — the claim acknowledgement is attached; a surveyor will be appointed if warranted.",
+  FINANCE: "Received — queued for the next payment run; the booking confirmation is attached.",
+};
+
+/* Counterparties do not reply empty-handed — each answers with its own paper.
+ * File names only; the files themselves are rendered on demand when opened. */
+const REPLY_ATTACHMENTS: Record<LogisticsParty, string[]> = {
+  SUPPLIER: ["Packing List.pdf", "Commercial Invoice.pdf", "Certificate of Origin.pdf"],
+  CARRIER: ["Shipment status report.pdf"],
+  CHA: ["Bill of Entry (filed copy).pdf", "Clearance checklist.pdf"],
+  WAREHOUSE: ["Dock slot confirmation.pdf"],
+  CLIENT: [],
+  INSURER: ["Claim acknowledgement.pdf"],
+  FINANCE: ["Payment booking confirmation.pdf"],
+};
+
+export interface LogisticsReplyReq { orderNo: string; pending: { party: LogisticsParty; subject: string; contact: string; threadId: string }[] }
+export interface LogisticsReply { party: LogisticsParty; who: string; subject: string; body: string; attachments: string[]; threadId: string }
+
+export function fetchLogisticsReplies(req: LogisticsReplyReq) {
+  return mockCall<{ replies: LogisticsReply[] }>(SYS, LABEL, `GET /mail/inbox?order=${req.orderNo}`, req,
+    () => ({
+      replies: req.pending.map((p) => ({
+        party: p.party,
+        who: p.contact,
+        subject: p.subject.startsWith("Re: ") ? p.subject : `Re: ${p.subject}`,
+        body: REPLY_BODY[p.party],
+        attachments: REPLY_ATTACHMENTS[p.party],
+        threadId: p.threadId,
+      })),
+    }),
+    { latencyMs: [400, 1200], failError: { code: "MAILBOX_TIMEOUT", message: "Mailbox poll timed out — retry", status: 504 } });
+}
+
+export interface AiDraftReq { orderNo: string; party: LogisticsParty; intent: string; draft: { subject: string; body: string } }
+export interface AiDraftRes { subject: string; body: string; model: string }
+
+export function aiDraftEmail(req: AiDraftReq) {
+  return mockCall<AiDraftRes>(SYS, "AI Drafter", `POST /ai/draft-email`, { orderNo: req.orderNo, party: req.party, intent: req.intent },
+    () => ({ ...req.draft, model: "claude-sonnet-5 (simulated)" }),
+    { latencyMs: [700, 1800], failError: { code: "DRAFTER_BUSY", message: "Drafting model busy — retry", status: 429 } });
+}

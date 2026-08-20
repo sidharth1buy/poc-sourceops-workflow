@@ -15,6 +15,7 @@ import { Select } from "@/components/ui/form";
 import { money, qtyfmt, cn, fmtAddress } from "@/lib/utils";
 import { usd, toUSD } from "@/lib/fx";
 import { useStore } from "@/store/store";
+import { useRole } from "@/lib/role";
 import { journeyPct, remainingToShip, remainingToAllocate, customsApplies, gateReason, mappedForOrderLine, unmappedForOrderLine } from "@/store/selectors";
 import { incotermPlan, supplierHandlesCustoms, weClearImportCustoms } from "@/lib/incoterm";
 import { TrackingTimeline } from "@/components/order/tracking-timeline";
@@ -26,11 +27,15 @@ import {
 // The same acting screen the Testing board opens at /fulfilment/testing/[orderId] — one
 // component, mounted in both places, so the two can't diverge.
 import { TestingTab } from "@/components/order/testing-tab";
+import { CommunicationTab } from "@/components/order/communication-tab";
+import { DocumentWarehouseTab } from "@/components/order/document-warehouse-tab";
 
 type ModalKey = null | "addStep" | "addLot" | "addPayment" | "allocate" | "event" | "doc" | "pi";
 
 export function OrderWorkspace({ id }: { id: string }) {
   const b = useStore((s) => s.orders[id]);
+  // The active persona decides which desk the document warehouse lands on.
+  const { role } = useRole();
   const advanceStep = useStore((s) => s.advanceStep);
   const cancelOrder = useStore((s) => s.cancelOrder);
   const searchParams = useSearchParams();
@@ -125,6 +130,8 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Customs" && <CustomsTab b={b} id={id} />}
       {tab === "Delivery" && <DeliveryTab b={b} id={id} onAllocate={() => setModal("allocate")} />}
       {tab === "Documents" && <DocumentsTab b={b} onUpload={() => setModal("doc")} />}
+      {tab === "Doc warehouse" && <DocumentWarehouseTab b={b} role={role} />}
+      {tab === "Communication" && <CommunicationTab b={b} />}
       {tab === "Events" && <EventsTab b={b} onAdd={() => setModal("event")} />}
       {tab === "Approvals" && <ApprovalsTab b={b} id={id} />}
 

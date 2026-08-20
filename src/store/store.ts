@@ -16,7 +16,7 @@ import type { OrdersMap } from "@/store/selectors";
 import { ESCROW_STATUS_ORDER } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
 import { fileBillOfEntry, getAssessment, getClearanceStatus, getIgmEntry } from "@/integrations/customs-icegate";
-import { bookShipment, getTracking, dhlCreatePickup, dhlUpdatePickup, dhlCancelPickup, dhlGetInvoices, dhlUploadImage, type Carrier } from "@/integrations/logistics";
+import { bookShipment, getTracking, dhlCreatePickup, dhlUpdatePickup, dhlCancelPickup, dhlGetInvoices, dhlUploadImage, sendLogisticsMail, fetchLogisticsReplies, LOGISTICS_PARTY_LABEL, type Carrier, type LogisticsParty } from "@/integrations/logistics";
 import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyCustomsTeamToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
 import { weClearImportCustoms } from "@/lib/incoterm";
 import {
@@ -64,6 +64,23 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " "); // 
 const auditRow = (a: Omit<TestAuditEntry, "id" | "at">): TestAuditEntry => ({ id: uid("aud"), at: stamp(), ...a });
 
 const ME = "You (demo)";
+
+// The logistics desk's counterparty mailboxes. Party records carry no email and
+// the transport is a mock, so these are synthesized — but stable per order, so
+// the thread reads like a real one.
+const logisticsContact = (b: OrderBundle, p: LogisticsParty): string => {
+  const slug = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "party";
+  const leg = b.shipments.find((x) => x.leg === "INBOUND");
+  switch (p) {
+    case "SUPPLIER": return `docs@${slug(b.supplier.name)}.com`;
+    case "CARRIER": return `bookings@${slug(leg?.carrier ?? "dhl")}.com`;
+    case "CHA": return `filing@${slug(b.customs[0]?.chaName ?? "cha-desk")}.in`;
+    case "WAREHOUSE": return "dock@1buy-hub.in";
+    case "CLIENT": return `orders@${slug(b.buyer.name)}.com`;
+    case "INSURER": return "claims@marine-cover.in";
+    case "FINANCE": return "finance@1buy.ai";
+  }
+};
 
 // Real-world API provider names per carrier — shown in the "calling …" loading popups so the
 // mock booking/tracking reads like a live integration (swap for real endpoints in production).
@@ -502,6 +519,23 @@ interface Store {
 
   allocateDelivery: (orderId: string, a: { fromShipmentNo: string; clientPoNo: string; clientLineMpn: string; qty: number }) => boolean;
   recordPoD: (orderId: string, deliveryId: string) => void;
+  /** The warehouse counts the consignment in and issues its receipt. */
+  issueGrn: (orderId: string, lines: { mpn: string; expectedQty: number; receivedQty: number }[], discrepancy?: string) => void;
+  /** The carrier's proof of delivery for the inbound leg. With the GRN, this is what makes the order delivered. */
+  recordInboundPod: (orderId: string, podRef?: string) => void;
+
+  // ---- logistics desk correspondence + outbound documents ----
+  sendLogisticsMessage: (orderId: string, m: { to: LogisticsParty; subject: string; body: string; cc?: string[]; bcc?: string[]; category?: string; threadId?: string }) => void;
+  /** Poll for replies to whatever we sent and have not heard back on. */
+  checkLogisticsInbox: (orderId: string) => void;
+  /** Produce one of the desk's own documents and send it to its named recipients in one act. */
+  createLogisticsDoc: (orderId: string, doc: { docId: string; name: string; to: LogisticsParty[]; body: string }) => void;
+  /** Demo: load a realistic mid-flow inbound state onto this order — cleared customs, at the door of delivery — so the end-to-end flow can be read and then finished by hand. */
+  seedLogisticsDemo: (orderId: string) => void;
+  /** Demo: strip this order's inbound flow back to the start, to run the whole journey by hand. */
+  resetLogisticsFlow: (orderId: string) => void;
+  /** File a thread email under a category ("OTHERS" for the unmappable). */
+  setLogisticsEmailCategory: (orderId: string, itemId: string, category: string) => void;
 
   generateEInvoice: (orderId: string) => void; // GST e-Invoice / IRP adapter
   cancelOrder: (orderId: string) => void;
@@ -2225,6 +2259,293 @@ export const useStore = create<Store>()(
         toast.success(`Allocated ${a.qty} → ${a.clientPoNo}`);
         return true;
       },
+      issueGrn: (orderId, lines, discrepancy) => {
+        /*
+         * Guard first. A receipt issued twice would give the order two
+         * acceptance dates, and "delivered" is computed from this — so a second
+         * one would silently move the date the customer is told.
+         */
+        const b = get().orders[orderId];
+        if (!b) return;
+        if (b.grn) { toast.error("A goods receipt note has already been issued for this order"); return; }
+        if (!lines.length) { toast.error("Nothing to receive"); return; }
+        const grnNo = `GRN-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 8999)}`;
+        set((s) => {
+          const bb = s.orders[orderId];
+          if (!bb) return;
+          bb.grn = { grnNo, receivedAt: today(), receivedBy: ME, lines, discrepancy: discrepancy?.trim() || undefined };
+          bb.events.unshift({
+            id: uid("ev"),
+            eventType: "GRN_ISSUED",
+            message: `${grnNo} issued — ${lines.reduce((a, l) => a + l.receivedQty, 0)} received${discrepancy ? `. ${discrepancy}` : ""}`,
+            source: "SC_MANUAL",
+            occurredAt: today(),
+            recordedBy: ME,
+          });
+        });
+        toast.success(`${grnNo} issued`, {
+          description: "The order counts as delivered once proof of delivery is back from the carrier too.",
+        });
+      },
+
+      recordInboundPod: (orderId, podRef) => {
+        /*
+         * Guard first. The POD is half of "delivered" — recording it against
+         * nothing, or twice, would move the date the customer is told.
+         */
+        const b = get().orders[orderId];
+        if (!b) return;
+        const leg = b.shipments.find((x) => x.leg === "INBOUND");
+        if (!leg || leg.awb === "booking…" || leg.awb === "booking failed") { toast.error("No inbound shipment to record a proof of delivery against"); return; }
+        if (leg.pod) { toast("Proof of delivery is already on file for this consignment"); return; }
+        set((s) => {
+          const sh = s.orders[orderId]?.shipments.find((x) => x.id === leg.id);
+          if (!sh) return;
+          sh.pod = today();
+          sh.podRef = podRef?.trim() || undefined;
+          s.orders[orderId]!.events.unshift({
+            id: uid("ev"),
+            eventType: "POD_RECEIVED",
+            message: `Proof of delivery back from ${sh.carrier}${podRef?.trim() ? ` · ${podRef.trim()}` : ""}`,
+            source: "SC_MANUAL",
+            occurredAt: today(),
+            recordedBy: ME,
+          });
+        });
+        const grnDone = Boolean(get().orders[orderId]?.grn);
+        toast.success("Proof of delivery recorded", {
+          description: grnDone
+            ? "The goods receipt note was already issued — this order is now delivered."
+            : "The order counts as delivered once the warehouse issues the goods receipt note too.",
+        });
+      },
+
+      sendLogisticsMessage: (orderId, m) => {
+        const b = get().orders[orderId];
+        if (!b) return;
+        if (!m.subject.trim() || !m.body.trim()) { toast.error("A subject and a message are both needed"); return; }
+        const contact = logisticsContact(b, m.to);
+        const cc = m.cc?.map((x) => x.trim()).filter(Boolean);
+        const bcc = m.bcc?.map((x) => x.trim()).filter(Boolean);
+        void (async () => {
+          try {
+            await sendLogisticsMail({ party: m.to, to: contact, cc, bcc, subject: m.subject.trim(), body: m.body.trim(), orderNo: b.orderNo });
+            const id = uid("lm");
+            set((s) => {
+              const bb = s.orders[orderId];
+              if (!bb) return;
+              (bb.logisticsThread ??= []).push({
+                id, threadId: m.threadId, with: m.to, way: "OUT",
+                subject: m.subject.trim(), body: m.body.trim(), at: stamp(), who: contact,
+                cc: cc?.length ? cc : undefined, bcc: bcc?.length ? bcc : undefined,
+              });
+              /* Filed at write time — the category is part of sending, not an afterthought. */
+              if (m.category && m.category !== m.to) (bb.logisticsEmailCategories ??= {})[id] = m.category;
+            });
+            toast.success(m.threadId ? "Reply sent — added to the chain" : `Sent to the ${LOGISTICS_PARTY_LABEL[m.to].toLowerCase()}`, { description: contact });
+          } catch { toast.error("Send failed — mail relay unavailable"); }
+        })();
+      },
+
+      checkLogisticsInbox: (orderId) => {
+        const b = get().orders[orderId];
+        if (!b) return;
+        /*
+         * A party owes a reply when our newest message to them is more recent
+         * than their newest to us. Polling answers exactly those, nothing else —
+         * an inbox that invents unprompted mail would drown the real thread.
+         */
+        const thread = b.logisticsThread ?? [];
+        const parties = Array.from(new Set(thread.map((m) => m.with))) as LogisticsParty[];
+        const pending = parties.filter((p) => {
+          const last = [...thread].reverse().find((m) => m.with === p);
+          return last?.way === "OUT";
+        }).map((p) => {
+          const lastOut = [...thread].reverse().find((m) => m.with === p && m.way === "OUT")!;
+          /* The reply belongs to the chain of the mail it answers. */
+          return { party: p, subject: lastOut.subject, contact: lastOut.who, threadId: lastOut.threadId ?? lastOut.id };
+        });
+        if (pending.length === 0) { toast("Nobody owes this thread a reply — nothing to poll for"); return; }
+        void (async () => {
+          try {
+            const res = await fetchLogisticsReplies({ orderNo: b.orderNo, pending });
+            set((s) => {
+              const bb = s.orders[orderId];
+              if (!bb) return;
+              for (const r of res.replies) {
+                (bb.logisticsThread ??= []).push({
+                  id: uid("lm"), threadId: r.threadId, with: r.party, way: "IN",
+                  subject: r.subject, body: r.body, at: stamp(), who: r.who,
+                  attachments: r.attachments.length ? r.attachments : undefined,
+                });
+              }
+            });
+            toast.success(`${res.replies.length} repl${res.replies.length === 1 ? "y" : "ies"} received`);
+          } catch { toast.error("Mailbox poll timed out — try again"); }
+        })();
+      },
+
+      createLogisticsDoc: (orderId, doc) => {
+        const b = get().orders[orderId];
+        if (!b) return;
+        if (!doc.name.trim() || !doc.body.trim()) { toast.error("The document needs a name and its content"); return; }
+        if (doc.to.length === 0) { toast.error("Pick at least one recipient — a document sent to nobody is a draft, not a record"); return; }
+        void (async () => {
+          try {
+            /* One mail per recipient — each lands separately on the Integrations board. */
+            for (const p of doc.to) {
+              await sendLogisticsMail({ party: p, to: logisticsContact(b, p), subject: `${doc.name} · ${b.orderNo}`, body: doc.body.trim(), orderNo: b.orderNo });
+            }
+            const toLabels = doc.to.map((p) => LOGISTICS_PARTY_LABEL[p]);
+            set((s) => {
+              const bb = s.orders[orderId];
+              if (!bb) return;
+              (bb.logisticsOutbox ??= []).push({
+                id: uid("ld"), docId: doc.docId, name: doc.name.trim(),
+                to: doc.to, at: today(), body: doc.body.trim(),
+              });
+              bb.events.unshift({
+                id: uid("ev"),
+                eventType: "LOGISTICS_DOC_SENT",
+                message: `${doc.name.trim()} sent to ${toLabels.join(", ")}`,
+                source: "SC_MANUAL",
+                occurredAt: today(),
+                recordedBy: ME,
+              });
+            });
+            toast.success(`${doc.name.trim()} sent`, { description: `To ${toLabels.join(", ")}` });
+          } catch { toast.error("Send failed — mail relay unavailable"); }
+        })();
+      },
+
+      seedLogisticsDemo: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        /*
+         * Deliberately overwrites this order's inbound state — that is what a
+         * demo loader is for. It stops one step short of done (no GRN, no POD)
+         * so the delivered rule is finished by hand, not read about.
+         */
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          const d = (offset: number) => { const x = new Date(); x.setDate(x.getDate() + offset); return x.toISOString().slice(0, 10); };
+          const awb = "1Z 8842 7719";
+          const shipmentNo = `SHP-IN-${b.shipments.filter((x) => x.leg !== "INBOUND").length + 1}`;
+
+          b.shippingDocs = {
+            status: "RECEIVED",
+            requestedAt: d(-9),
+            receivedAt: d(-8),
+            requested: ["Packing List", "Commercial Invoice", "Certificate of Origin"],
+            docs: ["Packing List", "Commercial Invoice", "Certificate of Origin"],
+            pieces: 3,
+            grossWeightKg: 26.4,
+            dimensions: "40×30×25 ×3",
+            hsCode: "8541.10",
+            goodsDescription: "Electronic components",
+            declaredValue: 18400,
+            declaredCurrency: b.currency || "USD",
+          };
+
+          b.shipments = [
+            ...b.shipments.filter((x) => x.leg !== "INBOUND"),
+            {
+              id: uid("shp"), shipmentNo, leg: "INBOUND", awb, carrier: "DHL",
+              fromLocation: b.supplier.name, toLocation: "1Buy hub — New Delhi",
+              boxCount: 3, grossWeightKg: 26.4, dimensions: "40×30×25 ×3",
+              dispatchDate: d(-6), status: "ARRIVED",
+              lines: b.lines.map((l) => ({ mpn: l.mpn, qty: l.quantity })),
+              carrierRef: "DHL-BKG-55021", trackingUrl: "https://www.dhl.com/track?awb=1Z88427719",
+              lastLocation: "New Delhi — arrived at destination facility", updatedAt: d(-1),
+              productCode: "P", productName: "EXPRESS WORLDWIDE", rateAmount: 412, rateCurrency: "USD",
+              estimatedDelivery: d(0), bookingMode: "COMBINED",
+              pickupConfirmationNo: "PU-88132", pickupWindow: `${d(-6)} · by 18:00`,
+              goodsDescription: "Electronic components", hsCode: "8541.10",
+              declaredValue: 18400, declaredCurrency: b.currency || "USD",
+              packages: [{ count: 3, weightKg: 8.8, dimensions: "40×30×25" }],
+              bookingDocs: ["Packing List", "Commercial Invoice", "Certificate of Origin"],
+            },
+          ];
+
+          if (b.tradeType === "INTERNATIONAL") {
+            b.customs = [{
+              id: uid("ce"), shipmentNo, beNo: "BE-7719-2214", beDate: d(-2),
+              portCode: "INDEL4", chaName: "Meridian Clearing Co", currency: "INR",
+              boeType: "PRIOR", assessableValue: 18400, filingMode: "CHA",
+              awbSentToChaAt: d(-5), igmStatus: "MATCHED", igmNo: "IGM-99120", igmItemNo: "042",
+              stage: "CLEARED", assessment: "AUTO_CLEAR", dutyPaidAt: d(-1), oocDate: d(-1),
+              duty: { bcd: 0, sws: 0, igst: 3312, totalDuty: 3312 },
+              docs: ["Packing List", "Commercial Invoice", "Certificate of Origin"],
+            }];
+          }
+
+          /* Two of the pairs are real chains — reply threaded onto its root —
+           * so the mail-chain UI has something to show before anyone sends. */
+          const pickupRoot = uid("lm");
+          const chaRoot = uid("lm");
+          b.logisticsThread = [
+            { id: pickupRoot, with: "CARRIER", way: "OUT", subject: `${b.orderNo} — pickup window confirmation`, body: "Please confirm the courier pickup for the booked consignment; supplier dock closes 18:00 local.", at: `${d(-7)} 10:12`, who: "bookings@dhl.com" },
+            { id: uid("lm"), threadId: pickupRoot, with: "CARRIER", way: "IN", subject: `Re: ${b.orderNo} — pickup window confirmation`, body: "Pickup confirmed for tomorrow, courier assigned. Status report attached.", at: `${d(-7)} 14:40`, who: "bookings@dhl.com", attachments: ["Shipment status report.pdf"] },
+            { id: chaRoot, with: "CHA", way: "OUT", subject: `${b.orderNo} — pre-alert & entry filing`, body: "Pre-alert sent with the full document set. Please file PRIOR so clearance starts before arrival.", at: `${d(-5)} 09:05`, who: "filing@meridian-clearing-co.in" },
+            { id: uid("lm"), threadId: chaRoot, with: "CHA", way: "IN", subject: `Re: ${b.orderNo} — pre-alert & entry filing`, body: "Entry filed PRIOR and assessed clean; duty paid and out-of-charge granted on arrival. Filed copy attached.", at: `${d(-1)} 11:20`, who: "filing@meridian-clearing-co.in", attachments: ["Bill of Entry (filed copy).pdf", "Clearance checklist.pdf"] },
+            { id: uid("lm"), with: "WAREHOUSE", way: "OUT", subject: `${b.orderNo} — dock slot for final delivery`, body: "Cleared consignment moving from the airport custodian today — please hold a dock slot and count against the packing list.", at: `${d(0)} 08:30`, who: "dock@1buy-hub.in" },
+            /* Arrives filed under the carrier; belongs to Finance — the category
+             * re-filing exists for exactly this mail. */
+            { id: uid("lm"), with: "CARRIER", way: "IN", subject: `Freight invoice INV-8802 — USD 412 · AWB ${awb}`, body: "Invoice for carriage on the referenced consignment, payable 30 days. Please route to your accounts team.", at: `${d(-1)} 16:05`, who: "billing@dhl.com", attachments: ["Freight invoice INV-8802.pdf"] },
+          ];
+
+          b.logisticsOutbox = [{
+            id: uid("ld"), docId: "PRE_ALERT", name: "Pre-alert pack", to: ["CHA", "WAREHOUSE"], at: d(-5),
+            body: `Pre-alert · ${b.orderNo}
+Carrier DHL · AWB ${awb}
+Expected arrival ${d(0)}
+Attached: Packing List, Commercial Invoice, Certificate of Origin
+HS 8541.10 · declared ${b.currency || "USD"} 18400
+Please pre-file the entry so clearance starts before the goods land.`,
+          }];
+
+          b.grn = undefined;
+          b.events.unshift({ id: uid("ev"), eventType: "DEMO_SEEDED", message: "Logistics demo flow loaded — cleared customs, at the warehouse door; GRN and POD left to do", source: "SC_MANUAL", occurredAt: today(), recordedBy: ME });
+        });
+        toast.success("Demo flow loaded", {
+          description: "Docs received, booked, cleared customs, arrived. Finish it: issue the GRN and record the POD — that is what makes it delivered.",
+        });
+      },
+
+      setLogisticsEmailCategory: (orderId, itemId, category) => {
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          (b.logisticsEmailCategories ??= {})[itemId] = category;
+        });
+      },
+
+      resetLogisticsFlow: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          const inboundNos = b.shipments.filter((x) => x.leg === "INBOUND").map((x) => x.shipmentNo);
+          b.shipments = b.shipments.filter((x) => x.leg !== "INBOUND");
+          b.customs = b.customs.filter((c) => !inboundNos.includes(c.shipmentNo));
+          b.shippingDocs = undefined;
+          b.grn = undefined;
+          b.logisticsThread = undefined;
+          b.logisticsOutbox = undefined;
+          /* The warehouse's relabel mark reads as "at our warehouse" — clear it
+           * too, or the reset order would start seven steps in. */
+          b.relabelledAt = undefined;
+          const gone = new Set(["GRN_ISSUED", "POD_RECEIVED", "LOGISTICS_DOC_SENT", "DEMO_SEEDED"]);
+          b.events = b.events.filter((e) => !gone.has(e.eventType));
+          b.events.unshift({ id: uid("ev"), eventType: "LOGISTICS_RESET", message: "Inbound flow reset to the start for a demo run", source: "SC_MANUAL", occurredAt: today(), recordedBy: ME });
+        });
+        toast.success("Inbound flow reset", {
+          description: "Back to the start: ask the supplier for documents, book, track, clear, receive — then GRN + POD.",
+        });
+      },
+
       recordPoD: (orderId, deliveryId) => {
         set((s) => { const d = s.orders[orderId]?.deliveries.find((x) => x.id === deliveryId); if (d) d.pod = today(); });
         toast.success("Proof of delivery recorded");
@@ -2920,7 +3241,12 @@ export const useStore = create<Store>()(
       // 28 = Shipment.packages[] (per-box weight + dimensions; multi-box DHL booking) ·
       // 29 = Payment.attachment (proof/invoice attached by Finance when marking paid) ·
       // 30 = LabInvoice provenance (source/enteredBy/receivedVia) for hand-entered testing invoices
-      version: 30,
+      // 31: GoodsReceipt on the bundle — "delivered" now means GRN + POD, not POD alone. ·
+      // 32 = Shipment.pod/podRef (carrier POD on the inbound leg) + logisticsThread/logisticsOutbox (desk correspondence + created docs) ·
+      // 33 = LogisticsMessage.attachments (counterparty replies carry their paper) ·
+      // 34 = FINANCE as a logistics counterparty + logisticsEmailCategories (per-email category filing, OTHERS bucket) ·
+      // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply)
+      version: 35,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

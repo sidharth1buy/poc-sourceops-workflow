@@ -6,7 +6,13 @@ import type { Shipment } from "@/types";
 
 function fmtHop(base: number, hrs: number) {
   const d = new Date(base + hrs * 3_600_000);
-  return d.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  /*
+   * Pinned locale + timezone, not the environment's. This renders on the
+   * server too, and `undefined` let Node and the browser format the same
+   * instant differently — a hydration mismatch that regenerated the whole
+   * page tree on every load.
+   */
+  return d.toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });
 }
 
 // DHL-style scan history for a shipment — a vertical timeline derived from the current status.
