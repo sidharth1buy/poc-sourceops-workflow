@@ -5,10 +5,11 @@ import { useMemo, useState } from "react";
 import { Plus, ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "@/store/store";
 import { sourcedForClientLine, clientPoStatus } from "@/store/selectors";
-import { Panel, Pill, Button, PageHeader, Pagination } from "@/components/ui/primitives";
+import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked } from "@/components/ui/primitives";
 import { SourceOrderModal } from "@/components/order/modals";
 import { prettyStatus } from "@/data/enums";
 import { money, qtyfmt, fmtAddress, cn } from "@/lib/utils";
+import { useRole } from "@/lib/role";
 
 type SrcTarget = { poNo: string; buyer: string; mpn: string; price: number; remaining: number };
 
@@ -22,6 +23,7 @@ export default function ClientPosPage() {
   const orders = useStore((s) => s.orders);
   const supplierPos = useStore((s) => s.supplierPos);
   const [src, setSrc] = useState<SrcTarget | null>(null);
+  const { canAccessSalesOrders } = useRole();
 
   const statusTone = (s: string): "ok" | "warn" | "neutral" => (s === "FULLY_SOURCED" ? "ok" : s === "PARTIALLY_SOURCED" ? "warn" : "neutral");
 
@@ -50,6 +52,15 @@ export default function ClientPosPage() {
       return okQ && okStatus;
     });
   }, [rows, q, status]);
+
+  if (!canAccessSalesOrders) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="Sales Orders" description="Client demand — restricted to Supply Chain." />
+        <Panel><RoleLocked roleLabel="SC" action="view or act on sales orders" /></Panel>
+      </div>
+    );
+  }
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageSafe = Math.min(page, totalPages);

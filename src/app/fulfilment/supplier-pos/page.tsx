@@ -6,8 +6,9 @@ import { useRouter } from "next/navigation";
 import { Plus, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 import { useStore } from "@/store/store";
 import { ONEBUY_HUB } from "@/data/fixtures";
-import { Panel, Pill, Button, PageHeader, Pagination } from "@/components/ui/primitives";
+import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked } from "@/components/ui/primitives";
 import { money, qtyfmt, cn } from "@/lib/utils";
+import { useRole } from "@/lib/role";
 
 const STATUS_FILTERS = ["All", "DRAFT", "ORDERED"] as const;
 const PAGE_SIZE = 10;
@@ -18,6 +19,7 @@ export default function SupplierPosPage() {
   const router = useRouter();
   const supplierPos = useStore((s) => s.supplierPos);
   const createOrderFromSupplierPo = useStore((s) => s.createOrderFromSupplierPo);
+  const { canAccessPurchaseOrders } = useRole();
 
   function createOrder(id: string) {
     const orderId = createOrderFromSupplierPo(id);
@@ -38,6 +40,15 @@ export default function SupplierPosPage() {
       return okQ && okStatus;
     });
   }, [supplierPos, q, status]);
+
+  if (!canAccessPurchaseOrders) {
+    return (
+      <div className="space-y-5">
+        <PageHeader title="Purchase Orders" description="Our purchase orders — restricted to Supply Chain." />
+        <Panel><RoleLocked roleLabel="SC" action="view or act on purchase orders" /></Panel>
+      </div>
+    );
+  }
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageSafe = Math.min(page, totalPages);

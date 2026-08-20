@@ -1,7 +1,10 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import { ROLES, TEST_EDIT_ROLES, LAB_EMAIL_ROLES, ESCROW_ACCESS_ROLES, type Role } from "@/data/enums";
+import {
+  ROLES, TEST_EDIT_ROLES, LAB_EMAIL_ROLES, ESCROW_ACCESS_ROLES, PAYMENTS_ACCESS_ROLES,
+  TESTING_ACCESS_ROLES, SALES_ORDER_ACCESS_ROLES, PURCHASE_ORDER_ACCESS_ROLES, type Role,
+} from "@/data/enums";
 
 export const ROLE_STORAGE_KEY = "poc-role";
 export const ROLE_CHANGE_EVENT = "poc-role-change";
@@ -36,5 +39,9 @@ export function useRole() {
     canEditTests: TEST_EDIT_ROLES.includes(role),
     canEmailLab: LAB_EMAIL_ROLES.includes(role),
     canAccessEscrow: ESCROW_ACCESS_ROLES.includes(role),
+    canAccessPayments: PAYMENTS_ACCESS_ROLES.includes(role),
+    canAccessTesting: TESTING_ACCESS_ROLES.includes(role),
+    canAccessSalesOrders: SALES_ORDER_ACCESS_ROLES.includes(role),
+    canAccessPurchaseOrders: PURCHASE_ORDER_ACCESS_ROLES.includes(role),
   };
 }
