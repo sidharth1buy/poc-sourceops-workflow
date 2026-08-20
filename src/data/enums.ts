@@ -672,7 +672,10 @@ export const ESCROW_ACCESS_ROLES: Role[] = ["Finance"];
 
 export const WORKSPACE_TABS = [
   "Overview", "Lines", "Allocations", "Journey", "Testing", "Payments",
-  "Shipments", "Customs", "Delivery", "Documents", "Events", "Approvals",
+  // Communication sits beside Documents and Events because the three answer the
+  // same kind of question — what is on the file — as against the tabs above
+  // them, which are where the order is worked.
+  "Shipments", "Customs", "Delivery", "Documents", "Doc warehouse", "Communication", "Events", "Approvals",
 ] as const;
 export type WorkspaceTab = (typeof WORKSPACE_TABS)[number];
 

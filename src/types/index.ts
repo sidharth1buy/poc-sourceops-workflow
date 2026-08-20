@@ -675,6 +675,11 @@ export interface Shipment {
   declaredCurrency?: string;
   pickupReadyDate?: string;   // EXW pickup date
   bookingDocs?: string[];     // documents confirmed at booking (Commercial Invoice, Packing List, COO, …)
+  // ---- delivery evidence ----
+  /** Date the carrier's proof of delivery came back. With the GRN, this is what makes the order delivered. */
+  pod?: string;
+  /** The carrier's POD reference or signatory, where one was quoted. */
+  podRef?: string;
 }
 
 // One physical box on the shipment (DHL packages[]). `count` identical boxes of this size/weight.
@@ -739,6 +744,59 @@ export interface DeliveryAllocation {
   pod?: string;
 }
 
+/**
+ * The warehouse's own receipt.
+ *
+ * Distinct from proof of delivery, and both are needed before an order counts
+ * as delivered: the carrier's POD says something arrived, the goods receipt
+ * note says WE accepted it, counted, against the packing list. A POD with no
+ * GRN is a delivery nobody has checked; a GRN with no POD is an acceptance the
+ * carrier is not on the hook for.
+ */
+export interface GoodsReceipt {
+  grnNo: string;
+  receivedAt: string;
+  receivedBy: string;
+  /** Counted in against the packing list, per part. */
+  lines: { mpn: string; expectedQty: number; receivedQty: number }[];
+  /** Anything short, damaged or queried at the dock. */
+  discrepancy?: string;
+}
+
+/** One message on the logistics desk's own thread for an order — carrier, broker, supplier, dock. */
+export interface LogisticsMessage {
+  id: string;
+  /**
+   * The chain this email belongs to: the ROOT email's id. Absent on a root
+   * (its own id is the chain). Replies — ours and theirs — carry the root's
+   * id, which is what makes a conversation one thread instead of a pile.
+   */
+  threadId?: string;
+  with: "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE";
+  way: "OUT" | "IN";
+  subject: string;
+  body: string;
+  at: string;
+  /** The named mailbox on the other side. */
+  who: string;
+  cc?: string[];
+  bcc?: string[];
+  /** File names riding on the mail — a counterparty's reply usually carries its paper. */
+  attachments?: string[];
+}
+
+/** A document the logistics desk produced and sent — pre-alert, damage notice, ad-hoc. */
+export interface OutboundLogisticsDoc {
+  id: string;
+  /** Which register entry it satisfies; "CUSTOM" for ad-hoc documents. */
+  docId: string;
+  name: string;
+  /** Party keys it went to (LogisticsParty) — never empty; an unsent document is a draft, not a record. */
+  to: string[];
+  at: string;
+  body: string;
+}
+
 export interface DocumentRef {
   id: string;
   subjectType: string;
@@ -796,6 +854,19 @@ export interface OrderBundle extends Order {
   einvoice?: EInvoice;
   relabelledAt?: string; // set when goods are physically received + relabelled to the masking entity at the hub — gates RELABEL
   shippingDocs?: ShippingDocRequest; // pre-booking doc exchange with the supplier (Packing List / CI / COO)
+  /** The warehouse receipt. With proof of delivery, this is what "delivered" means. */
+  grn?: GoodsReceipt;
+  /** The logistics desk's own order thread — carrier / CHA / supplier / dock, both directions. */
+  logisticsThread?: LogisticsMessage[];
+  /** Documents the logistics desk produced and sent from this order. */
+  logisticsOutbox?: OutboundLogisticsDoc[];
+  /**
+   * Manual category filed on a thread item, by item id. An email's category
+   * defaults to who it is with; this map holds the re-filings (a carrier's
+   * freight invoice re-filed under Finance, an unclassifiable mail under
+   * Others).
+   */
+  logisticsEmailCategories?: Record<string, string>;
 }
 
 // Pre-booking: we ask the supplier for shipping documents; their reply gives us the particulars
@@ -815,6 +886,13 @@ export interface ShippingDocRequest {
   declaredValue?: number;
   declaredCurrency?: string;
   docs?: string[];
+  // ---- compliance references (see src/lib/consignment-compliance.ts) ----
+  // Held here rather than on the Shipment because all three have to exist BEFORE
+  // a carrier will accept the consignment — a field on the shipment could only
+  // ever be filled in after the thing it gates.
+  insuranceCertRef?: string;      // cargo cover; ours on E/F terms, the supplier's on C/D
+  dgDeclarationRef?: string;      // DG declaration + UN38.3 summary + SDS, where a cell is aboard
+  exportDeclarationRef?: string;  // origin-country export declaration; OURS on EXW
 }
 
 // ---- RFQ Module Types ----
