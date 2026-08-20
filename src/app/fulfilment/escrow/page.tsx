@@ -2,10 +2,9 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Lock } from "lucide-react";
 import { useStore } from "@/store/store";
 import { allEscrow, orderPhaseTimings } from "@/store/selectors";
-import { Panel, Pill, StatusPill, DataTable, PageHeader, Pagination, type Col } from "@/components/ui/primitives";
+import { Panel, Pill, StatusPill, DataTable, PageHeader, Pagination, RoleLocked, type Col } from "@/components/ui/primitives";
 import { prettyStatus } from "@/data/enums";
 import { money, cn } from "@/lib/utils";
 import { useRole } from "@/lib/role";
@@ -74,13 +73,8 @@ export default function EscrowBoardPage() {
   if (!canAccessEscrow) {
     return (
       <div className="space-y-5">
-        <PageHeader title="Escrow board" description="Escrow moves real money — restricted to Finance." />
-        <Panel>
-          <div className="p-6 text-center text-sm text-muted-foreground">
-            <Lock className="mx-auto mb-2 h-5 w-5 text-warn" />
-            Escrow is Finance-only. Switch to the Finance persona (top right) to view or act on escrow orders.
-          </div>
-        </Panel>
+        <PageHeader title="Escrow board" description="Escrow order handling — restricted to Supply Chain." />
+        <Panel><RoleLocked roleLabel="SC" action="view or act on escrow orders" /></Panel>
       </div>
     );
   }

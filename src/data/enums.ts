@@ -693,9 +693,16 @@ export function notifyDigest(party: NotifyParty, c: NotifyDigestCtx): { subject:
 // Access control - only these personas may override auto-filled tests or email WHL on our behalf.
 export const TEST_EDIT_ROLES: Role[] = ["SC", "Mgmt"];
 export const LAB_EMAIL_ROLES: Role[] = ["SC", "Mgmt"];
-// Escrow/payments are money-movement actions — restricted to Finance. Escrow now lives
-// only under the Escrow board (/fulfilment/escrow/[id]), not as an order-workspace tab.
-export const ESCROW_ACCESS_ROLES: Role[] = ["Finance"];
+// Escrow is now run by the Supply Chain team, not Finance (2026-08-20) — Payments (the actual
+// money-movement/mark-paid actions) stays Finance-only, but escrow order handling moved to SC.
+// Escrow lives only under the Escrow board (/fulfilment/escrow/[id]), not as an order-workspace tab.
+export const ESCROW_ACCESS_ROLES: Role[] = ["SC"];
+// Payments moves real money (client collection, supplier/customs/lab settlement) — Finance-only.
+export const PAYMENTS_ACCESS_ROLES: Role[] = ["Finance"];
+// Testing, Sales Orders and Purchase Orders are Supply Chain's own desks (2026-08-20).
+export const TESTING_ACCESS_ROLES: Role[] = ["SC"];
+export const SALES_ORDER_ACCESS_ROLES: Role[] = ["SC"];
+export const PURCHASE_ORDER_ACCESS_ROLES: Role[] = ["SC"];
 
 export const WORKSPACE_TABS = [
   "Overview", "Lines", "Allocations", "Journey", "Testing", "Payments",

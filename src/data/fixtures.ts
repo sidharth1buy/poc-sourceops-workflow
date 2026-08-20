@@ -369,14 +369,14 @@ function seedSteps(o: Order): Seed[] {
   // escrow funds buyer money up-front (collect-before-pay baked in); non-escrow needs an explicit collect gate first
   if (!escrow) s.push({ phase: "PAYMENT", name: "Collect advance from client", owner: "Finance", isGate: true });
   s.push(escrow
-    ? { phase: "PAYMENT", name: "Escrow: T/T payment received", owner: "Finance", isGate: true }
+    ? { phase: "PAYMENT", name: "Escrow: T/T payment received", owner: "SC", isGate: true }
     : { phase: "PAYMENT", name: `Pay supplier — ${o.paymentMode.toLowerCase()}`, owner: "Finance", isGate: true });
   if (testing) {
     const whl = testingModeOf(o) === "WHL";
     s.push({ phase: "TESTING", name: `Testing — ${whl ? "WHL lab" : "supplier self-test"}`, owner: whl ? "Lab" : "Supplier", isGate: true });
   }
   // escrow ALWAYS needs a release step, else money stays trapped (ESCROW + testing=NONE). Trigger = PASS when tested, else acceptance/GRN.
-  if (escrow) s.push({ phase: "PAYMENT", name: "Release escrow (to seller)", owner: "Finance", isGate: true });
+  if (escrow) s.push({ phase: "PAYMENT", name: "Release escrow (to seller)", owner: "SC", isGate: true });
   if (customsy) {
     // gated: an inbound shipment must exist before customs can be filed
     s.push({ phase: "IMPORT", name: intl ? "Ship to India (inbound AWB)" : "Export to lab → re-import", owner: "SC", isGate: true });
