@@ -215,6 +215,23 @@ export function buildDraft(
       };
     }
 
+    case "OTHER":
+      return {
+        subject: `${b.orderNo} — status on the inbound consignment`,
+        intent: "Order status to a named contact",
+        body:
+          `Sharing the current position on ${b.orderNo}:
+
+· Where it is: ${stageLine}
+· ${press}.` +
+          (booked ? `
+· Consignment: ${consign}${leg?.estimatedDelivery ? ` · expected ${leg.estimatedDelivery}` : ""}.` : "") +
+          `
+
+Happy to share anything further you need on this.` +
+          SIGN,
+      };
+
     case "FINANCE": {
       if (leg?.rateAmount) {
         return {

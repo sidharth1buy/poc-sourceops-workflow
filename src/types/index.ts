@@ -772,7 +772,7 @@ export interface LogisticsMessage {
    * id, which is what makes a conversation one thread instead of a pile.
    */
   threadId?: string;
-  with: "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE";
+  with: "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE" | "OTHER";
   way: "OUT" | "IN";
   subject: string;
   body: string;
@@ -861,12 +861,12 @@ export interface OrderBundle extends Order {
   /** Documents the logistics desk produced and sent from this order. */
   logisticsOutbox?: OutboundLogisticsDoc[];
   /**
-   * Manual category filed on a thread item, by item id. An email's category
-   * defaults to who it is with; this map holds the re-filings (a carrier's
-   * freight invoice re-filed under Finance, an unclassifiable mail under
-   * Others).
+   * Manual categories filed on a thread item, by item id — an email can sit
+   * under SEVERAL filters at once (a carrier's freight invoice under both
+   * Logistics partner and Finance). Defaults to who the mail is with; an
+   * empty filing means Others.
    */
-  logisticsEmailCategories?: Record<string, string>;
+  logisticsEmailCategories?: Record<string, string[]>;
 }
 
 // Pre-booking: we ask the supplier for shipping documents; their reply gives us the particulars
