@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { useStore } from "@/store/store";
-import { PageHeader, Panel, Pill, StatusPill, Button } from "@/components/ui/primitives";
+import { PageHeader, Panel, Pill, StatusPill } from "@/components/ui/primitives";
 import { TestingTab } from "@/components/order/testing-tab";
 import { AddLotModal } from "@/components/order/modals";
 
@@ -56,11 +56,6 @@ export default function OrderTestingWorkspacePage() {
           {b.supplierPoNo ? <> · Purchase Order <span className="font-mono">{b.supplierPoNo}</span></> : null}
           {" "}— this is where testing is worked: mail WHL, fetch reports, record dispatch, settle the lab fee and set lot verdicts.
         </>}
-        actions={
-          <Link href={`/fulfilment/orders/${orderId}?tab=Testing`}>
-            <Button variant="outline">Order workspace <ExternalLink className="h-3.5 w-3.5" /></Button>
-          </Link>
-        }
       />
 
       <TestingTab b={b} id={orderId} onAdd={() => setAddLot(true)} />

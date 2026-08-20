@@ -768,9 +768,11 @@ export const useStore = create<Store>()(
         bundle.journey.forEach((s, i) => { s.status = i === 0 ? "DONE" : i === 1 ? "IN_PROGRESS" : "PENDING"; });
         // non-escrow orders collect from the client and pay the supplier via T/T - seed both tasks so the payment gates are immediately actionable
         if (order.paymentMode !== "ESCROW") {
+          // CREDIT terms have a real due date (days from order creation); ADVANCE is due now, so no countdown applies
+          const dueDate = order.paymentMode === "CREDIT" ? addDays(created, order.creditDays ?? 30) : undefined;
           bundle.payments.push(
-            { id: uid("pay"), direction: "CLIENT_TO_1BUY", mode: order.paymentMode, triggerDoc: "Our PI", amount: order.sellTotal, currency: order.currency, status: "PENDING" },
-            { id: uid("pay"), direction: "1BUY_TO_SUPPLIER", mode: order.paymentMode, triggerDoc: "Supplier PI", amount: order.buyTotal, currency: order.currency, status: "PENDING" },
+            { id: uid("pay"), direction: "CLIENT_TO_1BUY", mode: order.paymentMode, triggerDoc: "Our PI", amount: order.sellTotal, currency: order.currency, status: "PENDING", dueDate },
+            { id: uid("pay"), direction: "1BUY_TO_SUPPLIER", mode: order.paymentMode, triggerDoc: "Supplier PI", amount: order.buyTotal, currency: order.currency, status: "PENDING", dueDate },
           );
         }
         set((s) => {

@@ -896,6 +896,13 @@ Two doors, one screen: whichever way an operator arrives, WHL mail, report fetch
 lab-fee settlement, lot verdicts, adding a lot and reconciling a parse flag all behave the same.
 Never fork them — a feature added to one and not the other is a bug by construction.
 
+**The two doors no longer cross-link** (2026-08-20). The testing route's `Order workspace` header
+button was removed, and the order-flow page's Testing section links nowhere at all: its
+`Testing board` link was dropped in the same pass that stripped every section's board link off the
+flow page (see CLAUDE.md's reading-surface rules) — the reading surface carries no navigation, so
+neither a per-order acting screen nor a board is reachable from it. The workspace's Testing tab is
+still a live door — you just reach it from the workspace, not from the flow page.
+
 The one **reading** surface is the **Testing section of the order-flow page**
 (`/fulfilment/order-flow/[orderId]`, the page the Dashboard links to): seven tiles, the unpaid/held
 fee notice, a current-reports strip, and the lot table (verdict · tests · lab fee · report ·

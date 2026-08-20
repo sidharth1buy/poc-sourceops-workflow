@@ -55,7 +55,6 @@ export function EscrowOrderDetail({ id }: { id: string }) {
         </div>
         {escrowMock && <Pill tone="warn">Mock mode</Pill>}
         {b.escrow && <StatusPill status={b.escrow.status} />}
-        <Link href={`/fulfilment/orders/${id}`} className="text-xs font-medium text-primary hover:underline">Open full order workspace →</Link>
       </div>
 
       <EscrowTab

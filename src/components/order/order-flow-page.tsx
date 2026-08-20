@@ -1,14 +1,15 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, ExternalLink, FileText,
-  FlaskConical, Landmark, Lock, Package, Plane, Receipt, ShieldCheck, Stamp, Truck, Users,
+  ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, FileText,
+  FlaskConical, Landmark, Lock, Package, Plane, Receipt, Stamp, Truck, Users,
+  type LucideIcon,
 } from "lucide-react";
 import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, type Tone } from "@/data/enums";
-import { Pill, StatusPill, Button, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
+import { Pill, StatusPill, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
 import { LotFeeCell } from "@/components/order/test-tables";
 import { LotReadOnlyDetail } from "@/components/order/testing-readonly";
@@ -27,13 +28,16 @@ import { usd, toUSD } from "@/lib/fx";
 /**
  * One order, one page, top to bottom in the order things actually happen: the deal, the
  * demand it serves, the money, testing, the two freight legs, customs, the hub, delivery,
- * approvals, and the evidence/history behind all of it.
+ * and the evidence/history behind all of it. (There is no Approvals section — it was removed
+ * 2026-08-20; order-level approvals are read on the Approvals board.)
  *
  * This is a **reading** page — the dashboard's orders link here rather than into the tabbed
  * workspace, because "what is happening on this order" is a different question from "let me
  * change something on this order", and answering the first shouldn't take twelve tab clicks.
- * Every section therefore ends where the acting surface begins: a link to the workspace tab,
- * the testing workspace, the escrow board or logistics. Nothing here mutates state.
+ * The page carries **no outbound navigation at all**: the per-section "go to the board" links
+ * were removed 2026-08-20 along with `FlowSection`'s `action` slot, so reading an order never
+ * doors into a surface that acts on it. The only links left are the Orders Overview breadcrumb
+ * and the sticky in-page section rail. Nothing here mutates state.
  *
  * Each section is keyed to the journey phase(s) that own it, so its heading carries that
  * phase's real state (done / in progress / blocked, with the gate reason) instead of a
@@ -42,19 +46,26 @@ import { usd, toUSD } from "@/lib/fx";
 
 // ---------- shells ----------
 
-const JUMP: { id: string; label: string }[] = [
-  { id: "deal", label: "Deal" },
-  { id: "demand", label: "Demand" },
-  { id: "money", label: "Money" },
-  { id: "testing", label: "Testing" },
-  { id: "freight", label: "Freight" },
-  { id: "customs", label: "Customs" },
-  { id: "hub", label: "Hub" },
-  { id: "delivery", label: "Delivery" },
-  { id: "approvals", label: "Approvals" },
-  { id: "evidence", label: "Evidence" },
+/**
+ * The page's sections, in the order they render — each with the same icon its section heading
+ * uses. Single source of truth for the rail below: adding or removing a section means editing
+ * this list, not starting a second one.
+ *
+ * Deliberately state-free. Chips painted with each phase's status (green/red tones, ✓/lock
+ * glyphs) were tried and cut 2026-08-20 — the rail is navigation, and the status already reads
+ * off the journey rail above it and off every section's own heading pill.
+ */
+const JUMP: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "deal", label: "Deal", icon: Users },
+  { id: "demand", label: "Demand", icon: Package },
+  { id: "money", label: "Money", icon: Landmark },
+  { id: "testing", label: "Testing", icon: FlaskConical },
+  { id: "freight", label: "Freight", icon: Plane },
+  { id: "customs", label: "Customs", icon: Stamp },
+  { id: "hub", label: "Hub", icon: Building2 },
+  { id: "delivery", label: "Delivery", icon: Truck },
+  { id: "evidence", label: "Evidence", icon: FileText },
 ];
-
 function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed p-5 text-center text-sm text-muted-foreground">{text}</div>;
 }
@@ -72,8 +83,84 @@ function phaseState(
   return { tone: "neutral", label: "not started" };
 }
 
+/**
+ * The section rail — this page is long by design, so its table of contents is **sticky** and
+ * stays on screen the whole way down. `top-14` (56px) is deliberately a few px *less* than the
+ * app header's measured 59px height so the rail's own top edge tucks under it (header is `z-20`,
+ * the rail `z-10`): erring the other way leaves a sliver of scrolling content showing through
+ * the gap. Sections carry `scroll-mt-32` to clear both bars when jumped to.
+ *
+ * It is navigation and nothing else — every chip looks the same, and the only chip that stands
+ * out is the section you are actually reading, tracked by an IntersectionObserver over the
+ * section elements rather than by scroll maths. Don't colour the chips by phase state or hang
+ * ✓/lock glyphs off them: that was tried and cut, because the journey rail directly above and
+ * each section's own heading pill already report exactly that.
+ */
+function SectionRail() {
+  const [active, setActive] = useState<string>(JUMP[0].id);
+
+  useEffect(() => {
+    const els = JUMP.map((j) => document.getElementById(j.id)).filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) return;
+    const onScreen = new Set<string>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) onScreen.add(e.target.id);
+          else onScreen.delete(e.target.id);
+        }
+        // the topmost section still in the band is the one being read
+        const first = JUMP.find((j) => onScreen.has(j.id));
+        if (first) setActive(first.id);
+      },
+      // band = just under the sticky chrome down to a bit past the middle of the viewport
+      { rootMargin: "-150px 0px -55% 0px", threshold: 0 },
+    );
+    els.forEach((el) => io.observe(el));
+    return () => io.disconnect();
+  }, []);
+
+  const jump = (e: React.MouseEvent, id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    e.preventDefault();
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.history.replaceState(null, "", `#${id}`);
+    setActive(id);
+  };
+
+  return (
+    <nav aria-label="Sections of this order"
+      className="sticky top-14 z-10 rounded-[var(--radius)] border bg-card/95 px-3 py-2.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/80">
+      <div className="flex items-center gap-3">
+        <span className="hidden shrink-0 text-[10px] font-semibold uppercase tracking-wider text-faint sm:block">
+          Sections
+        </span>
+        <div className="no-scrollbar -my-1 flex flex-1 items-center gap-1.5 overflow-x-auto py-1">
+          {JUMP.map(({ id, label, icon: Icon }) => {
+            const isActive = id === active;
+            return (
+              <a key={id} href={`#${id}`} onClick={(e) => jump(e, id)}
+                aria-current={isActive ? "true" : undefined}
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
+                  isActive
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-border bg-card text-muted-foreground hover:border-primary hover:bg-accent-soft hover:text-primary",
+                )}>
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-nowrap">{label}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    </nav>
+  );
+}
+
 function FlowSection({
-  id, title, hint, icon, steps, currentId, reason, action, children,
+  id, title, hint, icon, steps, currentId, reason, children,
 }: {
   id: string;
   title: string;
@@ -82,13 +169,12 @@ function FlowSection({
   steps: JourneyStep[];
   currentId?: string;
   reason: string | null;
-  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const st = phaseState(steps, currentId, reason);
   const blocked = st.label === "blocked";
   return (
-    <section id={id} className="scroll-mt-4 rounded-[var(--radius)] border bg-card shadow-sm">
+    <section id={id} className="scroll-mt-32 rounded-[var(--radius)] border bg-card shadow-sm">
       <div className={cn("flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b px-4 py-3",
         blocked && "bg-bad-bg/40")}>
         <div className="min-w-0">
@@ -127,19 +213,9 @@ function FlowSection({
             </p>
           )}
         </div>
-        {action && <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">{action}</div>}
       </div>
       <div className="space-y-3 p-4">{children}</div>
     </section>
-  );
-}
-
-/** Link out to wherever this part of the flow is actually worked. */
-function ActLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link href={href} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-      {children} <ExternalLink className="h-3 w-3" />
-    </Link>
   );
 }
 
@@ -193,9 +269,6 @@ export function OrderFlowPage({ id }: { id: string }) {
         <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> Orders Overview
         </Link>
-        <Link href={`/fulfilment/orders/${id}`}>
-          <Button variant="outline">Open order workspace <ExternalLink className="h-3.5 w-3.5" /></Button>
-        </Link>
       </div>
 
       {/* ---------- header: who, how much, how far ---------- */}
@@ -214,7 +287,7 @@ export function OrderFlowPage({ id }: { id: string }) {
               {b.maskingEntity} <ChevronRight className="inline h-3 w-3" /> {b.supplier.name} <span className="text-faint">(supplier)</span>
             </p>
             <p className="mt-0.5 text-xs text-faint">
-              The whole fulfilment flow on one page — read-only. Each section links to where that step is worked.
+              The whole fulfilment flow on one page — read-only. Use the section rail below to jump straight to a phase.
             </p>
           </div>
           <div className="grid w-full max-w-md grid-cols-2 gap-3 sm:grid-cols-4">
@@ -266,29 +339,19 @@ export function OrderFlowPage({ id }: { id: string }) {
             })}
           </ol>
         </div>
-
-        {/* jump bar — the page is long by design; don't make anyone scroll to find a phase */}
-        <div className="mt-4 flex flex-wrap items-center gap-1.5 border-t pt-3 text-xs">
-          <span className="uppercase tracking-wide text-faint">Jump to</span>
-          {JUMP.map((j) => (
-            <a key={j.id} href={`#${j.id}`}
-              className="rounded-full border px-2 py-0.5 font-medium text-muted-foreground hover:border-primary hover:text-primary">
-              {j.label}
-            </a>
-          ))}
-        </div>
       </div>
 
-      <DealSection b={b} id={id} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
-      <DemandSection b={b} id={id} reason={reason} />
-      <MoneySection b={b} id={id} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
+      <SectionRail />
+
+      <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
+      <DemandSection b={b} reason={reason} />
+      <MoneySection b={b} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
       <TestingSection b={b} id={id} steps={stepsOf("TESTING")} currentId={current?.id} reason={reason} />
-      <FreightSection b={b} id={id} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
-      <CustomsSection b={b} id={id} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
+      <FreightSection b={b} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
+      <CustomsSection b={b} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
       <HubSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
-      <DeliverySection b={b} id={id} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
-      <ApprovalsSection b={b} steps={stepsOf("CLOSE")} currentId={current?.id} reason={reason} />
-      <EvidenceSection b={b} id={id} reason={reason} />
+      <DeliverySection b={b} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
+      <EvidenceSection b={b} reason={reason} />
 
       <p className="pb-2 text-center text-xs text-faint">
         Incoterm {plan.incoterm} · {plan.summary}
@@ -300,8 +363,8 @@ export function OrderFlowPage({ id }: { id: string }) {
 // ---------- 1 · the deal ----------
 
 function DealSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const t = b.terms;
   const termRows = (t
     ? ([
@@ -317,8 +380,7 @@ function DealSection({
 
   return (
     <FlowSection id="deal" title="The deal" hint="Parties, paperwork and the terms everything below is measured against."
-      icon={<Users className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Overview`}>Overview tab</ActLink>}>
+      icon={<Users className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <Facts>
         <Field label="Buyer (client)">{party(b.buyer)}</Field>
         <Field label="Supplier">{party(b.supplier)}</Field>
@@ -364,7 +426,7 @@ function DealSection({
 
 // ---------- 2 · demand this order serves ----------
 
-function DemandSection({ b, id, reason }: { b: OrderBundle; id: string; reason: string | null }) {
+function DemandSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const lineCols: Col<OrderBundle["lines"][number]>[] = [
     { key: "no", header: "#", render: (l) => <span className="text-faint">{l.lineNo}</span> },
     { key: "mpn", header: "MPN", render: (l) => <span className="font-mono text-xs">{l.mpn}</span> },
@@ -393,8 +455,7 @@ function DemandSection({ b, id, reason }: { b: OrderBundle; id: string; reason: 
 
   return (
     <FlowSection id="demand" title="Demand it serves" hint="What we bought, and which sales-order lines it was bought for (N:N — one order can serve several clients)."
-      icon={<Package className="h-4 w-4" />} steps={[]} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Allocations`}>Allocations tab</ActLink>}>
+      icon={<Package className="h-4 w-4" />} steps={[]} reason={reason}>
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Serving</span>
         {clientPos.length === 0 ? <Pill tone="warn">unlinked — no sales order mapped</Pill>
@@ -415,8 +476,8 @@ function DemandSection({ b, id, reason }: { b: OrderBundle; id: string; reason: 
 // ---------- 3 · money ----------
 
 function MoneySection({
-  b, id, steps, currentId, reason, canAccessEscrow,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null; canAccessEscrow: boolean }) {
+  b, steps, currentId, reason, canAccessEscrow,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null; canAccessEscrow: boolean }) {
   const e = b.escrow;
   const readiness = e ? escrowReleaseReadiness(b) : null;
   const totals = e?.invoice ? escrowInvoiceTotals(e.invoice.fees) : null;
@@ -431,11 +492,7 @@ function MoneySection({
 
   return (
     <FlowSection id="money" title="Money" hint={e ? "Escrow holds the buyer's funds; tranches release as their triggers are met." : "Direct payment — no escrow on this order."}
-      icon={<Landmark className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        {e && <ActLink href={`/fulfilment/escrow/${id}`}>Escrow board</ActLink>}
-        <ActLink href={`/fulfilment/orders/${id}?tab=Payments`}>Payments tab</ActLink>
-      </>}>
+      icon={<Landmark className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
 
       {e ? (
         <>
@@ -537,8 +594,7 @@ function MoneySection({
           ) : (
             <p className="inline-flex items-start gap-1.5 rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
               <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-              Escrow amounts, fees and wire details are Finance-only — switch persona and open the{" "}
-              <Link href={`/fulfilment/escrow/${id}`} className="font-medium text-primary hover:underline">escrow board</Link>.
+              Escrow amounts, fees and wire details are Finance-only — switch persona to see them on the escrow board.
               The status, triggers and release state above are visible to everyone because the rest of the flow depends on them.
             </p>
           )}
@@ -575,8 +631,7 @@ function TestingSection({
     <FlowSection id="testing" title="Testing" hint={testable.length === 0
       ? "No line on this order needs incoming testing, so the testing gate is vacuous."
       : `${testable.length} of ${b.lines.length} line(s) need testing — every one needs a PASS before the money and the goods move on.`}
-      icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/testing/${id}`}>Testing workspace</ActLink>}>
+      icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <MiniStat label="Lots" value={String(sum.lots)} sub={`${passed} passed`} />
         <MiniStat label="Tests tracked" value={String(sum.tests)} />
@@ -747,8 +802,8 @@ function Leg({ title, list }: { title: string; list: OrderBundle["shipments"] })
 }
 
 function FreightSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const plan = incotermPlan(b.incoterm);
   const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
   const outbound = b.shipments.filter((s) => s.leg === "OUTBOUND");
@@ -756,11 +811,7 @@ function FreightSection({
 
   return (
     <FlowSection id="freight" title="Freight — supplier → hub → client" hint={plan.summary}
-      icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        <ActLink href={`/fulfilment/logistics?order=${id}`}>Logistics</ActLink>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Shipments`}>Shipments tab</ActLink>
-      </>}>
+      icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <div className={cn("rounded-lg border p-2.5 text-xs",
         plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
         <b>Incoterm {plan.incoterm}</b> — {plan.weBookFreight ? "1Buy books the inbound carrier." : "the supplier books and pays the inbound leg; we record their AWB."}
@@ -778,8 +829,8 @@ function FreightSection({
 // ---------- 6 · customs ----------
 
 function CustomsSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const applies = customsApplies(b);
   const bySupplier = supplierHandlesCustoms(b);
   const cols: Col<OrderBundle["customs"][number]>[] = [
@@ -795,8 +846,7 @@ function CustomsSection({
     <FlowSection id="customs" title="Customs" hint={!applies ? "Domestic order with no lab abroad — no customs leg."
       : bySupplier ? `Incoterm ${b.incoterm} — the supplier clears India import customs duty-paid; 1Buy files no Bill of Entry.`
       : "Our CHA files the Bill of Entry in ICEGATE and duty is assessed."}
-      icon={<Stamp className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Customs`}>Customs tab</ActLink>}>
+      icon={<Stamp className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       {!applies || bySupplier ? (
         <p className="text-xs text-muted-foreground">
           {!applies
@@ -823,8 +873,7 @@ function HubSection({
   return (
     <FlowSection id="hub" title="Hub — receive &amp; relabel (the masking act)"
       hint="Goods land at the 1Buy hub and are relabelled to the masking entity. This is what keeps the buyer and the supplier from seeing each other."
-      icon={<Building2 className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href="/fulfilment/warehouse">Warehouse</ActLink>}>
+      icon={<Building2 className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <Facts>
         <Field label="Hub address">{fmtAddress(b.hubAddress) || "—"}</Field>
         <Field label="Masking entity">{b.maskingEntity}</Field>
@@ -841,8 +890,8 @@ function HubSection({
 // ---------- 8 · delivery ----------
 
 function DeliverySection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const cols: Col<OrderBundle["deliveries"][number]>[] = [
     { key: "from", header: "From shipment", render: (d) => <span className="font-mono text-xs">{d.fromShipmentNo}</span> },
     { key: "cpo", header: "Sales Order", render: (d) => <span className="font-mono text-xs">{d.clientPoNo}</span> },
@@ -855,11 +904,7 @@ function DeliverySection({
 
   return (
     <FlowSection id="delivery" title="Delivery to the client" hint="Received quantity allocated to sales-order lines, invoiced under GST, and signed for."
-      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        <ActLink href="/fulfilment/delivery">Delivery board</ActLink>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Delivery`}>Delivery tab</ActLink>
-      </>}>
+      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <p className="rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
         {b.einvoice
           ? <>GST e-Invoice <Pill tone="ok">IRN</Pill> <span className="font-mono text-foreground">ack {b.einvoice.ackNo}</span> · {b.einvoice.supplyType}</>
@@ -871,41 +916,9 @@ function DeliverySection({
   );
 }
 
-// ---------- 9 · approvals & close ----------
+// ---------- 9 · evidence & history ----------
 
-function ApprovalsSection({
-  b, steps, currentId, reason,
-}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
-  const pending = b.approvals.filter((a) => a.status === "PENDING").length;
-  return (
-    <FlowSection id="approvals" title="Approvals &amp; close" hint={b.approvals.length === 0
-      ? "No approval was raised on this order, so the close gate is vacuously satisfied."
-      : `${b.approvals.length} approval(s) on this order; the close gate needs every one decided.`}
-      icon={<ShieldCheck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href="/fulfilment/approvals">Approvals board</ActLink>}>
-      {b.approvals.length === 0 ? <Empty text="No approvals on this order." /> : (
-        <div className="space-y-2">
-          {b.approvals.map((a) => (
-            <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
-              <div className="min-w-0">
-                <div className="text-sm font-medium">{prettyStatus(a.kind)}</div>
-                <div className="text-xs text-muted-foreground">
-                  role: {a.role}{a.notes ? ` · ${a.notes}` : ""}{a.decidedBy ? ` · by ${a.decidedBy}` : ""}
-                </div>
-              </div>
-              <StatusPill status={a.status} />
-            </div>
-          ))}
-        </div>
-      )}
-      {pending > 0 && <p className="text-xs text-warn">{pending} still pending — the order can&apos;t close until they&apos;re decided.</p>}
-    </FlowSection>
-  );
-}
-
-// ---------- 10 · evidence & history ----------
-
-function EvidenceSection({ b, id, reason }: { b: OrderBundle; id: string; reason: string | null }) {
+function EvidenceSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const docCols: Col<OrderBundle["documents"][number]>[] = [
     { key: "type", header: "Type", render: (d) => <Pill tone="info">{d.docType}</Pill> },
     { key: "file", header: "File", render: (d) => <span className="font-mono text-xs">{d.fileName}</span> },
@@ -916,11 +929,7 @@ function EvidenceSection({ b, id, reason }: { b: OrderBundle; id: string; reason
 
   return (
     <FlowSection id="evidence" title="Evidence &amp; history" hint="Every document filed against this order, and everything that happened to it."
-      icon={<FileText className="h-4 w-4" />} steps={[]} reason={reason}
-      action={<>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Documents`}>Documents tab</ActLink>
-        <ActLink href="/fulfilment/integrations">Integration log</ActLink>
-      </>}>
+      icon={<FileText className="h-4 w-4" />} steps={[]} reason={reason}>
       <DataTable columns={docCols} rows={b.documents} empty="No documents filed yet." />
       <div>
         <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
