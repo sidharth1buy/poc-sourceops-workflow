@@ -102,7 +102,7 @@ export default function LogisticsOrderPage() {
           <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${TONE_CLS[pMeta.tone]}`}>{pMeta.label}</span>
           {v.daysLeft !== null && !v.delivered && (
             <span className="text-sm text-muted-foreground">
-              {v.daysLeft < 0 ? `${Math.abs(v.daysLeft)} days past the promised date` : v.daysLeft === 0 ? "promised for today" : `${v.daysLeft} days to the promised date`} ({b.requiredBy})
+              {v.daysLeft < 0 ? `${Math.abs(v.daysLeft)} day${Math.abs(v.daysLeft) === 1 ? "" : "s"} past the promised date` : v.daysLeft === 0 ? "promised for today" : `${v.daysLeft} day${v.daysLeft === 1 ? "" : "s"} to the promised date`} ({b.requiredBy})
             </span>
           )}
         </div>
