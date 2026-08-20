@@ -1,4 +1,4 @@
-import type { NotifyParty, TestingStage, LabPaymentStatus, LabPaymentTerms } from "@/types";
+import type { NotifyParty, TestingStage, LabPaymentStatus, LabPaymentTerms, PhaseKey, PaymentMode } from "@/types";
 
 export type Tone = "neutral" | "active" | "warn" | "ok" | "bad" | "info";
 
@@ -178,6 +178,33 @@ export const WHL_CONCLUSIONS = ["ACCEPTABLE", "NOT_ACCEPTABLE", "SUSPECT_COUNTER
 export const TEST_PROCESS_STATUSES = ["PENDING", "IN_PROGRESS", "PASSED", "FAILED", "FAR", "NOT_CONDUCTED"] as const;
 export const WHL_CONTACT = "reports@whitehorselabs.example";
 export const WHL_SLA_BUSINESS_DAYS = 3; // an unanswered "Request Update" past this is flagged
+
+// ---- 6-phase fulfilment clock -------------------------------------------------------
+// Labels + default (estimated) durations for the phases orderPhaseTimings() (selectors.ts)
+// measures actual time against. Placeholder day counts, not derived from real ops data —
+// deliberately kept in one constant block so they're easy to tune later.
+export const PHASE_LABELS: Record<PhaseKey, string> = {
+  FUNDING: "Funding",
+  PREP_SUPPLY: "Preparing for Supply",
+  TESTING: "Testing",
+  INBOUND_LOGISTICS: "Inbound Logistics",
+  WAREHOUSING: "Warehousing",
+  OUTBOUND_LOGISTICS: "Outbound Logistics",
+};
+
+export const PHASE_DEFAULT_DAYS = {
+  FUNDING: { ADVANCE: 2, ESCROW: 5, CREDIT: 0 } as Record<PaymentMode, number>,
+  PREP_SUPPLY: { withTesting: 7, noTesting: 10 },
+  TESTING: 7,
+  INBOUND_LOGISTICS: 10,
+  WAREHOUSING: 2,
+  OUTBOUND_LOGISTICS: 5,
+} as const;
+
+// Grace period (days) a phase is allowed to sit on a known 1Buy-side blocker before it's
+// flagged "at risk" — shorter than the phase's own estimate so the alert lands early enough
+// to actually prevent the delay, not just report it after the fact.
+export const RISK_GRACE_DAYS = { ESCROW_SUBSTEP: 2, TESTING_RETURN: 2, LOGISTICS_STALL: 2, CUSTOMS_STALL: 1 } as const;
 
 // ---- testing lifecycle -------------------------------------------------------------
 // The internal stage chain a lot walks between "we asked for testing" and "we have a

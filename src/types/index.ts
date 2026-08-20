@@ -43,6 +43,10 @@ export type ShipmentStatus =
 export type JourneyStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "SKIPPED" | "BLOCKED";
 export type JourneyPhase =
   | "KICKOFF" | "PAYMENT" | "TESTING" | "EXPORT" | "IMPORT" | "CUSTOMS" | "RELABEL" | "DELIVERY" | "CLOSE";
+// The 6-phase fulfilment clock (distinct from JourneyPhase above, which gates workflow steps) —
+// used to measure estimated-vs-actual time spent per phase, see orderPhaseTimings() in selectors.ts.
+export type PhaseKey =
+  | "FUNDING" | "PREP_SUPPLY" | "TESTING" | "INBOUND_LOGISTICS" | "WAREHOUSING" | "OUTBOUND_LOGISTICS";
 export type EscrowOrderStatus =
   | "DRAFT" | "SENT_FOR_SELLER_CONFIRMATION" | "SELLER_CONFIRMED"
   | "ESCROW_FEE_INVOICED" | "TT_PAYMENT_RECEIVED" | "GOODS_SHIPPED"
@@ -562,6 +566,7 @@ export interface Escrow {
   financeConfirmedAt?: string;  // Finance → SC: payment made, with a SWIFT reference to quote to HKin
   financeSwiftReference?: string; // international wire to HKin (HK) — SWIFT reference, not a UTR (that's for domestic NEFT/RTGS)
   paymentSentToHkinAt?: string; // SC → HKin: "we've made the payment, here's the SWIFT reference"
+  fundedAt?: string; // stamped the moment status reaches TT_PAYMENT_RECEIVED — the real "funding done" instant for the Funding phase clock
 
   // WHL booking, test execution, and the retest/return decision all live on the Testing tab, not
   // here — escrow only needs the one verdict signal (since that's what governs the release
@@ -853,6 +858,10 @@ export interface OrderBundle extends Order {
   events: OrderEvent[];
   einvoice?: EInvoice;
   relabelledAt?: string; // set when goods are physically received + relabelled to the masking entity at the hub — gates RELABEL
+  whlReturnedToSupplierAt?: string; // goods physically back with the supplier after WHL testing (pass or fail — testing
+    // always round-trips through the supplier). Order-level, not per-lot: the fulfilment clock tracks Testing as
+    // ONE interval per order even though Lot.stageHistory is per-lot. Distinct from Escrow.goodsReturnedAt, which
+    // is an unrelated refund/RMA-only signal set only on a FAIL verdict.
   shippingDocs?: ShippingDocRequest; // pre-booking doc exchange with the supplier (Packing List / CI / COO)
   /** The warehouse receipt. With proof of delivery, this is what "delivered" means. */
   grn?: GoodsReceipt;

@@ -1,12 +1,12 @@
 import type {
   OrderBundle, JourneyStep, ClientPO, SupplierPO, Lot, LotTest, WhlReport, WhlProcessResult, TestingStage,
-  EscrowFeeBreakdown, EscrowOrderStatus,
+  EscrowFeeBreakdown, EscrowOrderStatus, PhaseKey,
   LabPayment, LabPaymentStatus, LabPaymentTerms,
 } from "@/types";
 import { toUSD } from "@/lib/fx";
 import {
   WHL_SLA_BUSINESS_DAYS, TESTING_STAGES, TESTING_STAGE_META, TESTING_TERMINAL_STAGE, stageIdx,
-  ESCROW_STATUS_ORDER, labFeeGates,
+  ESCROW_STATUS_ORDER, labFeeGates, PHASE_LABELS, PHASE_DEFAULT_DAYS, RISK_GRACE_DAYS,
 } from "@/data/enums";
 
 export type OrdersMap = Record<string, OrderBundle>;
@@ -458,6 +458,211 @@ export function lotResults(b: OrderBundle) {
     };
   });
 }
+
+// ---- 6-phase fulfilment clock -------------------------------------------------------
+// Fully derived on read, like gateReason()/labFeeBlocking()/mpnFeeRollup() above — nothing here
+// is persisted beyond the handful of raw timestamps already on OrderBundle/Escrow/Payment/Lot/
+// Shipment/CustomsEntry (plus the two new ones: Escrow.fundedAt, OrderBundle.whlReturnedToSupplierAt).
+
+export type PhaseOwnerSide = "1BUY" | "SUPPLIER" | "CLIENT" | "EXTERNAL";
+
+export interface PhaseAtRisk {
+  reason: string;
+  ownerSide: PhaseOwnerSide;
+  actionHref?: string;
+}
+
+export interface PhaseTiming {
+  phase: PhaseKey;
+  label: string;
+  estimatedDays: number;
+  actualDays: number | null; // null = phase hasn't finished yet (not-started or in-progress)
+  status: "not_started" | "in_progress" | "done" | "skipped";
+  startedAt?: string;
+  endedAt?: string;
+  atRisk?: PhaseAtRisk;
+}
+
+// Calendar days between two ISO instants (or now, if `to` is omitted) — distinct from
+// businessDaysSince() above, which is WHL_SLA-specific and counts business days only.
+export const daysBetween = (fromIso: string, toIso?: string) =>
+  Math.max(0, Math.round(((toIso ? new Date(toIso).getTime() : Date.now()) - new Date(fromIso).getTime()) / 86_400_000));
+
+// Earliest/latest stageHistory event of one TestingStage, aggregated across every lot on the
+// order — this is the "testing is ONE interval per order" rollup the per-lot lab data doesn't
+// give for free.
+function lotStageEventAt(b: OrderBundle, stage: TestingStage, pick: "min" | "max"): string | undefined {
+  const at = b.lots.flatMap((l) => (l.stageHistory ?? []).filter((e) => e.stage === stage).map((e) => e.at)).sort();
+  return at.length ? (pick === "min" ? at[0] : at[at.length - 1]) : undefined;
+}
+
+function fundingAtRisk(b: OrderBundle, end?: string): PhaseAtRisk | undefined {
+  if (end) return undefined;
+  if (b.paymentMode === "ADVANCE") {
+    const p = b.payments.find((p) => p.direction === "1BUY_TO_SUPPLIER");
+    if (p?.dueDate && p.status !== "PAID" && new Date(p.dueDate) < new Date())
+      return { reason: "Supplier payment is past its due date.", ownerSide: "1BUY", actionHref: "/fulfilment/payments" };
+    return undefined; // no dueDate yet, or not yet overdue — the Payments board's own urgency covers the rest
+  }
+  if (b.paymentMode !== "ESCROW" || !b.escrow || b.escrow.cancelledAt || b.escrow.applicationRejectedAt) return undefined;
+  const e = b.escrow, href = `/fulfilment/escrow/${b.id}`, grace = RISK_GRACE_DAYS.ESCROW_SUBSTEP;
+  if (e.status === "DRAFT" && e.hkinAccountStatus === "CONFIRMED" && !e.hkinRpaStartedAt)
+    return { reason: "Supplier confirmed an HKin account — create the HKin order to keep funding moving.", ownerSide: "1BUY", actionHref: href };
+  if (e.status === "ESCROW_FEE_INVOICED" && e.invoice && !e.paymentInstructedAt && daysBetween(e.invoice.receivedAt) >= grace)
+    return { reason: "Escrow invoice received — instruct Finance to pay it.", ownerSide: "1BUY", actionHref: href };
+  if (e.status === "ESCROW_FEE_INVOICED" && e.financeConfirmedAt && !e.paymentSentToHkinAt && daysBetween(e.financeConfirmedAt) >= grace)
+    return { reason: "Finance confirmed payment — send the SWIFT confirmation to HKin.", ownerSide: "1BUY", actionHref: href };
+  return undefined; // SENT_FOR_SELLER_CONFIRMATION, or awaiting Finance/HKin's own confirmation — external waits, not ours
+}
+
+function prepSupplyAtRisk(b: OrderBundle, start?: string): PhaseAtRisk | undefined {
+  if (!start) return undefined;
+  if (outstandingLabFees(b).some((r) => r.blocking))
+    return { reason: "WHL testing fee unpaid (advance terms) — pay it to free the lot for receipt.", ownerSide: "1BUY", actionHref: "/fulfilment/testing" };
+  return undefined;
+}
+
+function testingAtRisk(b: OrderBundle, start?: string, testingDoneAt?: string): PhaseAtRisk | undefined {
+  if (!start) return undefined;
+  if (outstandingLabFees(b).some((r) => r.blocking))
+    return { reason: "WHL testing fee unpaid (advance terms) — pay it to free the bench.", ownerSide: "1BUY", actionHref: "/fulfilment/testing" };
+  if (overdueUpdateRequests(b).length > 0)
+    return { reason: "A WHL status request has gone unanswered past the SLA — chase or escalate.", ownerSide: "1BUY", actionHref: "/fulfilment/testing" };
+  if (testingDoneAt && !b.whlReturnedToSupplierAt && daysBetween(testingDoneAt) >= RISK_GRACE_DAYS.TESTING_RETURN)
+    return { reason: "Testing is complete — confirm the goods have been returned to the supplier.", ownerSide: "1BUY", actionHref: "/fulfilment/testing" };
+  return undefined;
+}
+
+function inboundLogisticsAtRisk(b: OrderBundle, start?: string): PhaseAtRisk | undefined {
+  if (!start) return undefined;
+  const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
+  if (inbound.some((s) => s.awb === "booking failed"))
+    return { reason: "Inbound carrier booking failed — rebook.", ownerSide: "1BUY", actionHref: "/fulfilment/logistics" };
+  if (inbound.length === 0 && daysBetween(start) >= RISK_GRACE_DAYS.LOGISTICS_STALL)
+    return { reason: "Goods are ready at the supplier — no inbound shipment booked yet.", ownerSide: "1BUY", actionHref: "/fulfilment/logistics" };
+  if (customsFilingOverdue(b)) return { reason: "Shipment held at customs — Bill of Entry not filed yet.", ownerSide: "1BUY", actionHref: "/fulfilment/customs" };
+  return undefined;
+}
+
+/** True once an inbound shipment has sat AT_CUSTOMS with no BoE filed, past a short grace period. */
+export function customsFilingOverdue(b: OrderBundle): boolean {
+  const atCustoms = b.shipments.find((s) => s.leg === "INBOUND" && s.status === "AT_CUSTOMS");
+  if (!atCustoms) return false;
+  const filed = b.customs.some((c) => c.shipmentNo === atCustoms.shipmentNo && !!c.icegateRef);
+  if (filed) return false;
+  return daysBetween(atCustoms.updatedAt ?? atCustoms.dispatchDate ?? b.createdAt) >= RISK_GRACE_DAYS.CUSTOMS_STALL;
+}
+
+function warehousingAtRisk(b: OrderBundle, start?: string): PhaseAtRisk | undefined {
+  if (!start || b.relabelledAt) return undefined;
+  if (daysBetween(start) >= PHASE_DEFAULT_DAYS.WAREHOUSING)
+    return { reason: "Goods received at the hub — relabelling still pending.", ownerSide: "1BUY", actionHref: "/fulfilment/warehouse" };
+  return undefined;
+}
+
+function outboundLogisticsAtRisk(b: OrderBundle, start?: string): PhaseAtRisk | undefined {
+  if (!start) return undefined;
+  const outbound = b.shipments.filter((s) => s.leg === "OUTBOUND");
+  if (outbound.some((s) => s.awb === "booking failed"))
+    return { reason: "Outbound carrier booking failed — rebook.", ownerSide: "1BUY", actionHref: "/fulfilment/logistics" };
+  if (outbound.length === 0 && daysBetween(start) >= RISK_GRACE_DAYS.LOGISTICS_STALL)
+    return { reason: "Relabelling is done — no outbound shipment booked yet.", ownerSide: "1BUY", actionHref: "/fulfilment/logistics" };
+  return undefined;
+}
+
+/** Estimated vs. actual duration for each of the 6 fulfilment phases on one order. */
+export function orderPhaseTimings(b: OrderBundle): PhaseTiming[] {
+  const needsTesting = b.lines.some((l) => l.testingMode !== "NONE");
+  const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
+  const outbound = b.shipments.filter((s) => s.leg === "OUTBOUND");
+  const hubArrival = inbound.find((s) => ["ARRIVED", "DELIVERED"].includes(s.status))?.deliveryDate;
+  const clientDelivery = outbound.find((s) => ["ARRIVED", "DELIVERED"].includes(s.status))?.deliveryDate;
+  const readyToShip = inbound[0]?.pickupReadyDate ?? inbound[0]?.dispatchDate;
+  const whlArrival = needsTesting ? lotStageEventAt(b, "COMPONENTS_RECEIVED", "min") : undefined;
+  const testingDoneAt = needsTesting
+    ? (lotStageEventAt(b, "REPORT_SHARED", "max") ?? lotStageEventAt(b, "TESTING_COMPLETED", "max"))
+    : undefined;
+
+  const out: PhaseTiming[] = [];
+
+  // 1 · Funding
+  const fundingStart = b.createdAt;
+  let fundingEnd: string | undefined;
+  let fundingEst = PHASE_DEFAULT_DAYS.FUNDING.CREDIT;
+  if (b.paymentMode === "CREDIT") { fundingEnd = b.createdAt; fundingEst = 0; }
+  else if (b.paymentMode === "ESCROW") { fundingEnd = b.escrow?.fundedAt; fundingEst = PHASE_DEFAULT_DAYS.FUNDING.ESCROW; }
+  else { fundingEnd = b.payments.find((p) => p.direction === "1BUY_TO_SUPPLIER" && p.status === "PAID")?.paidAt; fundingEst = PHASE_DEFAULT_DAYS.FUNDING.ADVANCE; }
+  out.push({
+    phase: "FUNDING", label: PHASE_LABELS.FUNDING, estimatedDays: fundingEst,
+    actualDays: fundingEnd ? daysBetween(fundingStart, fundingEnd) : null,
+    status: fundingEnd ? "done" : "in_progress",
+    startedAt: fundingStart, endedAt: fundingEnd,
+    atRisk: fundingAtRisk(b, fundingEnd),
+  });
+
+  // 2 · Preparing for Supply
+  const prepStart = fundingEnd;
+  const prepEnd = needsTesting ? whlArrival : readyToShip;
+  const prepEst = needsTesting ? PHASE_DEFAULT_DAYS.PREP_SUPPLY.withTesting : PHASE_DEFAULT_DAYS.PREP_SUPPLY.noTesting;
+  out.push({
+    phase: "PREP_SUPPLY", label: PHASE_LABELS.PREP_SUPPLY, estimatedDays: prepEst,
+    actualDays: prepStart && prepEnd ? daysBetween(prepStart, prepEnd) : null,
+    status: !prepStart ? "not_started" : prepEnd ? "done" : "in_progress",
+    startedAt: prepStart, endedAt: prepEnd,
+    atRisk: prepSupplyAtRisk(b, prepStart),
+  });
+
+  // 3 · Testing — always round-trips through the supplier once WHL is done (pass or fail)
+  if (!needsTesting) {
+    out.push({ phase: "TESTING", label: PHASE_LABELS.TESTING, estimatedDays: 0, actualDays: 0, status: "skipped", startedAt: prepEnd, endedAt: prepEnd });
+  } else {
+    const testingEnd = b.whlReturnedToSupplierAt;
+    out.push({
+      phase: "TESTING", label: PHASE_LABELS.TESTING, estimatedDays: PHASE_DEFAULT_DAYS.TESTING,
+      actualDays: whlArrival && testingEnd ? daysBetween(whlArrival, testingEnd) : null,
+      status: !whlArrival ? "not_started" : testingEnd ? "done" : "in_progress",
+      startedAt: whlArrival, endedAt: testingEnd,
+      atRisk: testingAtRisk(b, whlArrival, testingDoneAt),
+    });
+  }
+
+  // 4 · Inbound Logistics — start is always "ready at the supplier": the post-testing return
+  // point when tested, or the same signal Phase 2 ended on when not.
+  const inboundStart = needsTesting ? b.whlReturnedToSupplierAt : prepEnd;
+  out.push({
+    phase: "INBOUND_LOGISTICS", label: PHASE_LABELS.INBOUND_LOGISTICS, estimatedDays: PHASE_DEFAULT_DAYS.INBOUND_LOGISTICS,
+    actualDays: inboundStart && hubArrival ? daysBetween(inboundStart, hubArrival) : null,
+    status: !inboundStart ? "not_started" : hubArrival ? "done" : "in_progress",
+    startedAt: inboundStart, endedAt: hubArrival,
+    atRisk: inboundLogisticsAtRisk(b, inboundStart),
+  });
+
+  // 5 · Warehousing
+  out.push({
+    phase: "WAREHOUSING", label: PHASE_LABELS.WAREHOUSING, estimatedDays: PHASE_DEFAULT_DAYS.WAREHOUSING,
+    actualDays: hubArrival && b.relabelledAt ? daysBetween(hubArrival, b.relabelledAt) : null,
+    status: !hubArrival ? "not_started" : b.relabelledAt ? "done" : "in_progress",
+    startedAt: hubArrival, endedAt: b.relabelledAt,
+    atRisk: warehousingAtRisk(b, hubArrival),
+  });
+
+  // 6 · Outbound Logistics
+  out.push({
+    phase: "OUTBOUND_LOGISTICS", label: PHASE_LABELS.OUTBOUND_LOGISTICS, estimatedDays: PHASE_DEFAULT_DAYS.OUTBOUND_LOGISTICS,
+    actualDays: b.relabelledAt && clientDelivery ? daysBetween(b.relabelledAt, clientDelivery) : null,
+    status: !b.relabelledAt ? "not_started" : clientDelivery ? "done" : "in_progress",
+    startedAt: b.relabelledAt, endedAt: clientDelivery,
+    atRisk: outboundLogisticsAtRisk(b, b.relabelledAt),
+  });
+
+  return out;
+}
+
+/** Every order with at least one phase currently flagged as stalled on 1Buy's own side. */
+export const ordersAtRisk = (o: OrdersMap) =>
+  Object.values(o)
+    .map((b) => ({ b, risks: orderPhaseTimings(b).filter((p) => !!p.atRisk) }))
+    .filter((x) => x.risks.length > 0);
 
 // ---- cross-order rollups (queues + boards) ----
 export const allApprovals = (o: OrdersMap) =>

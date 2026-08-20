@@ -111,7 +111,7 @@ function simulateInbound(e: Escrow, verdict?: "PASS" | "FAIL", needsTesting?: bo
         return { action: "advanced", detail: "Finance confirmed payment — SWIFT reference attached.", escrow: next };
       }
       if (e.paymentSentToHkinAt) {
-        const next = withEmail({ ...e, status: "TT_PAYMENT_RECEIVED" }, "RECEIVED", "T/T payment received",
+        const next = withEmail({ ...e, status: "TT_PAYMENT_RECEIVED", fundedAt: nowIso() }, "RECEIVED", "T/T payment received",
           "HKin confirms the T/T payment has been received.", "billing@hkin-escrow.example");
         return { action: "advanced", detail: "HKin confirmed T/T payment received.", escrow: next };
       }

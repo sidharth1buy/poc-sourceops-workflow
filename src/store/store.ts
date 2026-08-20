@@ -60,6 +60,15 @@ const today = () => new Date().toISOString().slice(0, 10);
 const addDays = (iso: string, n: number) => { const d = new Date(iso); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 const stamp = () => new Date().toISOString().slice(0, 16).replace("T", " "); // audit rows are datetime-precise
 
+// Defensive backfill for the funding-clock's Escrow.fundedAt field: the local mock path
+// (escrow-mock.ts) always stamps it on the DRAFT.../ESCROW_FEE_INVOICED → TT_PAYMENT_RECEIVED
+// transition, but the real escrow-agents backend response (src/lib/escrow-api.ts) doesn't know
+// about this app-local field, so a response landing already at TT_PAYMENT_RECEIVED+ needs a
+// same-day fallback rather than leaving the Funding phase clock stuck open forever.
+const withFundedAtStamp = (e: Escrow): Escrow =>
+  !e.fundedAt && ESCROW_STATUS_ORDER.indexOf(e.status) >= ESCROW_STATUS_ORDER.indexOf("TT_PAYMENT_RECEIVED")
+    ? { ...e, fundedAt: today() } : e;
+
 // Every manual test edit and every status change (automated or manual) writes one of these.
 const auditRow = (a: Omit<TestAuditEntry, "id" | "at">): TestAuditEntry => ({ id: uid("aud"), at: stamp(), ...a });
 
@@ -419,6 +428,7 @@ interface Store {
   advanceStep: (orderId: string) => void;
   addStep: (orderId: string, step: { phase: string; name: string; owner: string; isGate: boolean }) => void;
   markRelabelled: (orderId: string) => void;
+  markTestingReturnedToSupplier: (orderId: string) => void;
 
   addLot: (orderId: string, lot: { orderLineMpn: string; lotCode: string; dateCode: string; qty: number; sampleQty: number; lab?: string }) => void;
   setLotStatus: (orderId: string, lotId: string, status: TestStatus) => void;
@@ -828,6 +838,13 @@ export const useStore = create<Store>()(
       markRelabelled: (orderId) => {
         set((s) => { const b = s.orders[orderId]; if (b) { b.relabelledAt = today(); autoAdvanceOperational(b); } });
         toast.success("Goods marked as received at 1Buy");
+      },
+
+      // Manual confirmation, like markRelabelled above — this app can't observe the physical
+      // handoff back to the supplier itself, so an operator confirms it happened.
+      markTestingReturnedToSupplier: (orderId) => {
+        set((s) => { const b = s.orders[orderId]; if (b) b.whlReturnedToSupplierAt = today(); });
+        toast.success("Goods marked as returned to the supplier after testing");
       },
 
       addLot: (orderId, lot) => {
@@ -1635,7 +1652,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const res = await simulateNextInbound(orderId, verdict);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             toast[verdict === "PASS" ? "success" : "error"](`WHL verdict received: ${verdict}`);
           } catch (e) { toast.error(errMsg(e)); }
         })();
@@ -1733,7 +1750,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const res = await simulateDeadlineReminder(orderId);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             toast.message(`HKin's inspection-deadline reminder arrived — deadline ${res.escrow.inspectionDeadline ? new Date(res.escrow.inspectionDeadline).toLocaleDateString() : ""}.`);
           } catch (err) { toast.error(errMsg(err)); }
         })();
@@ -1800,7 +1817,7 @@ export const useStore = create<Store>()(
               && (milestoneIndex === undefined ? d.milestoneIndex == null : d.milestoneIndex === milestoneIndex));
             if (!match) { toast.error("escrow-agents hasn't generated this draft yet — try Check inbox first."); return; }
             const res = await sendEscrowDraft(match.id, { reviewedBy: "You (demo)", to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body });
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             toast.message(`Sent: ${draft.subject}`);
           } catch (e) { toast.error(errMsg(e)); }
         })();
@@ -1816,7 +1833,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const res = await simulateNextInbound(orderId);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             if (res.action === "waiting" || res.action === "nothing") toast(res.detail);
             else toast.success(res.detail);
           } catch (e) { toast.error(errMsg(e)); }
@@ -1832,7 +1849,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const res = await tickEscrowOrder(orderId);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             if (res.action === "waiting" || res.action === "nothing") toast(res.detail);
             else toast.success(res.detail);
           } catch (e) { toast.error(errMsg(e)); }
@@ -1851,7 +1868,7 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const res = await simulateNextInbound(orderId);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = res.escrow; });
+            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = withFundedAtStamp(res.escrow); });
             toast[res.action === "advanced" ? "success" : "message"](res.detail);
           } catch (e) { toast.error(errMsg(e)); }
         })();
@@ -3245,8 +3262,9 @@ Please pre-file the entry so clearance starts before the goods land.`,
       // 32 = Shipment.pod/podRef (carrier POD on the inbound leg) + logisticsThread/logisticsOutbox (desk correspondence + created docs) ·
       // 33 = LogisticsMessage.attachments (counterparty replies carry their paper) ·
       // 34 = FINANCE as a logistics counterparty + logisticsEmailCategories (per-email category filing, OTHERS bucket) ·
-      // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply)
-      version: 35,
+      // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply) ·
+      // 36 = 6-phase fulfilment clock: Escrow.fundedAt + OrderBundle.whlReturnedToSupplierAt
+      version: 36,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than
