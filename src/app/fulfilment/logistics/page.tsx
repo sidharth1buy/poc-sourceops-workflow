@@ -14,7 +14,7 @@
 // Old deep links (?order=…) meant "take me to this order's logistics view";
 // they now land on exactly that page.
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 import { useStore } from "@/store/store";
@@ -42,7 +42,20 @@ interface Row {
 
 const PRESSURE_ORDER: Pressure[] = ["OVERDUE", "CRITICAL", "TIGHT", "COMFORTABLE", "DONE"];
 
+/*
+ * useSearchParams() (the ?order= deep-link redirect) opts the tree out of
+ * static prerender unless it sits under Suspense — the production build
+ * refuses the page otherwise. The wrapper is the whole fix.
+ */
 export default function LogisticsPage() {
+  return (
+    <Suspense fallback={null}>
+      <LogisticsQueue />
+    </Suspense>
+  );
+}
+
+function LogisticsQueue() {
   const router = useRouter();
   const params = useSearchParams();
   const orders = useStore((s) => s.orders);
