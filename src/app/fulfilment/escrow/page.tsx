@@ -41,13 +41,17 @@ export default function EscrowBoardPage() {
 
   const filtered = useMemo(() => {
     const q = orderNo.trim().toLowerCase();
-    return all.filter((r) => {
-      const okOrderNo = q === "" || r.orderNo.toLowerCase().includes(q);
-      const okSupplier = supplier === "All" || r.e.sellerContact.company === supplier;
-      const okStatus = status === "All"
-        || (status === "Cancelled" ? !!r.e.cancelledAt : !r.e.cancelledAt && r.e.status === status);
-      return okOrderNo && okSupplier && okStatus;
-    });
+    return all
+      .filter((r) => {
+        const okOrderNo = q === "" || r.orderNo.toLowerCase().includes(q);
+        const okSupplier = supplier === "All" || r.e.sellerContact.company === supplier;
+        const okStatus = status === "All"
+          || (status === "Cancelled" ? !!r.e.cancelledAt : !r.e.cancelledAt && r.e.status === status);
+        return okOrderNo && okSupplier && okStatus;
+      })
+      // Stalled-on-our-side orders first — that's the one thing on this board that actively
+      // needs a human today, regardless of what else the filters/sort would otherwise surface.
+      .sort((a, b) => (a.funding?.atRisk ? 0 : 1) - (b.funding?.atRisk ? 0 : 1));
   }, [all, orderNo, supplier, status]);
 
   // Clamp instead of trusting `page` directly — a filter change can leave it

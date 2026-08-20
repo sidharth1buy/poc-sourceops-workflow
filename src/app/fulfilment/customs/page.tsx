@@ -42,7 +42,10 @@ function CustomsDesk() {
     .flatMap((o) => o.shipments.filter((s) => s.leg === "INBOUND").map((s) => ({
       key: s.id, order: o, shipment: s, ce: o.customs.find((c) => c.shipmentNo === s.shipmentNo),
     })))
-    .sort((a, b) => String(b.order.createdAt).localeCompare(String(a.order.createdAt)));
+    // Filing overdue (stuck on our own side) first within each bucket, then newest order first.
+    .sort((a, b) =>
+      (customsFilingOverdue(a.order) ? 0 : 1) - (customsFilingOverdue(b.order) ? 0 : 1)
+      || String(b.order.createdAt).localeCompare(String(a.order.createdAt)));
 
   const bucketOf = (it: (typeof items)[number]): CustomsBucket => (it.ce ? customsBucket(it.ce) : "NEW");
   const counts = Object.fromEntries(BUCKET_ORDER.map((bk) => [bk, items.filter((it) => bucketOf(it) === bk).length])) as Record<CustomsBucket, number>;
