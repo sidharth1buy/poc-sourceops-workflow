@@ -28,6 +28,7 @@ import {
   type InboundView,
   type Pressure,
 } from "@/lib/logistics-order";
+import { orderPhaseTimings, type PhaseAtRisk } from "@/store/selectors";
 import type { OrderBundle } from "@/types";
 import { DataTable, PageHeader, Pagination, Panel, Pill, type Col } from "@/components/ui/primitives";
 import { Input } from "@/components/ui/form";
@@ -38,6 +39,7 @@ const PAGE_SIZE = 10;
 interface Row {
   b: OrderBundle;
   view: InboundView;
+  atRisk?: PhaseAtRisk;
 }
 
 const PRESSURE_ORDER: Pressure[] = ["OVERDUE", "CRITICAL", "TIGHT", "COMFORTABLE", "DONE"];
@@ -74,7 +76,7 @@ function LogisticsQueue() {
   const rows = useMemo<Row[]>(() => {
     const all = Object.values(orders)
       .filter((b) => b.status !== "CANCELLED")
-      .map((b) => ({ b, view: inboundView(b) }));
+      .map((b) => ({ b, view: inboundView(b), atRisk: orderPhaseTimings(b).find((p) => p.phase === "INBOUND_LOGISTICS")?.atRisk }));
     return sortByUrgency(all) as Row[];
   }, [orders]);
 
@@ -161,9 +163,12 @@ function LogisticsQueue() {
       render: (r) => (
         <div>
           {/* The state leads, so the action reads in context. */}
-          <Pill tone={r.view.delivered ? "ok" : r.view.stage === "NOT_BOOKED" ? "warn" : "info"}>
-            {INBOUND_META[r.view.stage].label}
-          </Pill>
+          <span className="inline-flex flex-wrap items-center gap-1">
+            <Pill tone={r.view.delivered ? "ok" : r.view.stage === "NOT_BOOKED" ? "warn" : "info"}>
+              {INBOUND_META[r.view.stage].label}
+            </Pill>
+            {r.atRisk && <Pill tone="bad" title={r.atRisk.reason}>action needed</Pill>}
+          </span>
           <div className="mt-1 text-xs text-muted-foreground">{nextAction(r.b, r.view)}</div>
         </div>
       ),
@@ -208,6 +213,7 @@ function LogisticsQueue() {
           empty={q || pressure !== "ALL" ? "Nothing matches that filter." : "No inbound orders yet."}
           onRowClick={(r) => router.push(`/fulfilment/logistics/orders/${r.b.id}`)}
           rowMuted={(r) => r.view.delivered}
+          rowAccent={(r) => r.atRisk ? "bad" : undefined}
         />
 
         <div className="mt-1 flex flex-wrap items-center justify-between gap-2">

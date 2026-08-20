@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { useStore } from "@/store/store";
-import { customsApplies } from "@/store/selectors";
+import { customsApplies, orderPhaseTimings, type PhaseAtRisk } from "@/store/selectors";
 import { Panel, Pill, StatusPill, DataTable, PageHeader, type Col } from "@/components/ui/primitives";
 import { qtyfmt } from "@/lib/utils";
 
 type Row = {
   orderId: string; orderNo: string; supplier: string;
   inboundAwbs: number; receivedUnits: number; dispatchedUnits: number; allocatedUnits: number;
-  relabelStatus: string; needsCustoms: boolean; hasCustoms: boolean;
+  relabelStatus: string; needsCustoms: boolean; hasCustoms: boolean; atRisk?: PhaseAtRisk;
 };
 
 export default function WarehouseBoardPage() {
@@ -30,6 +30,7 @@ export default function WarehouseBoardPage() {
         allocatedUnits: b.deliveries.reduce((a, d) => a + d.qty, 0),
         relabelStatus: relabel?.status ?? "—",
         needsCustoms: customsApplies(b), hasCustoms: b.customs.some((c) => !!c.icegateRef),
+        atRisk: orderPhaseTimings(b).find((p) => p.phase === "WAREHOUSING")?.atRisk,
       }];
     });
   }, [orders]);
@@ -40,7 +41,12 @@ export default function WarehouseBoardPage() {
     { key: "in", header: "Inbound AWBs", align: "right", render: (r) => r.inboundAwbs },
     { key: "recv", header: "Received", align: "right", render: (r) => qtyfmt(r.receivedUnits) },
     { key: "customs", header: "Customs", render: (r) => !r.needsCustoms ? <span className="text-xs text-faint">n/a</span> : r.hasCustoms ? <Pill tone="ok">cleared</Pill> : <Pill tone="warn">pending</Pill> },
-    { key: "relabel", header: "Relabel → 1Buy", render: (r) => <StatusPill status={r.relabelStatus} /> },
+    { key: "relabel", header: "Relabel → 1Buy", render: (r) => (
+      <span className="inline-flex items-center gap-1.5">
+        <StatusPill status={r.relabelStatus} />
+        {r.atRisk && <Pill tone="bad" title={r.atRisk.reason}>overdue</Pill>}
+      </span>
+    ) },
     { key: "alloc", header: "Allocated", align: "right", render: (r) => qtyfmt(r.allocatedUnits) },
     { key: "out", header: "Dispatched", align: "right", render: (r) => qtyfmt(r.dispatchedUnits) },
     { key: "act", header: "", align: "right", render: (r) => <Link href={`/fulfilment/orders/${r.orderId}`} className="text-xs font-medium text-primary hover:underline">Open →</Link> },
@@ -49,7 +55,7 @@ export default function WarehouseBoardPage() {
   return (
     <div className="space-y-5">
       <PageHeader title="Warehouse" description={<>Goods at the 1Buy hub: what&apos;s been <b className="text-foreground">received</b> inbound, cleared customs, <b className="text-foreground">relabelled to 1Buy</b> (the masking step), allocated to clients, and dispatched outbound.</>} />
-      <Panel><DataTable columns={cols} rows={rows} empty="Nothing received yet — inbound shipments show up here once created." /></Panel>
+      <Panel><DataTable columns={cols} rows={rows} empty="Nothing received yet — inbound shipments show up here once created." rowAccent={(r) => r.atRisk ? "bad" : undefined} /></Panel>
     </div>
   );
 }

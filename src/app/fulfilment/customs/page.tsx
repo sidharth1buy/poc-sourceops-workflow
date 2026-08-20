@@ -8,6 +8,7 @@ import { useStore } from "@/store/store";
 import { weClearImportCustoms } from "@/lib/incoterm";
 import { customsBucket, BUCKET_META, BUCKET_ORDER, type CustomsBucket } from "@/lib/customs-bucket";
 import { Panel, Pill, Button, PageHeader } from "@/components/ui/primitives";
+import { customsFilingOverdue } from "@/store/selectors";
 import { FileBOEModal } from "@/components/order/modals";
 import { money, cn } from "@/lib/utils";
 
@@ -85,6 +86,7 @@ function CustomsDesk() {
                       <span className="font-mono text-xs text-muted-foreground">{it.shipment.shipmentNo} · {it.shipment.awb}</span>
                       <Pill tone={BUCKET_META[bk].tone}>{BUCKET_META[bk].label}</Pill>
                       {c?.filingMode && <Pill tone="neutral">{c.filingMode === "CHA" ? "via CHA" : "ICEGATE API"}</Pill>}
+                      {bk === "NEW" && customsFilingOverdue(it.order) && <Pill tone="bad">Filing overdue</Pill>}
                     </div>
                     <div className="text-xs text-muted-foreground">
                       {it.order.supplier.name} → 1Buy hub · Port {c?.portCode ?? "INDEL4"} · CHA {c?.chaName ?? "—"}

@@ -4,12 +4,12 @@ import { useState, type ReactNode } from "react";
 import { Upload, Check, Lock, Ban, Send, Inbox, PlayCircle, Mail } from "lucide-react";
 import type { OrderBundle, EscrowOrderStatus, EscrowAgentEmail, EscrowContact, EscrowSendPurpose } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus } from "@/data/enums";
-import { Panel, Field, DataTable, StatusPill, Pill, Button, type Col } from "@/components/ui/primitives";
+import { Panel, Field, DataTable, StatusPill, Pill, Button, Notice, type Col } from "@/components/ui/primitives";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Textarea } from "@/components/ui/form";
 import { money, qtyfmt, cn } from "@/lib/utils";
 import { useStore, type EscrowEmailDraft } from "@/store/store";
-import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet } from "@/store/selectors";
+import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet, orderPhaseTimings } from "@/store/selectors";
 import { ESCROW_API_BASE } from "@/lib/escrow-api";
 
 type Compose = (purpose: EscrowSendPurpose, milestoneIndex?: number) => void;
@@ -642,6 +642,7 @@ export function EscrowTab({
   // Real HKin evidence: a real order was cancelled with the fund-transfer step already marked
   // complete — cancellation isn't gated on T/T payment, only on the order not already released.
   const canCancel = !cancelled && !isFinal;
+  const funding = orderPhaseTimings(b).find((p) => p.phase === "FUNDING");
 
   return (
     <div className="space-y-4">
@@ -654,6 +655,9 @@ export function EscrowTab({
           <Field label="Seller">{e.sellerContact.company}</Field>
           <Field label="Use Escrow/i (with Inspection)?">{e.useInspectionService ? "Yes" : "No"}</Field>
         </div>
+        {!cancelled && funding?.atRisk && (
+          <Notice tone="bad">{funding.atRisk.reason}</Notice>
+        )}
         {cancelled ? (
           <p className="mt-3 inline-flex items-center gap-1 text-xs text-bad"><Ban className="h-3.5 w-3.5" /> Cancelled on {e.cancelledAt}.</p>
         ) : (

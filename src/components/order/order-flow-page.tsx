@@ -3,33 +3,39 @@
 import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, FileText,
-  FlaskConical, Landmark, Lock, Package, Plane, Receipt, Stamp, Truck, Users,
+  ArrowLeft, Ban, Check, ChevronDown, ChevronRight, CircleDot, Clock, FileText,
+  FlaskConical, Landmark, Lock, Package, PackageCheck, Receipt, Stamp, Truck, Users, Warehouse,
   type LucideIcon,
 } from "lucide-react";
 import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, type Tone } from "@/data/enums";
 import { Pill, StatusPill, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
+import { PhaseTimelineList } from "@/components/order/phase-timeline";
 import { LotFeeCell } from "@/components/order/test-tables";
 import { LotReadOnlyDetail } from "@/components/order/testing-readonly";
 import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
 import {
   journeyPct, gateReason, customsApplies, remainingToShip, remainingToAllocate,
-  mappedForOrderLine, testingSummary, lotResults, labFeeOutstandingTotal,
+  mappedForOrderLine, testingSummary, lotResults, labFeeOutstandingTotal, remainingToShipLeg,
   escrowStatusIndex, escrowInvoiceTotals, escrowReleaseReadiness, escrowMilestoneTriggerMet,
   escrowFeeReconciliation, currentReport,
 } from "@/store/selectors";
 import { incotermPlan, supplierHandlesCustoms } from "@/lib/incoterm";
+import { shipmentStage, STAGE_META } from "@/lib/shipment-stage";
 import { money, qtyfmt, cn, fmtAddress } from "@/lib/utils";
 import { usd, toUSD } from "@/lib/fx";
 
 /**
- * One order, one page, top to bottom in the order things actually happen: the deal, the
- * demand it serves, the money, testing, the two freight legs, customs, the hub, delivery,
- * and the evidence/history behind all of it. (There is no Approvals section — it was removed
- * 2026-08-20; order-level approvals are read on the Approvals board.)
+ * One order, one page, top to bottom in the order things actually happen: the deal, the demand
+ * it serves, the money, testing, logistics (**both** legs — inbound and outbound — in one
+ * section), customs, the warehouse, and the evidence/history behind all of it.
+ *
+ * Two sections that used to exist here don't any more (both 2026-08-20): **Approvals**, which is
+ * read on the Approvals board instead, and **Delivery**, which was folded into Logistics as its
+ * outbound block — dispatching to the client *is* the outbound leg, so its shipment, e-invoice,
+ * allocation and PoD all belong to it. Don't split them back out.
  *
  * This is a **reading** page — the dashboard's orders link here rather than into the tabbed
  * workspace, because "what is happening on this order" is a different question from "let me
@@ -48,7 +54,10 @@ import { usd, toUSD } from "@/lib/fx";
 
 /**
  * The page's sections, in the order they render — each with the same icon its section heading
- * uses. Single source of truth for the rail below: adding or removing a section means editing
+ * uses, and where the section maps to a sidebar board the icon is **that menu item's icon**
+ * (`NAV_GROUPS` in data/enums.ts): Logistics → Truck, Customs → Stamp, Warehouse → Warehouse,
+ * Testing → FlaskConical, Money → Landmark (Escrow), Deal → Users (Directory). Delivery has no
+ * menu item of its own, so it takes `PackageCheck` rather than re-using Logistics' Truck. Single source of truth for the rail below: adding or removing a section means editing
  * this list, not starting a second one.
  *
  * Deliberately state-free. Chips painted with each phase's status (green/red tones, ✓/lock
@@ -56,14 +65,14 @@ import { usd, toUSD } from "@/lib/fx";
  * off the journey rail above it and off every section's own heading pill.
  */
 const JUMP: { id: string; label: string; icon: LucideIcon }[] = [
+  { id: "timeline", label: "Timeline", icon: Clock },
   { id: "deal", label: "Deal", icon: Users },
   { id: "demand", label: "Demand", icon: Package },
   { id: "money", label: "Money", icon: Landmark },
   { id: "testing", label: "Testing", icon: FlaskConical },
-  { id: "freight", label: "Freight", icon: Plane },
+  { id: "logistics", label: "Logistics", icon: Truck },
   { id: "customs", label: "Customs", icon: Stamp },
-  { id: "hub", label: "Hub", icon: Building2 },
-  { id: "delivery", label: "Delivery", icon: Truck },
+  { id: "warehouse", label: "Warehouse", icon: Warehouse },
   { id: "evidence", label: "Evidence", icon: FileText },
 ];
 function Empty({ text }: { text: string }) {
@@ -343,20 +352,32 @@ export function OrderFlowPage({ id }: { id: string }) {
 
       <SectionRail />
 
+      <TimelineSection b={b} />
       <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
       <DemandSection b={b} reason={reason} />
       <MoneySection b={b} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
       <TestingSection b={b} id={id} steps={stepsOf("TESTING")} currentId={current?.id} reason={reason} />
-      <FreightSection b={b} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
+      <LogisticsSection b={b} steps={stepsOf("EXPORT", "IMPORT", "DELIVERY")} currentId={current?.id} reason={reason} />
       <CustomsSection b={b} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
-      <HubSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
-      <DeliverySection b={b} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
+      <WarehouseSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
       <EvidenceSection b={b} reason={reason} />
 
       <p className="pb-2 text-center text-xs text-faint">
         Incoterm {plan.incoterm} · {plan.summary}
       </p>
     </div>
+  );
+}
+
+// ---------- 0 · timeline ----------
+
+function TimelineSection({ b }: { b: OrderBundle }) {
+  return (
+    <FlowSection id="timeline" title="Timeline — 6-phase fulfilment clock"
+      hint="Estimated vs. actual for every phase, and where a delay sits on 1Buy's own side."
+      icon={<Clock className="h-4 w-4" />} steps={[]} reason={null}>
+      <PhaseTimelineList b={b} />
+    </FlowSection>
   );
 }
 
@@ -396,7 +417,7 @@ function DealSection({
 
       {(b.hubAddress || b.buyerAddress) && (
         <Facts>
-          <Field label="Inbound → 1Buy hub">{fmtAddress(b.hubAddress) || "—"}</Field>
+          <Field label="Inbound → 1Buy warehouse">{fmtAddress(b.hubAddress) || "—"}</Field>
           <Field label="Outbound → buyer">{fmtAddress(b.buyerAddress) || "—"}</Field>
         </Facts>
       )}
@@ -560,7 +581,7 @@ function MoneySection({
 
           {/* the escrow's own signals, which are not the testing module's */}
           <Facts>
-            <Field label="Goods received at hub">{e.goodsReceivedAt ?? <span className="text-faint">not yet</span>}</Field>
+            <Field label="Goods received at warehouse">{e.goodsReceivedAt ?? <span className="text-faint">not yet</span>}</Field>
             <Field label="WHL verdict (escrow-side)">
               {e.whlVerdict ? <Pill tone={e.whlVerdict === "PASS" ? "ok" : "bad"}>{e.whlVerdict}</Pill> : <span className="text-faint">none recorded</span>}
               {e.whlVerdictAt ? <span className="ml-1 text-xs text-faint">{e.whlVerdictAt}</span> : null}
@@ -762,65 +783,177 @@ function TestingSection({
   );
 }
 
-// ---------- 5 · freight ----------
+// ---------- 5 · logistics ----------
 
 const AT_1BUY = new Set(["ARRIVED", "DELIVERED"]);
 
-/** One freight leg's shipments — same card for inbound and outbound. */
-function Leg({ title, list }: { title: string; list: OrderBundle["shipments"] }) {
-  return (
-    <div>
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-        <Truck className="h-3.5 w-3.5" /> {title} · {list.length}
+const LEG_COPY = {
+  INBOUND: { label: "supplier → 1Buy warehouse", empty: "No inbound shipment booked yet." },
+  OUTBOUND: { label: "1Buy warehouse → client", empty: "Nothing dispatched to the client yet." },
+} as const;
+
+/**
+ * One freight leg, laid out the way the **Logistics board** lays shipments out: the board's own
+ * columns (carrier · AWB · qty · tracking · stage · location · customs) off the same
+ * `shipmentStage`/`STAGE_META` and the same `hasCustoms`/`needsCustoms` derivation
+ * `allShipments()` applies board-side. Someone who works the board sees the same shape here.
+ *
+ * Two one-order adaptations: the board's `Order` column becomes the shipment no. (the order is a
+ * given), and its `Leg` column is gone because the caller has already scoped the leg — **each leg
+ * is rendered by the section that owns that step**, inbound under Logistics and outbound under
+ * Delivery, so no movement is described twice on this page. The per-shipment detail the board
+ * defers to `/logistics/shipments/[id]` (route, boxes, weight, dates, MPN lines) expands inline
+ * instead, because this page never navigates out.
+ */
+function ShipmentTable({ b, leg }: { b: OrderBundle; leg: "INBOUND" | "OUTBOUND" }) {
+  const [open, setOpen] = useState<string | null>(null);   // shipment id whose detail is expanded
+
+  // the same enrichment `allShipments()` does board-side, for this one order's one leg
+  const needsCustoms = customsApplies(b);
+  const rows = b.shipments
+    .filter((s) => s.leg === leg)
+    .map((s) => ({
+      ...s,
+      hasCustoms: b.customs.some((c) => c.shipmentNo === s.shipmentNo && !!c.icegateRef),
+      needsCustoms,
+    }))
+    .sort((x, y) => String(y.updatedAt ?? "").localeCompare(String(x.updatedAt ?? "")));   // newest activity on top
+
+  type Row = (typeof rows)[number];
+  const cols: Col<Row>[] = [
+    { key: "no", header: "Shipment", render: (r) => (
+      <div className="flex items-center gap-1.5">
+        {open === r.id ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+        <span className="font-mono text-xs font-semibold">{r.shipmentNo}</span>
       </div>
-      {list.length === 0 ? <Empty text="Nothing booked on this leg yet." /> : (
-        <div className="space-y-2">
-          {list.map((s) => (
-            <div key={s.id} className="rounded-lg border p-3">
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <span className="font-mono text-xs font-semibold">{s.shipmentNo}</span>
-                <StatusPill status={s.status} />
-                <span className="text-muted-foreground">{s.carrier}</span>
-                <span className="font-mono text-xs">{s.awb}</span>
-              </div>
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span>{s.fromLocation} → {s.toLocation}</span>
-                <span>{s.boxCount} box(es) · {s.grossWeightKg} kg</span>
-                {s.dispatchDate && <span>dispatched {s.dispatchDate}</span>}
-                {s.deliveryDate && <span>delivered {s.deliveryDate}</span>}
-                {s.lastLocation && <span>currently at <b className="text-foreground">{s.lastLocation}</b></span>}
-              </div>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {s.lines.map((l, i) => <Pill key={i} tone="neutral"><span className="font-mono text-[10px]">{l.mpn}</span> ×{qtyfmt(l.qty)}</Pill>)}
+    ) },
+    { key: "carrier", header: "Carrier", render: (r) => <span className="text-xs">{r.carrier}</span> },
+    { key: "awb", header: "AWB", render: (r) => r.trackingUrl
+      ? <a href={r.trackingUrl} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+          className="font-mono text-xs text-primary hover:underline">{r.awb}</a>
+      : <span className="font-mono text-xs text-muted-foreground">{r.awb}</span> },
+    { key: "qty", header: "Qty", align: "right", render: (r) => qtyfmt(r.lines.reduce((a, l) => a + l.qty, 0)) },
+    { key: "status", header: "Tracking", render: (r) => <StatusPill status={r.status} /> },
+    { key: "stage", header: "Stage", render: (r) => { const st = shipmentStage(r); return <Pill tone={STAGE_META[st].tone}>{STAGE_META[st].label}</Pill>; } },
+    { key: "loc", header: "Location", render: (r) => {
+      const loc = r.lastLocation || (r.status === "PLANNED" ? r.fromLocation : "");
+      return loc ? <span className="text-xs text-muted-foreground">{loc}</span> : <span className="text-xs text-faint">—</span>;
+    } },
+    { key: "customs", header: "Customs", render: (r) => !r.needsCustoms ? <span className="text-xs text-faint">n/a</span>
+      : r.hasCustoms ? <Pill tone="ok">cleared</Pill> : <Pill tone="warn">pending</Pill> },
+  ];
+
+  return (
+    <DataTable
+      columns={cols} rows={rows} empty={LEG_COPY[leg].empty}
+      onRowClick={(r) => setOpen(open === r.id ? null : r.id)}
+      isExpanded={(r) => open === r.id}
+      renderExpanded={(r) => (
+          <div className="space-y-2 pt-2.5">
+            <Facts>
+              <Field label="Route">{r.fromLocation} → {r.toLocation}</Field>
+              <Field label="Boxes / gross weight">{r.boxCount} box(es) · {r.grossWeightKg} kg</Field>
+              <Field label="Dispatched">{r.dispatchDate ?? "—"}</Field>
+              <Field label="Delivered">{r.deliveryDate ?? "—"}</Field>
+              {r.pickupConfirmationNo && <Field label="Pickup confirmation">{r.pickupConfirmationNo}</Field>}
+              {r.lastLocation && <Field label="Last carrier scan">{r.lastLocation}</Field>}
+            </Facts>
+            <div>
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Lines on this shipment</div>
+              <div className="flex flex-wrap gap-1.5">
+                {r.lines.map((l, i) => (
+                  <Pill key={i} tone="neutral"><span className="font-mono text-[10px]">{l.mpn}</span> ×{qtyfmt(l.qty)}</Pill>
+                ))}
               </div>
             </div>
-          ))}
-        </div>
-      )}
-    </div>
+          </div>
+        )}
+    />
   );
 }
 
-function FreightSection({
+/** One leg of the journey, as its own titled block inside the Logistics section. */
+function LegBlock({ icon, title, hint, children }: {
+  icon: React.ReactNode; title: string; hint: string; children: React.ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border">
+      <div className="border-b bg-card-2/60 px-3 py-2">
+        <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-foreground">
+          {icon} {title}
+        </div>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
+      </div>
+      <div className="space-y-2.5 p-3">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * **All** of the order's logistics, in one section and in two blocks — inbound (supplier → the
+ * 1Buy warehouse) and outbound (warehouse → client). There is deliberately no separate Delivery
+ * section: dispatching to the client is the outbound leg, so its e-invoice, its allocation to
+ * sales-order lines and its proof of delivery are the outbound block's paperwork rather than a
+ * section of their own. `steps` therefore spans EXPORT/IMPORT **and** DELIVERY, and the heading
+ * reports whichever of those phases the order is actually at.
+ *
+ * One consequence to keep in mind: the outbound block happens *after* Customs and the Warehouse
+ * relabel, which render below this section. The block says so rather than the page reordering
+ * itself, because splitting logistics back apart to fix the reading order is what this merge
+ * exists to undo.
+ */
+function LogisticsSection({
   b, steps, currentId, reason,
 }: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const plan = incotermPlan(b.incoterm);
-  const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
-  const outbound = b.shipments.filter((s) => s.leg === "OUTBOUND");
-  const atHub = inbound.some((s) => AT_1BUY.has(s.status));
+  const atHub = b.shipments.some((s) => s.leg === "INBOUND" && AT_1BUY.has(s.status));
+
+  const deliveryCols: Col<OrderBundle["deliveries"][number]>[] = [
+    { key: "from", header: "From shipment", render: (d) => <span className="font-mono text-xs">{d.fromShipmentNo}</span> },
+    { key: "cpo", header: "Sales Order", render: (d) => <span className="font-mono text-xs">{d.clientPoNo}</span> },
+    { key: "mpn", header: "Line", render: (d) => <span className="font-mono text-xs">{d.clientLineMpn}</span> },
+    { key: "qty", header: "Qty", align: "right", render: (d) => qtyfmt(d.qty) },
+    { key: "pod", header: "PoD", render: (d) => d.pod ? <Pill tone="ok"><Check className="h-3 w-3" /> captured</Pill> : <Pill tone="warn">pending</Pill> },
+  ];
+  const toShip = b.lines.map((l) => `${l.mpn} ${qtyfmt(remainingToShip(b, l.mpn))}`).join(" · ");
+  const toDispatch = b.lines.map((l) => `${l.mpn} ${qtyfmt(remainingToShipLeg(b, l.mpn, "OUTBOUND"))}`).join(" · ");
+  const toAllocate = Array.from(new Set(b.shipments.flatMap((s) => s.lines).map((l) => l.mpn)))
+    .map((m) => `${m} ${qtyfmt(remainingToAllocate(b, m))}`).join(" · ");
 
   return (
-    <FlowSection id="freight" title="Freight — supplier → hub → client" hint={plan.summary}
-      icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
-      <div className={cn("rounded-lg border p-2.5 text-xs",
-        plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
-        <b>Incoterm {plan.incoterm}</b> — {plan.weBookFreight ? "1Buy books the inbound carrier." : "the supplier books and pays the inbound leg; we record their AWB."}
-      </div>
-      <Leg title="Inbound — supplier → 1Buy hub" list={inbound} />
-      <Leg title="Outbound — 1Buy hub → client" list={outbound} />
-      {atHub && <p className="inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Inbound leg complete — goods at the 1Buy hub.</p>}
-      <p className="text-xs text-muted-foreground">
-        Remaining to ship: {b.lines.map((l) => `${l.mpn} ${qtyfmt(remainingToShip(b, l.mpn))}`).join(" · ") || "—"}
+    <FlowSection id="logistics" title="Logistics — supplier → 1Buy warehouse → client" hint={plan.summary}
+      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
+
+      <LegBlock icon={<Truck className="h-3.5 w-3.5" />} title="Inbound logistics"
+        hint="Supplier → the 1Buy warehouse. The goods we bought, moving to us.">
+        <div className={cn("rounded-lg border p-2.5 text-xs",
+          plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
+          <b>Incoterm {plan.incoterm}</b> — {plan.weBookFreight ? "1Buy books the inbound carrier." : "the supplier books and pays the inbound leg; we record their AWB."}
+        </div>
+        <ShipmentTable b={b} leg="INBOUND" />
+        {atHub && <p className="inline-flex items-center gap-1 text-xs text-ok"><Check className="h-3.5 w-3.5" /> Inbound leg complete — goods at the 1Buy warehouse.</p>}
+        <p className="text-xs text-muted-foreground">Remaining to ship inbound: {toShip || "—"}</p>
+      </LegBlock>
+
+      <LegBlock icon={<PackageCheck className="h-3.5 w-3.5" />} title="Outbound logistics"
+        hint="The 1Buy warehouse → the client. Runs after customs clearance and the relabel below: dispatched, invoiced under GST, allocated to sales-order lines and signed for.">
+        <ShipmentTable b={b} leg="OUTBOUND" />
+        <p className="text-xs text-muted-foreground">Remaining to dispatch: {toDispatch || "—"}</p>
+        <p className="rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
+          {b.einvoice
+            ? <>GST e-Invoice <Pill tone="ok">IRN</Pill> <span className="font-mono text-foreground">ack {b.einvoice.ackNo}</span> · {b.einvoice.supplyType}</>
+            : "GST e-Invoice not generated yet — required on the client tax invoice at dispatch."}
+        </p>
+        <div>
+          <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Allocated to sales-order lines</div>
+          <DataTable columns={deliveryCols} rows={b.deliveries} empty="Nothing allocated to a client yet." />
+        </div>
+        <p className="text-xs text-muted-foreground">Available to allocate: {toAllocate || "—"}</p>
+      </LegBlock>
+
+      <p className="text-xs text-faint">
+        Click a shipment for its route, weights, dates and the MPN lines on it. Booking, pickups, tracking polls
+        and the carrier documents live on the Logistics board; allocation lives on the Delivery board.
       </p>
     </FlowSection>
   );
@@ -851,7 +984,7 @@ function CustomsSection({
         <p className="text-xs text-muted-foreground">
           {!applies
             ? "Nothing to file — the goods never cross a border on this order."
-            : "Nothing for us to file. Receipt at the hub is the next physical event."}
+            : "Nothing for us to file. Receipt at the warehouse is the next physical event."}
         </p>
       ) : (
         <>
@@ -865,17 +998,17 @@ function CustomsSection({
   );
 }
 
-// ---------- 7 · hub ----------
+// ---------- 7 · warehouse ----------
 
-function HubSection({
+function WarehouseSection({
   b, steps, currentId, reason,
 }: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   return (
-    <FlowSection id="hub" title="Hub — receive &amp; relabel (the masking act)"
-      hint="Goods land at the 1Buy hub and are relabelled to the masking entity. This is what keeps the buyer and the supplier from seeing each other."
-      icon={<Building2 className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
+    <FlowSection id="warehouse" title="Warehouse — receive &amp; relabel (the masking act)"
+      hint="Goods land at the 1Buy warehouse and are relabelled to the masking entity. This is what keeps the buyer and the supplier from seeing each other."
+      icon={<Warehouse className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <Facts>
-        <Field label="Hub address">{fmtAddress(b.hubAddress) || "—"}</Field>
+        <Field label="Warehouse address">{fmtAddress(b.hubAddress) || "—"}</Field>
         <Field label="Masking entity">{b.maskingEntity}</Field>
         <Field label="Relabelled to 1Buy">
           {b.relabelledAt ? <span className="text-ok">{b.relabelledAt}</span> : <span className="text-faint">not yet</span>}
@@ -887,36 +1020,7 @@ function HubSection({
   );
 }
 
-// ---------- 8 · delivery ----------
-
-function DeliverySection({
-  b, steps, currentId, reason,
-}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
-  const cols: Col<OrderBundle["deliveries"][number]>[] = [
-    { key: "from", header: "From shipment", render: (d) => <span className="font-mono text-xs">{d.fromShipmentNo}</span> },
-    { key: "cpo", header: "Sales Order", render: (d) => <span className="font-mono text-xs">{d.clientPoNo}</span> },
-    { key: "mpn", header: "Line", render: (d) => <span className="font-mono text-xs">{d.clientLineMpn}</span> },
-    { key: "qty", header: "Qty", align: "right", render: (d) => qtyfmt(d.qty) },
-    { key: "pod", header: "PoD", render: (d) => d.pod ? <Pill tone="ok"><Check className="h-3 w-3" /> captured</Pill> : <Pill tone="warn">pending</Pill> },
-  ];
-  const toAllocate = Array.from(new Set(b.shipments.flatMap((s) => s.lines).map((l) => l.mpn)))
-    .map((m) => `${m} ${qtyfmt(remainingToAllocate(b, m))}`).join(" · ");
-
-  return (
-    <FlowSection id="delivery" title="Delivery to the client" hint="Received quantity allocated to sales-order lines, invoiced under GST, and signed for."
-      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
-      <p className="rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
-        {b.einvoice
-          ? <>GST e-Invoice <Pill tone="ok">IRN</Pill> <span className="font-mono text-foreground">ack {b.einvoice.ackNo}</span> · {b.einvoice.supplyType}</>
-          : "GST e-Invoice not generated yet — required on the client tax invoice at dispatch."}
-      </p>
-      <DataTable columns={cols} rows={b.deliveries} empty="Nothing allocated to a client yet." />
-      <p className="text-xs text-muted-foreground">Available to allocate: {toAllocate || "—"}</p>
-    </FlowSection>
-  );
-}
-
-// ---------- 9 · evidence & history ----------
+// ---------- 8 · evidence & history ----------
 
 function EvidenceSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const docCols: Col<OrderBundle["documents"][number]>[] = [
