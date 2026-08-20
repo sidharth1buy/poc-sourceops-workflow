@@ -801,17 +801,26 @@ export function AddPaymentModal({ orderId, onClose }: { orderId: string; onClose
   const [mode, setMode] = useState<PaymentMode>(b?.paymentMode ?? "ADVANCE");
   const [amount, setAmount] = useState(b?.buyTotal ?? 0);
   const [triggerDoc, setTriggerDoc] = useState("Supplier PI");
+  // CREDIT terms have a real countdown to flag as it nears; ADVANCE/ESCROW default blank since
+  // they're expected to be settled immediately (ESCROW is flagged as urgent by mode alone).
+  const [dueDate, setDueDate] = useState(() => mode === "CREDIT" ? new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10) : "");
   if (!b) return null;
-  const save = () => { if (amount <= 0) return; addPayment(orderId, { direction, mode, amount, triggerDoc }); onClose(); };
+  const save = () => { if (amount <= 0) return; addPayment(orderId, { direction, mode, amount, triggerDoc, dueDate: dueDate || undefined }); onClose(); };
   return (
     <Dialog open onClose={onClose} title="New payment task" footer={<Footer onClose={onClose} onSave={save} saveLabel="Create" disabled={amount <= 0} />}>
       <div className="space-y-3">
         <Labeled label="Direction"><Select value={direction} onChange={(e) => setDirection(e.target.value as PaymentDirection)}>
           <option value="CLIENT_TO_1BUY">Client → 1Buy</option><option value="1BUY_TO_SUPPLIER">1Buy → Supplier</option></Select></Labeled>
         <div className="grid grid-cols-2 gap-3">
-          <Labeled label="Mode"><Select value={mode} onChange={(e) => setMode(e.target.value as PaymentMode)}><option>ADVANCE</option><option>ESCROW</option><option>CREDIT</option></Select></Labeled>
+          <Labeled label="Mode"><Select value={mode} onChange={(e) => {
+            const v = e.target.value as PaymentMode; setMode(v);
+            if (v === "CREDIT" && !dueDate) setDueDate(new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10));
+          }}><option>ADVANCE</option><option>ESCROW</option><option>CREDIT</option></Select></Labeled>
           <Labeled label="Amount"><Input type="number" value={amount} onChange={(e) => setAmount(+e.target.value)} /></Labeled>
         </div>
+        <Labeled label="Due date" hint="optional — flags this payment as it comes due">
+          <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
+        </Labeled>
         <Labeled label="Trigger document"><Input value={triggerDoc} onChange={(e) => setTriggerDoc(e.target.value)} /></Labeled>
       </div>
     </Dialog>
