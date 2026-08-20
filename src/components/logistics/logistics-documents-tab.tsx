@@ -81,7 +81,7 @@ function draftBody(docId: string, b: OrderBundle): string {
 /** One table row: a register entry, or a document the desk created ad hoc. */
 interface Row {
   key: string;
-  section: "IN" | "OUT" | "NA";
+  section: "IN" | "OUT";
   /** Position in the ideal chronology of the inbound flow. */
   seq: number;
   name: string;
@@ -99,7 +99,6 @@ interface Row {
 const SECTION_TITLE: Record<Row["section"], string> = {
   IN: "Coming in — received from the supplier, the logistics partner and the broker",
   OUT: "Going out — this desk produces and sends; every document names its recipients",
-  NA: "Not needed on this consignment",
 };
 
 export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; onGoToShipment: () => void }) {
@@ -118,7 +117,9 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
     const bySeq = (a: Row, z: Row) => a.seq - z.seq;
     const fromSpec = (d: LogisticsDocView): Row => ({
       key: d.id,
-      section: d.status === "not_needed" ? "NA" : d.direction,
+      /* A document that does not apply still belongs to its direction — it is
+       * shown in place (muted, labelled) so the flow reads complete. */
+      section: d.direction,
       seq: d.seq,
       name: d.name,
       parties: d.direction === "IN"
@@ -129,8 +130,9 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       outstanding: d.status === "awaited" || d.status === "draft",
       spec: d,
     });
-    const incoming = docs.filter((d) => d.direction === "IN" && d.status !== "not_needed").map(fromSpec).sort(bySeq);
-    const outgoing = docs.filter((d) => d.direction === "OUT" && d.status !== "not_needed").map(fromSpec).sort(bySeq);
+    const applies = (d: LogisticsDocView) => showNa || d.status !== "not_needed";
+    const incoming = docs.filter((d) => d.direction === "IN" && applies(d)).map(fromSpec).sort(bySeq);
+    const outgoing = docs.filter((d) => d.direction === "OUT" && applies(d)).map(fromSpec).sort(bySeq);
     /* Ad-hoc documents the desk created — ordinary rows in Going out, slotted
      * where they happen: after the receipt, before the claim. */
     const custom = (b.logisticsOutbox ?? []).filter((x) => x.docId === "CUSTOM").map((x): Row => ({
@@ -144,8 +146,7 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       outstanding: false,
       custom: x,
     }));
-    const na = showNa ? docs.filter((d) => d.status === "not_needed").map(fromSpec).sort(bySeq) : [];
-    return [...incoming, ...[...outgoing, ...custom].sort(bySeq), ...na];
+    return [...incoming, ...[...outgoing, ...custom].sort(bySeq)];
   }, [docs, b.logisticsOutbox, showNa]);
 
   const openRow = open ? rows.find((r) => r.key === open) ?? null : null;
@@ -184,11 +185,11 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       header: "Document",
       render: (r) => (
         <div className="flex items-center gap-2">
-          {r.section === "IN"
-            ? <ArrowDownLeft className="h-3.5 w-3.5 shrink-0 text-primary" />
-            : r.section === "OUT"
-              ? <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              : <Minus className="h-3.5 w-3.5 shrink-0 text-faint" />}
+          {r.status === "not_needed"
+            ? <Minus className="h-3.5 w-3.5 shrink-0 text-faint" />
+            : r.section === "IN"
+              ? <ArrowDownLeft className="h-3.5 w-3.5 shrink-0 text-primary" />
+              : <ArrowUpRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
           <span className={cn("text-sm font-medium", r.status === "not_needed" && "text-muted-foreground")}>{r.name}</span>
         </div>
       ),
@@ -226,8 +227,13 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       header: "Action",
       align: "right",
       /* Only the desk's own documents carry an action here — what comes in is
-       * chased from the Communication tab, not buttoned on this table. */
-      render: (r) => (r.section === "OUT" ? <RowAction r={r} /> : null),
+       * chased from the Communication tab, not buttoned on this table. The one
+       * exception: a document that does not apply is LABELLED so, whichever
+       * direction it belongs to, with the reason on hover. */
+      render: (r) =>
+        r.status === "not_needed"
+          ? <ActionChip icon={Minus} label="Not needed" title={r.spec?.because ?? "Does not apply to this consignment."} />
+          : r.section === "OUT" ? <RowAction r={r} /> : null,
     },
   ];
 
@@ -337,7 +343,7 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
 
       {naCount > 0 && (
         <button onClick={() => setShowNa((v) => !v)} className="text-xs text-primary hover:underline">
-          {showNa ? "Hide" : "Show"} {naCount} that do not apply to this consignment
+          {showNa ? "Hide" : "Show"} {naCount} that do not apply — they appear muted in their own sections
         </button>
       )}
     </div>
