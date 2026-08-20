@@ -53,6 +53,15 @@ export const DOC_STATUS_LABEL: Record<DocStatus, string> = {
 export interface LogisticsDoc {
   id: string;
   name: string;
+  /**
+   * Where this document sits in the ideal chronology of an inbound leg —
+   * the order things happen when the flow runs right: ask for the supplier's
+   * set, receive it, instruct and book the carrier, pre-alert the broker,
+   * clear, take delivery, close out with GRN + POD, claim only if the dock
+   * found damage. The listing sorts on this, so reading top to bottom IS
+   * reading the flow.
+   */
+  seq: number;
   direction: DocDirection;
   /** Who it comes from (IN) — the party to chase. */
   from?: Counterparty;
@@ -78,6 +87,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   // ── Coming in ──────────────────────────────────────────────────────────
   {
     id: "PACKING_LIST",
+    seq: 2,
     name: "Packing list",
     direction: "IN",
     from: "SUPPLIER",
@@ -88,6 +98,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "COMMERCIAL_INVOICE",
+    seq: 3,
     name: "Commercial invoice",
     direction: "IN",
     from: "SUPPLIER",
@@ -98,6 +109,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "COO",
+    seq: 4,
     name: "Certificate of origin",
     direction: "IN",
     from: "SUPPLIER",
@@ -109,6 +121,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "DG_PACK",
+    seq: 5,
     name: "Dangerous goods pack (declaration, UN38.3, safety data sheet)",
     direction: "IN",
     from: "SUPPLIER",
@@ -120,6 +133,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "AWB",
+    seq: 7,
     name: "Air waybill",
     direction: "IN",
     from: "CARRIER",
@@ -130,6 +144,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "CARRIER_INVOICE",
+    seq: 8,
     name: "Freight invoice",
     direction: "IN",
     from: "CARRIER",
@@ -141,6 +156,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "DELIVERY_ORDER",
+    seq: 13,
     name: "Delivery order",
     direction: "IN",
     from: "CARRIER",
@@ -152,6 +168,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "BOE_COPY",
+    seq: 11,
     name: "Bill of Entry (filed copy)",
     direction: "IN",
     from: "CHA",
@@ -163,6 +180,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "OOC",
+    seq: 12,
     name: "Out-of-charge endorsement",
     direction: "IN",
     from: "CHA",
@@ -174,6 +192,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "POD",
+    seq: 15,
     name: "Proof of delivery",
     direction: "IN",
     from: "CARRIER",
@@ -186,6 +205,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   // ── Going out ──────────────────────────────────────────────────────────
   {
     id: "DOC_REQUEST",
+    seq: 1,
     name: "Shipping-document request",
     direction: "OUT",
     to: ["SUPPLIER"],
@@ -197,6 +217,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "SHIPPING_INSTRUCTION",
+    seq: 6,
     name: "Shipping instruction",
     direction: "OUT",
     to: ["CARRIER"],
@@ -208,6 +229,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "PRE_ALERT",
+    seq: 9,
     name: "Pre-alert pack",
     direction: "OUT",
     // The broker files against it; the plant needs the dock date; the client is
@@ -221,6 +243,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "AWB_TO_CHA",
+    seq: 10,
     name: "Waybill and invoice to the broker",
     direction: "OUT",
     to: ["CHA"],
@@ -232,6 +255,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "GRN",
+    seq: 14,
     name: "Goods receipt note",
     direction: "OUT",
     // Finance reconciles against it; the supplier is told what we counted; the
@@ -244,6 +268,7 @@ export const LOGISTICS_DOCS: LogisticsDoc[] = [
   },
   {
     id: "DAMAGE_NOTICE",
+    seq: 16,
     name: "Damage or shortage notice",
     direction: "OUT",
     to: ["CARRIER", "INSURER", "SUPPLIER"],

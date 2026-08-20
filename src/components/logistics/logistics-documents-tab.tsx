@@ -9,15 +9,16 @@
 // handover, the receipt, the damage notice). Outstanding rows float to the top
 // of their section.
 //
-// THE TABLE SAYS WHAT; THE ROW OPENS INTO WHY. At table level a document is a
-// name, who it comes from or GOES TO (the send-to mapping stays on the row —
-// a document sent to nobody is a draft), a status and one action. Clicking
-// the row unfolds everything wordy: why it exists, what stops without it,
-// what is on file — and the work itself: the preview of a settled document,
-// or the prepare-and-send composer of an owed one. Nothing here is a dialog.
+// THE TABLE SAYS WHAT; THE ROW OPENS THE DOCUMENT. The listing is sorted by
+// the IDEAL CHRONOLOGY of an inbound leg (the # column is that position), so
+// reading top to bottom is reading the flow. Clicking a row opens the document
+// in a pop-up: the paper itself when it is on file, otherwise the full story —
+// why it exists, what stops without it, who has it. Only GOING-OUT rows carry
+// an Action column, because only those are this desk's to produce; what is
+// coming in is chased from the Communication tab, not buttoned here.
 
 import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Check, ChevronDown, ChevronUp, Eye, FileText, Minus, PenLine, Send } from "lucide-react";
+import { AlertTriangle, ArrowDownLeft, ArrowUpRight, Check, FileText, Minus, PenLine, Send } from "lucide-react";
 import { useStore } from "@/store/store";
 import {
   COUNTERPARTY_LABEL,
@@ -30,6 +31,7 @@ import {
 import { LOGISTICS_PARTY_LABEL, type LogisticsParty } from "@/integrations/logistics";
 import type { OrderBundle } from "@/types";
 import { Button, DataTable, Pill, type Col } from "@/components/ui/primitives";
+import { Dialog } from "@/components/ui/dialog";
 import { Input, Labeled, Textarea } from "@/components/ui/form";
 import { DocPreview } from "@/components/logistics/doc-preview";
 import { mockDocContent } from "@/lib/download";
@@ -80,6 +82,8 @@ function draftBody(docId: string, b: OrderBundle): string {
 interface Row {
   key: string;
   section: "IN" | "OUT" | "NA";
+  /** Position in the ideal chronology of the inbound flow. */
+  seq: number;
   name: string;
   /** Who it comes from (IN) or goes to (OUT), as display labels. */
   parties: string[];
@@ -109,10 +113,13 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
   const [showCustom, setShowCustom] = useState(false);
 
   const rows = useMemo<Row[]>(() => {
-    const rank = (d: LogisticsDocView) => (d.status === "awaited" || d.status === "draft" ? 0 : 1);
+    /* Sorted by the flow's ideal chronology, not by urgency — reading the
+     * section top to bottom is reading the leg in order. */
+    const bySeq = (a: Row, z: Row) => a.seq - z.seq;
     const fromSpec = (d: LogisticsDocView): Row => ({
       key: d.id,
       section: d.status === "not_needed" ? "NA" : d.direction,
+      seq: d.seq,
       name: d.name,
       parties: d.direction === "IN"
         ? (d.from ? [COUNTERPARTY_LABEL[d.from]] : [])
@@ -122,12 +129,14 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       outstanding: d.status === "awaited" || d.status === "draft",
       spec: d,
     });
-    const incoming = docs.filter((d) => d.direction === "IN" && d.status !== "not_needed").sort((a, z) => rank(a) - rank(z)).map(fromSpec);
-    const outgoing = docs.filter((d) => d.direction === "OUT" && d.status !== "not_needed").sort((a, z) => rank(a) - rank(z)).map(fromSpec);
-    /* Ad-hoc documents the desk created — ordinary rows in Going out. */
+    const incoming = docs.filter((d) => d.direction === "IN" && d.status !== "not_needed").map(fromSpec).sort(bySeq);
+    const outgoing = docs.filter((d) => d.direction === "OUT" && d.status !== "not_needed").map(fromSpec).sort(bySeq);
+    /* Ad-hoc documents the desk created — ordinary rows in Going out, slotted
+     * where they happen: after the receipt, before the claim. */
     const custom = (b.logisticsOutbox ?? []).filter((x) => x.docId === "CUSTOM").map((x): Row => ({
       key: x.id,
       section: "OUT",
+      seq: 14.5,
       name: x.name,
       parties: x.to.map((k) => LOGISTICS_PARTY_LABEL[k as LogisticsParty] ?? k),
       status: "sent",
@@ -135,10 +144,11 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
       outstanding: false,
       custom: x,
     }));
-    const na = showNa ? docs.filter((d) => d.status === "not_needed").map(fromSpec) : [];
-    return [...incoming, ...outgoing, ...custom, ...na];
+    const na = showNa ? docs.filter((d) => d.status === "not_needed").map(fromSpec).sort(bySeq) : [];
+    return [...incoming, ...[...outgoing, ...custom].sort(bySeq), ...na];
   }, [docs, b.logisticsOutbox, showNa]);
 
+  const openRow = open ? rows.find((r) => r.key === open) ?? null : null;
   const awaited = rows.filter((r) => r.section === "IN" && r.outstanding).length;
   const owed = rows.filter((r) => r.section === "OUT" && r.outstanding).length;
   const naCount = docs.filter((d) => d.status === "not_needed").length;
@@ -159,6 +169,16 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
   };
 
   const columns: Col<Row>[] = [
+    {
+      key: "seq",
+      header: "#",
+      render: (r) => (
+        /* The document's place in the ideal chronology of the leg. */
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border bg-muted/40 text-[10px] font-bold text-muted-foreground tnum">
+          {Math.floor(r.seq)}
+        </span>
+      ),
+    },
     {
       key: "doc",
       header: "Document",
@@ -203,34 +223,50 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
     },
     {
       key: "action",
-      header: "",
+      header: "Action",
       align: "right",
-      render: (r) => <RowAction r={r} open={open === r.key} />,
+      /* Only the desk's own documents carry an action here — what comes in is
+       * chased from the Communication tab, not buttoned on this table. */
+      render: (r) => (r.section === "OUT" ? <RowAction r={r} /> : null),
     },
   ];
 
-  /* The one primary act per row. Everything routes through expanding the row —
-   * the work happens inside it, on the page. */
-  function RowAction({ r, open: isOpen }: { r: Row; open: boolean }) {
-    if (r.status === "not_needed") return <span className="text-[11px] text-faint">n/a</span>;
+  function RowAction({ r }: { r: Row }) {
     if (!r.outstanding) {
+      return <span className="text-[11px] text-muted-foreground">Sent — open to view</span>;
+    }
+    if (r.spec?.id === "DOC_REQUEST") {
       return (
-        <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
-          <Eye className="h-3.5 w-3.5" /> {isOpen ? "Close" : "Preview"}
-        </span>
+        <Button variant="outline" onClick={(e) => { e.stopPropagation(); requestShippingDocs(b.id); }}>
+          <Send className="mr-1.5 h-3.5 w-3.5" /> Send request
+        </Button>
       );
     }
-    const label =
-      r.spec?.id === "DOC_REQUEST" ? "Send request"
-      : r.spec?.id === "AWB_TO_CHA" ? "Send to broker"
-      : r.spec?.id === "GRN" ? "Issue GRN"
-      : r.spec?.id === "SHIPPING_INSTRUCTION" ? "Via booking"
-      : r.section === "IN" ? "Chase" : "Prepare & send";
+    if (r.spec?.id === "AWB_TO_CHA") {
+      const c = b.customs?.[0];
+      return c ? (
+        <Button variant="outline" onClick={(e) => { e.stopPropagation(); sendAwbToCha(b.id, c.id); }}>
+          <Send className="mr-1.5 h-3.5 w-3.5" /> Send to broker
+        </Button>
+      ) : (
+        <span className="text-[11px] text-muted-foreground">Needs a customs entry first</span>
+      );
+    }
+    if (r.spec?.id === "GRN") {
+      return (
+        <Button variant="outline" onClick={(e) => { e.stopPropagation(); onGoToShipment(); }}>
+          Issue on Shipment tab
+        </Button>
+      );
+    }
+    if (r.spec?.id === "SHIPPING_INSTRUCTION") {
+      return <span className="text-[11px] text-muted-foreground">Sent by the booking form</span>;
+    }
+    /* Pre-alert / damage notice — composed in the pop-up. */
     return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-warn">
-        {r.section === "OUT" ? <Send className="h-3.5 w-3.5" /> : isOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-        {label}
-      </span>
+      <Button variant="outline" onClick={(e) => { e.stopPropagation(); setOpen(r.key); }}>
+        <PenLine className="mr-1.5 h-3.5 w-3.5" /> Prepare & send
+      </Button>
     );
   }
 
@@ -266,23 +302,27 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
         columns={columns}
         rows={rows}
         sectionOf={(r) => SECTION_TITLE[r.section]}
-        onRowClick={(r) => setOpen(open === r.key ? null : r.key)}
-        isExpanded={(r) => open === r.key}
+        onRowClick={(r) => setOpen(r.key)}
         rowMuted={(r) => r.status === "not_needed"}
-        renderExpanded={(r) => (
-          <ExpandedRow
-            r={r}
+        empty="No documents apply to this consignment yet."
+      />
+
+      {/* The document itself, in a pop-up: the paper when it is on file, the
+          full story (and the act, for the desk's own documents) when not. */}
+      {openRow && (
+        <Dialog open onClose={() => setOpen(null)} title={openRow.name}>
+          <DocDialogBody
+            r={openRow}
             b={b}
             contentFor={contentFor}
-            onGoToShipment={onGoToShipment}
-            onRequestDocs={() => requestShippingDocs(b.id)}
-            onSendAwb={() => { const c = b.customs?.[0]; if (c) sendAwbToCha(b.id, c.id); }}
+            onGoToShipment={() => { setOpen(null); onGoToShipment(); }}
+            onRequestDocs={() => { requestShippingDocs(b.id); setOpen(null); }}
+            onSendAwb={() => { const c = b.customs?.[0]; if (c) sendAwbToCha(b.id, c.id); setOpen(null); }}
             hasCustomsEntry={Boolean(b.customs?.[0])}
             onCreate={(doc) => { createLogisticsDoc(b.id, doc); setOpen(null); }}
           />
-        )}
-        empty="No documents apply to this consignment yet."
-      />
+        </Dialog>
+      )}
 
       {naCount > 0 && (
         <button onClick={() => setShowNa((v) => !v)} className="text-xs text-primary hover:underline">
@@ -293,8 +333,8 @@ export function LogisticsDocumentsTab({ b, onGoToShipment }: { b: OrderBundle; o
   );
 }
 
-/* ── Inside the row: the why, the consequence, the paper, the work ────────── */
-function ExpandedRow({
+/* ── Inside the pop-up: the why, the consequence, the paper, the work ─────── */
+function DocDialogBody({
   r, b, contentFor, onGoToShipment, onRequestDocs, onSendAwb, hasCustomsEntry, onCreate,
 }: {
   r: Row;
@@ -310,7 +350,7 @@ function ExpandedRow({
   const composerDoc = d && (d.id === "PRE_ALERT" || d.id === "DAMAGE_NOTICE") && r.outstanding;
 
   return (
-    <div className="space-y-2 pt-2">
+    <div className="space-y-2">
       {/* The story, folded off the table. */}
       {d && (
         <p className="text-[11.5px] leading-relaxed text-muted-foreground">
@@ -331,6 +371,11 @@ function ExpandedRow({
       )}
 
       {/* The one act this row needs, done here. */}
+      {r.outstanding && r.section === "IN" && (
+        <p className="text-[11px] text-muted-foreground">
+          Waiting on <b className="text-foreground">{r.parties.join(", ")}</b> — chase it from the Communication tab; the drafter knows what to ask for.
+        </p>
+      )}
       {r.outstanding && d?.id === "DOC_REQUEST" && (
         <Button variant="outline" onClick={onRequestDocs}>Send the request to the supplier</Button>
       )}
