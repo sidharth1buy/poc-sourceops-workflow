@@ -897,9 +897,10 @@ lab-fee settlement, lot verdicts, adding a lot and reconciling a parse flag all 
 Never fork them — a feature added to one and not the other is a bug by construction.
 
 **The two doors no longer cross-link** (2026-08-20). The testing route's `Order workspace` header
-button was removed, and the order-flow page's Testing section now points at the **Testing board**
-(`/fulfilment/testing`) rather than at `/fulfilment/testing/[orderId]`: nothing on the reading
-surface may door into a per-order acting screen or a workspace tab. The workspace's Testing tab is
+button was removed, and the order-flow page's Testing section links nowhere at all: its
+`Testing board` link was dropped in the same pass that stripped every section's board link off the
+flow page (see CLAUDE.md's reading-surface rules) — the reading surface carries no navigation, so
+neither a per-order acting screen nor a board is reachable from it. The workspace's Testing tab is
 still a live door — you just reach it from the workspace, not from the flow page.
 
 The one **reading** surface is the **Testing section of the order-flow page**

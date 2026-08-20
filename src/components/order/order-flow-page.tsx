@@ -3,7 +3,7 @@
 import { Fragment, useState } from "react";
 import Link from "next/link";
 import {
-  ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, ExternalLink, FileText,
+  ArrowLeft, Ban, Building2, Check, ChevronDown, ChevronRight, CircleDot, Clock, FileText,
   FlaskConical, Landmark, Lock, Package, Plane, Receipt, ShieldCheck, Stamp, Truck, Users,
 } from "lucide-react";
 import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
@@ -76,7 +76,7 @@ function phaseState(
 }
 
 function FlowSection({
-  id, title, hint, icon, steps, currentId, reason, action, children,
+  id, title, hint, icon, steps, currentId, reason, children,
 }: {
   id: string;
   title: string;
@@ -85,7 +85,6 @@ function FlowSection({
   steps: JourneyStep[];
   currentId?: string;
   reason: string | null;
-  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const st = phaseState(steps, currentId, reason);
@@ -130,19 +129,9 @@ function FlowSection({
             </p>
           )}
         </div>
-        {action && <div className="flex shrink-0 flex-wrap items-center gap-2 text-xs">{action}</div>}
       </div>
       <div className="space-y-3 p-4">{children}</div>
     </section>
-  );
-}
-
-/** Link out to wherever this part of the flow is actually worked. */
-function ActLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link href={href} className="inline-flex items-center gap-1 font-medium text-primary hover:underline">
-      {children} <ExternalLink className="h-3 w-3" />
-    </Link>
   );
 }
 
@@ -281,10 +270,10 @@ export function OrderFlowPage({ id }: { id: string }) {
 
       <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
       <DemandSection b={b} reason={reason} />
-      <MoneySection b={b} id={id} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
+      <MoneySection b={b} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
       <TestingSection b={b} id={id} steps={stepsOf("TESTING")} currentId={current?.id} reason={reason} />
-      <FreightSection b={b} id={id} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
-      <CustomsSection b={b} id={id} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
+      <FreightSection b={b} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
+      <CustomsSection b={b} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
       <HubSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
       <DeliverySection b={b} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
       <ApprovalsSection b={b} steps={stepsOf("CLOSE")} currentId={current?.id} reason={reason} />
@@ -392,8 +381,7 @@ function DemandSection({ b, reason }: { b: OrderBundle; reason: string | null })
 
   return (
     <FlowSection id="demand" title="Demand it serves" hint="What we bought, and which sales-order lines it was bought for (N:N — one order can serve several clients)."
-      icon={<Package className="h-4 w-4" />} steps={[]} reason={reason}
-      action={<ActLink href="/fulfilment/delivery">Delivery board</ActLink>}>
+      icon={<Package className="h-4 w-4" />} steps={[]} reason={reason}>
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Serving</span>
         {clientPos.length === 0 ? <Pill tone="warn">unlinked — no sales order mapped</Pill>
@@ -414,8 +402,8 @@ function DemandSection({ b, reason }: { b: OrderBundle; reason: string | null })
 // ---------- 3 · money ----------
 
 function MoneySection({
-  b, id, steps, currentId, reason, canAccessEscrow,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null; canAccessEscrow: boolean }) {
+  b, steps, currentId, reason, canAccessEscrow,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null; canAccessEscrow: boolean }) {
   const e = b.escrow;
   const readiness = e ? escrowReleaseReadiness(b) : null;
   const totals = e?.invoice ? escrowInvoiceTotals(e.invoice.fees) : null;
@@ -430,11 +418,7 @@ function MoneySection({
 
   return (
     <FlowSection id="money" title="Money" hint={e ? "Escrow holds the buyer's funds; tranches release as their triggers are met." : "Direct payment — no escrow on this order."}
-      icon={<Landmark className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        {e && <ActLink href={`/fulfilment/escrow/${id}`}>Escrow board</ActLink>}
-        <ActLink href="/fulfilment/payments?tab=order">Payments board</ActLink>
-      </>}>
+      icon={<Landmark className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
 
       {e ? (
         <>
@@ -536,8 +520,7 @@ function MoneySection({
           ) : (
             <p className="inline-flex items-start gap-1.5 rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
               <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-              Escrow amounts, fees and wire details are Finance-only — switch persona and open the{" "}
-              <Link href={`/fulfilment/escrow/${id}`} className="font-medium text-primary hover:underline">escrow board</Link>.
+              Escrow amounts, fees and wire details are Finance-only — switch persona to see them on the escrow board.
               The status, triggers and release state above are visible to everyone because the rest of the flow depends on them.
             </p>
           )}
@@ -574,8 +557,7 @@ function TestingSection({
     <FlowSection id="testing" title="Testing" hint={testable.length === 0
       ? "No line on this order needs incoming testing, so the testing gate is vacuous."
       : `${testable.length} of ${b.lines.length} line(s) need testing — every one needs a PASS before the money and the goods move on.`}
-      icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href="/fulfilment/testing">Testing board</ActLink>}>
+      icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <MiniStat label="Lots" value={String(sum.lots)} sub={`${passed} passed`} />
         <MiniStat label="Tests tracked" value={String(sum.tests)} />
@@ -746,8 +728,8 @@ function Leg({ title, list }: { title: string; list: OrderBundle["shipments"] })
 }
 
 function FreightSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const plan = incotermPlan(b.incoterm);
   const inbound = b.shipments.filter((s) => s.leg === "INBOUND");
   const outbound = b.shipments.filter((s) => s.leg === "OUTBOUND");
@@ -755,10 +737,7 @@ function FreightSection({
 
   return (
     <FlowSection id="freight" title="Freight — supplier → hub → client" hint={plan.summary}
-      icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        <ActLink href={`/fulfilment/logistics?order=${id}`}>Logistics</ActLink>
-      </>}>
+      icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <div className={cn("rounded-lg border p-2.5 text-xs",
         plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
         <b>Incoterm {plan.incoterm}</b> — {plan.weBookFreight ? "1Buy books the inbound carrier." : "the supplier books and pays the inbound leg; we record their AWB."}
@@ -776,8 +755,8 @@ function FreightSection({
 // ---------- 6 · customs ----------
 
 function CustomsSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const applies = customsApplies(b);
   const bySupplier = supplierHandlesCustoms(b);
   const cols: Col<OrderBundle["customs"][number]>[] = [
@@ -793,8 +772,7 @@ function CustomsSection({
     <FlowSection id="customs" title="Customs" hint={!applies ? "Domestic order with no lab abroad — no customs leg."
       : bySupplier ? `Incoterm ${b.incoterm} — the supplier clears India import customs duty-paid; 1Buy files no Bill of Entry.`
       : "Our CHA files the Bill of Entry in ICEGATE and duty is assessed."}
-      icon={<Stamp className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/customs?order=${id}`}>Customs</ActLink>}>
+      icon={<Stamp className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       {!applies || bySupplier ? (
         <p className="text-xs text-muted-foreground">
           {!applies
@@ -821,8 +799,7 @@ function HubSection({
   return (
     <FlowSection id="hub" title="Hub — receive &amp; relabel (the masking act)"
       hint="Goods land at the 1Buy hub and are relabelled to the masking entity. This is what keeps the buyer and the supplier from seeing each other."
-      icon={<Building2 className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href="/fulfilment/warehouse">Warehouse</ActLink>}>
+      icon={<Building2 className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <Facts>
         <Field label="Hub address">{fmtAddress(b.hubAddress) || "—"}</Field>
         <Field label="Masking entity">{b.maskingEntity}</Field>
@@ -853,10 +830,7 @@ function DeliverySection({
 
   return (
     <FlowSection id="delivery" title="Delivery to the client" hint="Received quantity allocated to sales-order lines, invoiced under GST, and signed for."
-      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<>
-        <ActLink href="/fulfilment/delivery">Delivery board</ActLink>
-      </>}>
+      icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <p className="rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
         {b.einvoice
           ? <>GST e-Invoice <Pill tone="ok">IRN</Pill> <span className="font-mono text-foreground">ack {b.einvoice.ackNo}</span> · {b.einvoice.supplyType}</>
@@ -878,8 +852,7 @@ function ApprovalsSection({
     <FlowSection id="approvals" title="Approvals &amp; close" hint={b.approvals.length === 0
       ? "No approval was raised on this order, so the close gate is vacuously satisfied."
       : `${b.approvals.length} approval(s) on this order; the close gate needs every one decided.`}
-      icon={<ShieldCheck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href="/fulfilment/approvals">Approvals board</ActLink>}>
+      icon={<ShieldCheck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       {b.approvals.length === 0 ? <Empty text="No approvals on this order." /> : (
         <div className="space-y-2">
           {b.approvals.map((a) => (
@@ -913,10 +886,7 @@ function EvidenceSection({ b, reason }: { b: OrderBundle; reason: string | null 
 
   return (
     <FlowSection id="evidence" title="Evidence &amp; history" hint="Every document filed against this order, and everything that happened to it."
-      icon={<FileText className="h-4 w-4" />} steps={[]} reason={reason}
-      action={<>
-        <ActLink href="/fulfilment/integrations">Integration log</ActLink>
-      </>}>
+      icon={<FileText className="h-4 w-4" />} steps={[]} reason={reason}>
       <DataTable columns={docCols} rows={b.documents} empty="No documents filed yet." />
       <div>
         <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
