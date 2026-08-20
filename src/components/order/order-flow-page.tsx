@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import type { OrderBundle, JourneyPhase, JourneyStep } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, type Tone } from "@/data/enums";
-import { Pill, StatusPill, Button, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
+import { Pill, StatusPill, Progress, Field, DataTable, Notice, type Col } from "@/components/ui/primitives";
 import { TestingStageBar } from "@/components/order/testing-stages";
 import { LotFeeCell } from "@/components/order/test-tables";
 import { LotReadOnlyDetail } from "@/components/order/testing-readonly";
@@ -32,8 +32,11 @@ import { usd, toUSD } from "@/lib/fx";
  * This is a **reading** page — the dashboard's orders link here rather than into the tabbed
  * workspace, because "what is happening on this order" is a different question from "let me
  * change something on this order", and answering the first shouldn't take twelve tab clicks.
- * Every section therefore ends where the acting surface begins: a link to the workspace tab,
- * the testing workspace, the escrow board or logistics. Nothing here mutates state.
+ * Every section therefore ends where the acting surface begins — and that acting surface is
+ * always a **board from the sidebar** (Testing, Escrow, Logistics, Customs, Warehouse,
+ * Delivery, Payments, Approvals, Integrations), never a tab of the old per-order workspace:
+ * links back into `/fulfilment/orders/[id]` were removed 2026-08-20, so reading an order and
+ * working it stay on separate rails. Nothing here mutates state.
  *
  * Each section is keyed to the journey phase(s) that own it, so its heading carries that
  * phase's real state (done / in progress / blocked, with the gate reason) instead of a
@@ -193,9 +196,6 @@ export function OrderFlowPage({ id }: { id: string }) {
         <Link href="/fulfilment" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> Orders Overview
         </Link>
-        <Link href={`/fulfilment/orders/${id}`}>
-          <Button variant="outline">Open order workspace <ExternalLink className="h-3.5 w-3.5" /></Button>
-        </Link>
       </div>
 
       {/* ---------- header: who, how much, how far ---------- */}
@@ -279,16 +279,16 @@ export function OrderFlowPage({ id }: { id: string }) {
         </div>
       </div>
 
-      <DealSection b={b} id={id} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
-      <DemandSection b={b} id={id} reason={reason} />
+      <DealSection b={b} steps={stepsOf("KICKOFF")} currentId={current?.id} reason={reason} />
+      <DemandSection b={b} reason={reason} />
       <MoneySection b={b} id={id} steps={stepsOf("PAYMENT")} currentId={current?.id} reason={reason} canAccessEscrow={canAccessEscrow} />
       <TestingSection b={b} id={id} steps={stepsOf("TESTING")} currentId={current?.id} reason={reason} />
       <FreightSection b={b} id={id} steps={stepsOf("EXPORT", "IMPORT")} currentId={current?.id} reason={reason} />
       <CustomsSection b={b} id={id} steps={stepsOf("CUSTOMS")} currentId={current?.id} reason={reason} />
       <HubSection b={b} steps={stepsOf("RELABEL")} currentId={current?.id} reason={reason} />
-      <DeliverySection b={b} id={id} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
+      <DeliverySection b={b} steps={stepsOf("DELIVERY")} currentId={current?.id} reason={reason} />
       <ApprovalsSection b={b} steps={stepsOf("CLOSE")} currentId={current?.id} reason={reason} />
-      <EvidenceSection b={b} id={id} reason={reason} />
+      <EvidenceSection b={b} reason={reason} />
 
       <p className="pb-2 text-center text-xs text-faint">
         Incoterm {plan.incoterm} · {plan.summary}
@@ -300,8 +300,8 @@ export function OrderFlowPage({ id }: { id: string }) {
 // ---------- 1 · the deal ----------
 
 function DealSection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const t = b.terms;
   const termRows = (t
     ? ([
@@ -317,8 +317,7 @@ function DealSection({
 
   return (
     <FlowSection id="deal" title="The deal" hint="Parties, paperwork and the terms everything below is measured against."
-      icon={<Users className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Overview`}>Overview tab</ActLink>}>
+      icon={<Users className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
       <Facts>
         <Field label="Buyer (client)">{party(b.buyer)}</Field>
         <Field label="Supplier">{party(b.supplier)}</Field>
@@ -364,7 +363,7 @@ function DealSection({
 
 // ---------- 2 · demand this order serves ----------
 
-function DemandSection({ b, id, reason }: { b: OrderBundle; id: string; reason: string | null }) {
+function DemandSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const lineCols: Col<OrderBundle["lines"][number]>[] = [
     { key: "no", header: "#", render: (l) => <span className="text-faint">{l.lineNo}</span> },
     { key: "mpn", header: "MPN", render: (l) => <span className="font-mono text-xs">{l.mpn}</span> },
@@ -394,7 +393,7 @@ function DemandSection({ b, id, reason }: { b: OrderBundle; id: string; reason: 
   return (
     <FlowSection id="demand" title="Demand it serves" hint="What we bought, and which sales-order lines it was bought for (N:N — one order can serve several clients)."
       icon={<Package className="h-4 w-4" />} steps={[]} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Allocations`}>Allocations tab</ActLink>}>
+      action={<ActLink href="/fulfilment/delivery">Delivery board</ActLink>}>
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">Serving</span>
         {clientPos.length === 0 ? <Pill tone="warn">unlinked — no sales order mapped</Pill>
@@ -434,7 +433,7 @@ function MoneySection({
       icon={<Landmark className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
       action={<>
         {e && <ActLink href={`/fulfilment/escrow/${id}`}>Escrow board</ActLink>}
-        <ActLink href={`/fulfilment/orders/${id}?tab=Payments`}>Payments tab</ActLink>
+        <ActLink href="/fulfilment/payments?tab=order">Payments board</ActLink>
       </>}>
 
       {e ? (
@@ -576,7 +575,7 @@ function TestingSection({
       ? "No line on this order needs incoming testing, so the testing gate is vacuous."
       : `${testable.length} of ${b.lines.length} line(s) need testing — every one needs a PASS before the money and the goods move on.`}
       icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/testing/${id}`}>Testing workspace</ActLink>}>
+      action={<ActLink href="/fulfilment/testing">Testing board</ActLink>}>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
         <MiniStat label="Lots" value={String(sum.lots)} sub={`${passed} passed`} />
         <MiniStat label="Tests tracked" value={String(sum.tests)} />
@@ -759,7 +758,6 @@ function FreightSection({
       icon={<Plane className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
       action={<>
         <ActLink href={`/fulfilment/logistics?order=${id}`}>Logistics</ActLink>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Shipments`}>Shipments tab</ActLink>
       </>}>
       <div className={cn("rounded-lg border p-2.5 text-xs",
         plan.weBookFreight ? "border-primary/40 bg-accent-soft text-primary" : "bg-muted/30 text-muted-foreground")}>
@@ -796,7 +794,7 @@ function CustomsSection({
       : bySupplier ? `Incoterm ${b.incoterm} — the supplier clears India import customs duty-paid; 1Buy files no Bill of Entry.`
       : "Our CHA files the Bill of Entry in ICEGATE and duty is assessed."}
       icon={<Stamp className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
-      action={<ActLink href={`/fulfilment/orders/${id}?tab=Customs`}>Customs tab</ActLink>}>
+      action={<ActLink href={`/fulfilment/customs?order=${id}`}>Customs</ActLink>}>
       {!applies || bySupplier ? (
         <p className="text-xs text-muted-foreground">
           {!applies
@@ -841,8 +839,8 @@ function HubSection({
 // ---------- 8 · delivery ----------
 
 function DeliverySection({
-  b, id, steps, currentId, reason,
-}: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
+  b, steps, currentId, reason,
+}: { b: OrderBundle; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
   const cols: Col<OrderBundle["deliveries"][number]>[] = [
     { key: "from", header: "From shipment", render: (d) => <span className="font-mono text-xs">{d.fromShipmentNo}</span> },
     { key: "cpo", header: "Sales Order", render: (d) => <span className="font-mono text-xs">{d.clientPoNo}</span> },
@@ -858,7 +856,6 @@ function DeliverySection({
       icon={<Truck className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}
       action={<>
         <ActLink href="/fulfilment/delivery">Delivery board</ActLink>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Delivery`}>Delivery tab</ActLink>
       </>}>
       <p className="rounded-lg border bg-muted/30 p-2.5 text-xs text-muted-foreground">
         {b.einvoice
@@ -905,7 +902,7 @@ function ApprovalsSection({
 
 // ---------- 10 · evidence & history ----------
 
-function EvidenceSection({ b, id, reason }: { b: OrderBundle; id: string; reason: string | null }) {
+function EvidenceSection({ b, reason }: { b: OrderBundle; reason: string | null }) {
   const docCols: Col<OrderBundle["documents"][number]>[] = [
     { key: "type", header: "Type", render: (d) => <Pill tone="info">{d.docType}</Pill> },
     { key: "file", header: "File", render: (d) => <span className="font-mono text-xs">{d.fileName}</span> },
@@ -918,7 +915,6 @@ function EvidenceSection({ b, id, reason }: { b: OrderBundle; id: string; reason
     <FlowSection id="evidence" title="Evidence &amp; history" hint="Every document filed against this order, and everything that happened to it."
       icon={<FileText className="h-4 w-4" />} steps={[]} reason={reason}
       action={<>
-        <ActLink href={`/fulfilment/orders/${id}?tab=Documents`}>Documents tab</ActLink>
         <ActLink href="/fulfilment/integrations">Integration log</ActLink>
       </>}>
       <DataTable columns={docCols} rows={b.documents} empty="No documents filed yet." />
