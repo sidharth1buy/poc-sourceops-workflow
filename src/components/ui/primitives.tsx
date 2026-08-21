@@ -207,7 +207,7 @@ export type Col<T> = {
  */
 export function DataTable<T>({
   columns, rows, empty = "Nothing here yet.", onRowClick, isExpanded, renderExpanded, sectionOf, rowMuted, rowAccent,
-}: { columns: Col<T>[]; rows: T[]; empty?: string; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode; sectionOf?: (row: T) => string | null; rowMuted?: (row: T) => boolean; rowAccent?: (row: T) => "bad" | "warn" | undefined }) {
+}: { columns: Col<T>[]; rows: T[]; empty?: React.ReactNode; onRowClick?: (row: T) => void; isExpanded?: (row: T) => boolean; renderExpanded?: (row: T) => React.ReactNode; sectionOf?: (row: T) => string | null; rowMuted?: (row: T) => boolean; rowAccent?: (row: T) => "bad" | "warn" | undefined }) {
   if (rows.length === 0) {
     return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{empty}</div>;
   }

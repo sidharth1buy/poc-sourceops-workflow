@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Plus, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useStore } from "@/store/store";
 import { sourcedForClientLine, clientPoStatus } from "@/store/selectors";
-import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked } from "@/components/ui/primitives";
+import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked, DataTable, type Col } from "@/components/ui/primitives";
 import { SourceOrderModal } from "@/components/order/modals";
 import { prettyStatus } from "@/data/enums";
 import { money, qtyfmt, fmtAddress, cn } from "@/lib/utils";
@@ -74,6 +74,24 @@ export default function ClientPosPage() {
     });
   }
 
+  type Row = (typeof pageRows)[number];
+  const cols: Col<Row>[] = [
+    { key: "no", header: "PO No.", render: (r) => (
+      <Link href={`/fulfilment/client-pos/${r.cpo.id}`} onClick={(e) => e.stopPropagation()}
+        className="font-mono text-xs text-primary hover:underline">{r.cpo.clientPoNo}</Link>
+    ) },
+    { key: "client", header: "Client", render: (r) => <>{r.cpo.client.name} <span className="text-faint">({r.cpo.client.country})</span></> },
+    { key: "lines", header: "Lines", align: "right", render: (r) => r.cpo.lines.length },
+    { key: "sourced", header: "Sourced / Demand", align: "right", render: (r) => (
+      <span className={r.sourcedQty >= r.demandQty ? "text-ok" : r.sourcedQty > 0 ? "text-warn" : "text-faint"}>
+        <b className="tnum">{qtyfmt(r.sourcedQty)}</b><span className="text-faint">/</span><b className="tnum text-foreground">{qtyfmt(r.demandQty)}</b>
+      </span>
+    ) },
+    { key: "total", header: "Total", align: "right", render: (r) => <span className="font-medium tnum">{money(r.total)}</span> },
+    { key: "pay", header: "Payment", render: (r) => <Pill tone={r.cpo.paymentMode === "ESCROW" ? "warn" : "neutral"}>{r.cpo.paymentMode}</Pill> },
+    { key: "status", header: "Status", render: (r) => <Pill tone={statusTone(r.status)}>{prettyStatus(r.status)}</Pill> },
+  ];
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -104,88 +122,66 @@ export default function ClientPosPage() {
         </div>
       )}
 
-      {clientPos.length === 0 && (
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No sales orders yet. <Link href="/fulfilment/client-pos/new" className="text-primary hover:underline">Create one</Link>.</div></Panel>
-      )}
-      {clientPos.length > 0 && filtered.length === 0 && (
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No sales orders match these filters.</div></Panel>
-      )}
-
-      <div className="space-y-3">
-        {pageRows.map(({ cpo, status, total, demandQty, sourcedQty, serving }) => {
-          const isOpen = expanded.has(cpo.id);
-          return (
-            <div key={cpo.id} className="rounded-[var(--radius)] border bg-card shadow-sm">
-              <button type="button" onClick={() => toggle(cpo.id)}
-                className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                  <span className="truncate font-mono text-sm text-primary">{cpo.clientPoNo}</span>
-                  <span className="text-faint">·</span>
-                  <span className="truncate text-sm">{cpo.client.name} <span className="text-faint">({cpo.client.country})</span></span>
-                </span>
-                <span className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-                  <span className="text-muted-foreground">{cpo.lines.length} line{cpo.lines.length === 1 ? "" : "s"}</span>
-                  <span className="text-muted-foreground">sourced <b className={cn("tnum", sourcedQty >= demandQty ? "text-ok" : sourcedQty > 0 ? "text-warn" : "text-faint")}>{qtyfmt(sourcedQty)}</b>/<b className="tnum text-foreground">{qtyfmt(demandQty)}</b></span>
-                  <span className="font-medium tnum text-foreground">{money(total)}</span>
-                  <Pill tone={cpo.paymentMode === "ESCROW" ? "warn" : "neutral"}>{cpo.paymentMode}</Pill>
-                  <Pill tone={statusTone(status)}>{prettyStatus(status)}</Pill>
-                </span>
-              </button>
-
-              {isOpen && (
-                <div className="border-t p-4">
-                  {(cpo.client.gstin || cpo.terms || fmtAddress(cpo.deliveryAddress)) && (
-                    <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 border-b pb-2 text-xs text-muted-foreground">
-                      {cpo.terms?.referenceNo && <span>Raised against <span className="font-mono text-foreground">{cpo.terms.referenceNo}</span></span>}
-                      {cpo.client.gstin && <span>GSTIN {cpo.client.gstin}{cpo.client.state ? ` · ${cpo.client.state}` : ""}</span>}
-                      {cpo.terms?.paymentMethod && <span>Pay: {cpo.terms.paymentMethod}</span>}
-                      {cpo.terms?.deliveryTerms && <span>{cpo.terms.deliveryTerms}</span>}
-                      {cpo.terms?.testingTerms && <span>Testing: {cpo.terms.testingTerms}</span>}
-                      {cpo.terms?.warranty && <span>Warranty {cpo.terms.warranty}</span>}
-                      {cpo.terms?.gstNote && <span>{cpo.terms.gstNote}</span>}
-                      {fmtAddress(cpo.deliveryAddress) && <span>Deliver to: {fmtAddress(cpo.deliveryAddress)}</span>}
+      <Panel>
+        <DataTable<Row>
+          columns={cols}
+          rows={pageRows}
+          empty={clientPos.length === 0
+            ? <>No sales orders yet. <Link href="/fulfilment/client-pos/new" className="text-primary hover:underline">Create one</Link>.</>
+            : "No sales orders match these filters."}
+          onRowClick={(r) => toggle(r.cpo.id)}
+          isExpanded={(r) => expanded.has(r.cpo.id)}
+          renderExpanded={({ cpo, serving }) => (
+            <div className="pt-3">
+              {(cpo.client.gstin || cpo.terms || fmtAddress(cpo.deliveryAddress)) && (
+                <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 border-b pb-2 text-xs text-muted-foreground">
+                  {cpo.terms?.referenceNo && <span>Raised against <span className="font-mono text-foreground">{cpo.terms.referenceNo}</span></span>}
+                  {cpo.client.gstin && <span>GSTIN {cpo.client.gstin}{cpo.client.state ? ` · ${cpo.client.state}` : ""}</span>}
+                  {cpo.terms?.paymentMethod && <span>Pay: {cpo.terms.paymentMethod}</span>}
+                  {cpo.terms?.deliveryTerms && <span>{cpo.terms.deliveryTerms}</span>}
+                  {cpo.terms?.testingTerms && <span>Testing: {cpo.terms.testingTerms}</span>}
+                  {cpo.terms?.warranty && <span>Warranty {cpo.terms.warranty}</span>}
+                  {cpo.terms?.gstNote && <span>{cpo.terms.gstNote}</span>}
+                  {fmtAddress(cpo.deliveryAddress) && <span>Deliver to: {fmtAddress(cpo.deliveryAddress)}</span>}
+                </div>
+              )}
+              <div className="space-y-2">
+                {cpo.lines.map((l) => {
+                  const sourced = sourcedForClientLine(supplierPos, orders, cpo.clientPoNo, l.mpn);
+                  const remaining = l.qty - sourced;
+                  return (
+                    <div key={l.mpn} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card p-3 text-sm">
+                      <span className="min-w-[140px] flex-1"><span className="font-mono text-xs">{l.mpn}</span>{l.make && <span className="ml-1.5 text-[11px] text-faint">{l.make}</span>}{l.dateCode && <span className="ml-1.5 text-[11px] text-faint">DC {l.dateCode}</span>}</span>
+                      <span className="text-muted-foreground">demand <b className="text-foreground tnum">{qtyfmt(l.qty)}</b></span>
+                      <span className={sourced >= l.qty ? "text-ok" : sourced > 0 ? "text-warn" : "text-faint"}>sourced <b className="tnum">{qtyfmt(sourced)}</b></span>
+                      <span className="text-muted-foreground">remaining <b className="text-foreground tnum">{qtyfmt(remaining)}</b></span>
+                      <span className="text-faint">@ {money(l.unitPrice)}</span>
+                      {remaining > 0
+                        ? <Button variant="outline" onClick={() => setSrc({ poNo: cpo.clientPoNo, buyer: cpo.client.name, mpn: l.mpn, price: l.unitPrice, remaining })}>Source →</Button>
+                        : <Pill tone="ok">fully sourced</Pill>}
                     </div>
-                  )}
-                  <div className="space-y-2">
-                    {cpo.lines.map((l) => {
-                      const sourced = sourcedForClientLine(supplierPos, orders, cpo.clientPoNo, l.mpn);
-                      const remaining = l.qty - sourced;
-                      return (
-                        <div key={l.mpn} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border p-3 text-sm">
-                          <span className="min-w-[140px] flex-1"><span className="font-mono text-xs">{l.mpn}</span>{l.make && <span className="ml-1.5 text-[11px] text-faint">{l.make}</span>}{l.dateCode && <span className="ml-1.5 text-[11px] text-faint">DC {l.dateCode}</span>}</span>
-                          <span className="text-muted-foreground">demand <b className="text-foreground tnum">{qtyfmt(l.qty)}</b></span>
-                          <span className={sourced >= l.qty ? "text-ok" : sourced > 0 ? "text-warn" : "text-faint"}>sourced <b className="tnum">{qtyfmt(sourced)}</b></span>
-                          <span className="text-muted-foreground">remaining <b className="text-foreground tnum">{qtyfmt(remaining)}</b></span>
-                          <span className="text-faint">@ {money(l.unitPrice)}</span>
-                          {remaining > 0
-                            ? <Button variant="outline" onClick={() => setSrc({ poNo: cpo.clientPoNo, buyer: cpo.client.name, mpn: l.mpn, price: l.unitPrice, remaining })}>Source →</Button>
-                            : <Pill tone="ok">fully sourced</Pill>}
-                        </div>
-                      );
-                    })}
+                  );
+                })}
+              </div>
+
+              {serving.length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sourced via (purchase orders)</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {serving.map((spo) => (
+                      <Link key={spo.id} href={spo.orderId ? `/fulfilment/order-flow/${spo.orderId}` : "/fulfilment/supplier-pos"}
+                        className="rounded-md border bg-card px-2 py-1 text-xs hover:border-primary">
+                        <span className="font-mono text-primary">{spo.poNo}</span> · {spo.supplier.name}
+                        {spo.status === "DRAFT" && <span className="ml-1 text-warn">· draft</span>}
+                      </Link>
+                    ))}
                   </div>
-
-                  {serving.length > 0 && (
-                    <div className="mt-3">
-                      <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Sourced via (purchase orders)</div>
-                      <div className="flex flex-wrap gap-1.5">
-                        {serving.map((spo) => (
-                          <Link key={spo.id} href={spo.orderId ? `/fulfilment/orders/${spo.orderId}` : "/fulfilment/supplier-pos"}
-                            className="rounded-md border px-2 py-1 text-xs hover:border-primary">
-                            <span className="font-mono text-primary">{spo.poNo}</span> · {spo.supplier.name}
-                            {spo.status === "DRAFT" && <span className="ml-1 text-warn">· draft</span>}
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
             </div>
-          );
-        })}
-      </div>
+          )}
+        />
+      </Panel>
 
       {filtered.length > 0 && <Pagination page={pageSafe} totalPages={totalPages} onChange={setPage} />}
       {clientPos.length > 0 && (
