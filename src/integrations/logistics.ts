@@ -160,7 +160,7 @@ export function dhlUploadImage(req: { awb: string; typeCode: string }) {
 // notices). Same mockCall seam as every adapter, so each send and each inbox
 // poll shows on the Integrations board.
 
-export type LogisticsParty = "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE";
+export type LogisticsParty = "SUPPLIER" | "CARRIER" | "CHA" | "WAREHOUSE" | "CLIENT" | "INSURER" | "FINANCE" | "OTHER";
 
 export const LOGISTICS_PARTY_LABEL: Record<LogisticsParty, string> = {
   SUPPLIER: "Supplier",
@@ -170,6 +170,7 @@ export const LOGISTICS_PARTY_LABEL: Record<LogisticsParty, string> = {
   CLIENT: "Client",
   INSURER: "Insurer",
   FINANCE: "Finance",
+  OTHER: "Other contact",
 };
 
 export interface LogisticsMailReq {
@@ -203,6 +204,7 @@ const REPLY_BODY: Record<LogisticsParty, string> = {
   CLIENT: "Thank you for the update.",
   INSURER: "Noted — the claim acknowledgement is attached; a surveyor will be appointed if warranted.",
   FINANCE: "Received — queued for the next payment run; the booking confirmation is attached.",
+  OTHER: "Received, thank you — we will come back to you shortly.",
 };
 
 /* Counterparties do not reply empty-handed — each answers with its own paper.
@@ -215,6 +217,7 @@ const REPLY_ATTACHMENTS: Record<LogisticsParty, string[]> = {
   CLIENT: [],
   INSURER: ["Claim acknowledgement.pdf"],
   FINANCE: ["Payment booking confirmation.pdf"],
+  OTHER: [],
 };
 
 export interface LogisticsReplyReq { orderNo: string; pending: { party: LogisticsParty; subject: string; contact: string; threadId: string }[] }

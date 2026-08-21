@@ -42,28 +42,40 @@ export const THREAD_PARTY_LABEL = LOGISTICS_PARTY_LABEL;
 const label = (key: string) => THREAD_PARTY_LABEL[key as LogisticsParty] ?? key;
 
 /*
- * EMAIL CATEGORIES. Every mail is filed somewhere: by default under the party
- * it is with, re-filed by hand where that is wrong (a carrier's freight
- * invoice belongs to Finance), and under OTHERS when it maps to nothing.
- * The category is a filing decision, so it is stored per email on the order —
- * not guessed again on every render.
+ * EMAIL CATEGORIES. Every mail is filed somewhere — and can be filed in
+ * SEVERAL places at once: a carrier's freight invoice belongs under the
+ * Logistics partner AND under Finance, and ticking both is how one email
+ * appears in both filters. Defaults to the party the mail is with; an email
+ * mapped to nothing sits under OTHERS. Filing is a decision, so it is stored
+ * per email on the order — not guessed again on every render.
  */
-export type EmailCategory = LogisticsParty | "OTHERS";
+export type EmailCategory = Exclude<LogisticsParty, "OTHER"> | "OTHERS";
 
 export const CATEGORY_ORDER: EmailCategory[] = [
   "SUPPLIER", "CARRIER", "CHA", "WAREHOUSE", "CLIENT", "INSURER", "FINANCE", "OTHERS",
 ];
 
 export const CATEGORY_LABEL: Record<EmailCategory, string> = {
-  ...LOGISTICS_PARTY_LABEL,
+  SUPPLIER: LOGISTICS_PARTY_LABEL.SUPPLIER,
+  CARRIER: LOGISTICS_PARTY_LABEL.CARRIER,
+  CHA: LOGISTICS_PARTY_LABEL.CHA,
+  WAREHOUSE: LOGISTICS_PARTY_LABEL.WAREHOUSE,
+  CLIENT: LOGISTICS_PARTY_LABEL.CLIENT,
+  INSURER: LOGISTICS_PARTY_LABEL.INSURER,
+  FINANCE: LOGISTICS_PARTY_LABEL.FINANCE,
   OTHERS: "Others",
 };
 
-/** The category an item is filed under: the manual filing, else its party, else Others. */
-export function categoryOf(item: ThreadItem, b: OrderBundle): EmailCategory {
+/** Every category an item is filed under: the manual filing, else its party, else Others. */
+export function categoriesOf(item: ThreadItem, b: OrderBundle): EmailCategory[] {
   const filed = b.logisticsEmailCategories?.[item.id];
-  if (filed && filed in CATEGORY_LABEL) return filed as EmailCategory;
-  return item.with ?? "OTHERS";
+  if (filed !== undefined) {
+    const valid = filed.filter((c): c is EmailCategory => c in CATEGORY_LABEL);
+    /* An explicitly emptied filing means "mapped to nothing" — Others. */
+    return valid.length ? valid : ["OTHERS"];
+  }
+  if (item.with && item.with !== "OTHER") return [item.with];
+  return ["OTHERS"];
 }
 
 /** Everything the desk has said and been sent on this order, newest first. */

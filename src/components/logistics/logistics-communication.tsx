@@ -19,11 +19,11 @@
 
 import { useMemo, useState } from "react";
 import { ArrowDownLeft, ArrowUpRight, FileText, Flag, Inbox, Paperclip, Reply, Sparkles, Tag } from "lucide-react";
-import { useStore } from "@/store/store";
+import { inferLogisticsParty, useStore } from "@/store/store";
 import {
   CATEGORY_LABEL,
   CATEGORY_ORDER,
-  categoryOf,
+  categoriesOf,
   groupChains,
   logisticsThreadItems,
   partiesOwingReply,
@@ -32,58 +32,63 @@ import {
   type MailChain,
   type ThreadItem,
 } from "@/lib/logistics-thread";
-import { aiDraftEmail, type LogisticsParty } from "@/integrations/logistics";
+import { aiDraftEmail } from "@/integrations/logistics";
 import { buildDraft } from "@/lib/email-drafter";
 import type { OrderBundle } from "@/types";
 import { Button, Pill } from "@/components/ui/primitives";
-import { Input, Labeled, Select, Textarea } from "@/components/ui/form";
+import { Input, Labeled, Textarea } from "@/components/ui/form";
 import { DocPreview } from "@/components/logistics/doc-preview";
 import { mockDocContent } from "@/lib/download";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-
-const PARTIES: LogisticsParty[] = ["SUPPLIER", "CARRIER", "CHA", "WAREHOUSE", "CLIENT", "INSURER", "FINANCE"];
 
 const splitAddresses = (v: string) => v.split(/[,;]/).map((x) => x.trim()).filter(Boolean);
 
 export function LogisticsCommunication({ b }: { b: OrderBundle }) {
   const sendLogisticsMessage = useStore((s) => s.sendLogisticsMessage);
   const checkLogisticsInbox = useStore((s) => s.checkLogisticsInbox);
-  const setCategory = useStore((s) => s.setLogisticsEmailCategory);
+  const setCategories = useStore((s) => s.setLogisticsEmailCategories);
 
   const items = useMemo(() => logisticsThreadItems(b), [b]);
   const owing = useMemo(() => partiesOwingReply(b), [b]);
 
-  /* Every item resolved to its file, once. */
+  /* Every item resolved to its set of files, once. An email can sit in
+   * several filters, so it counts once per file it is in. */
   const filed = useMemo(
-    () => new Map(items.map((i) => [i.id, categoryOf(i, b)] as const)),
+    () => new Map(items.map((i) => [i.id, categoriesOf(i, b)] as const)),
     [items, b],
   );
   const counts = useMemo(() => {
     const c = new Map<EmailCategory, number>();
-    for (const cat of filed.values()) c.set(cat, (c.get(cat) ?? 0) + 1);
+    for (const cats of filed.values()) for (const cat of cats) c.set(cat, (c.get(cat) ?? 0) + 1);
     return c;
   }, [filed]);
 
   const [filter, setFilter] = useState<"ALL" | EmailCategory>("ALL");
 
   /* ── The composer — a real mail head, plus the drafter. ────────────────── */
-  const [party, setParty] = useState<LogisticsParty>("CARRIER");
+  /* Just the address. Who it is gets read off it; nothing to pick first. */
+  const [toEmail, setToEmail] = useState("");
   const [cc, setCc] = useState("");
   const [bcc, setBcc] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
-  const [fileUnder, setFileUnder] = useState<"" | EmailCategory>("");
+  /* Which filters this mail should appear under — tick as many as apply.
+   * Nothing ticked = filed under whoever the address resolves to. */
+  const [fileUnder, setFileUnder] = useState<EmailCategory[]>([]);
   const [drafting, setDrafting] = useState(false);
+  const toggleFile = (c: EmailCategory) => setFileUnder((f) => (f.includes(c) ? f.filter((x) => x !== c) : [...f, c]));
 
   /*
    * Chains are filtered by their emails' categories: a chain stays visible if
    * anything in it is filed under the active category.
    */
   const chains = useMemo(() => groupChains(items), [items]);
-  const shown = filter === "ALL" ? chains : chains.filter((c) => c.emails.some((e) => filed.get(e.id) === filter));
+  const shown = filter === "ALL" ? chains : chains.filter((c) => c.emails.some((e) => (filed.get(e.id) ?? []).includes(filter)));
 
   const draft = async () => {
+    if (!toEmail.trim()) { toast.error("Type the address first — the drafter writes for whoever it is to"); return; }
+    const party = inferLogisticsParty(b, toEmail);
     setDrafting(true);
     try {
       /* The intelligence is local (it reads the order); the adapter simulates
@@ -102,14 +107,14 @@ export function LogisticsCommunication({ b }: { b: OrderBundle }) {
 
   const send = () => {
     sendLogisticsMessage(b.id, {
-      to: party,
+      toEmail,
       cc: splitAddresses(cc),
       bcc: splitAddresses(bcc),
       subject,
       body,
-      category: fileUnder || undefined,
+      categories: fileUnder.length ? fileUnder : undefined,
     });
-    setSubject(""); setBody(""); setCc(""); setBcc(""); setFileUnder("");
+    setSubject(""); setBody(""); setCc(""); setBcc(""); setFileUnder([]); setToEmail("");
   };
 
   return (
@@ -117,13 +122,9 @@ export function LogisticsCommunication({ b }: { b: OrderBundle }) {
       {/* ── Write to somebody ─────────────────────────────────────────────── */}
       <div className="rounded-lg border p-3">
         <h4 className="mb-2 text-[13px] font-semibold">Write to a counterparty</h4>
-        <div className="grid gap-2 sm:grid-cols-[180px_1fr_1fr]">
-          <Labeled label="To">
-            <Select value={party} onChange={(e) => setParty(e.target.value as LogisticsParty)}>
-              {PARTIES.map((p) => (
-                <option key={p} value={p}>{THREAD_PARTY_LABEL[p]}</option>
-              ))}
-            </Select>
+        <div className="grid gap-2 sm:grid-cols-3">
+          <Labeled label="To" hint="type the email address">
+            <Input value={toEmail} onChange={(e) => setToEmail(e.target.value)} placeholder="name@company.com" />
           </Labeled>
           <Labeled label="CC" hint="comma-separated">
             <Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="e.g. ops-lead@1buy.ai" />
@@ -132,18 +133,27 @@ export function LogisticsCommunication({ b }: { b: OrderBundle }) {
             <Input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="optional" />
           </Labeled>
         </div>
-        <div className="grid gap-2 sm:grid-cols-[1fr_200px]">
-          <Labeled label="Subject">
-            <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={`e.g. ${b.orderNo} — pickup window tomorrow?`} />
-          </Labeled>
-          <Labeled label="File under" hint="category">
-            <Select value={fileUnder} onChange={(e) => setFileUnder(e.target.value as "" | EmailCategory)}>
-              <option value="">Same as recipient</option>
-              {CATEGORY_ORDER.map((c) => (
-                <option key={c} value={c}>{CATEGORY_LABEL[c]}</option>
-              ))}
-            </Select>
-          </Labeled>
+        <Labeled label="Subject">
+          <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={`e.g. ${b.orderNo} — pickup window tomorrow?`} />
+        </Labeled>
+        {/* Tick every filter this mail should appear in — one email, many files. */}
+        <div className="mb-1">
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">File under — tick all that apply (none = filed by who it&rsquo;s to)</span>
+          <div className="flex flex-wrap gap-1.5">
+            {CATEGORY_ORDER.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => toggleFile(c)}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-xs font-medium transition",
+                  fileUnder.includes(c) ? "border-primary bg-accent-soft text-primary" : "bg-card text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {fileUnder.includes(c) ? "✓ " : ""}{CATEGORY_LABEL[c]}
+              </button>
+            ))}
+          </div>
         </div>
         <Labeled label="Message">
           <Textarea rows={4} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Plain words — or let the drafter read the order and write it." />
@@ -190,7 +200,7 @@ export function LogisticsCommunication({ b }: { b: OrderBundle }) {
       ) : (
         <ul className="space-y-2">
           {shown.map((chain) => (
-            <ChainCard key={chain.key} b={b} chain={chain} filed={filed} onCategory={(id, cat) => setCategory(b.id, id, cat)} />
+            <ChainCard key={chain.key} b={b} chain={chain} filed={filed} onCategories={(id, cats) => setCategories(b.id, id, cats)} />
           ))}
         </ul>
       )}
@@ -200,14 +210,13 @@ export function LogisticsCommunication({ b }: { b: OrderBundle }) {
 
 /* ── One conversation: root mail + everything chained on it ─────────────── */
 function ChainCard({
-  b, chain, filed, onCategory,
+  b, chain, filed, onCategories,
 }: {
   b: OrderBundle;
   chain: MailChain;
-  filed: Map<string, EmailCategory>;
-  onCategory: (id: string, cat: EmailCategory) => void;
+  filed: Map<string, EmailCategory[]>;
+  onCategories: (id: string, cats: EmailCategory[]) => void;
 }) {
-  const sendLogisticsMessage = useStore((s) => s.sendLogisticsMessage);
   const isChain = chain.emails.length > 1;
   /* Which email's reply composer is open, if any. */
   const [replyTo, setReplyTo] = useState<ThreadItem | null>(null);
@@ -230,8 +239,8 @@ function ChainCard({
             orderNo={b.orderNo}
             indent={isChain && i > 0}
             last={i === chain.emails.length - 1}
-            category={filed.get(e.id) ?? "OTHERS"}
-            onCategory={(cat) => onCategory(e.id, cat)}
+            categories={filed.get(e.id) ?? ["OTHERS"]}
+            onCategories={(cats) => onCategories(e.id, cats)}
             onReply={e.replyable ? () => setReplyTo(replyTo?.id === e.id ? null : e) : undefined}
             replying={replyTo?.id === e.id}
           />
@@ -252,14 +261,14 @@ function ChainCard({
 
 /* ── One email ───────────────────────────────────────────────────────────── */
 function EmailRow({
-  e, orderNo, indent, last, category, onCategory, onReply, replying,
+  e, orderNo, indent, last, categories, onCategories, onReply, replying,
 }: {
   e: ThreadItem;
   orderNo: string;
   indent: boolean;
   last: boolean;
-  category: EmailCategory;
-  onCategory: (cat: EmailCategory) => void;
+  categories: EmailCategory[];
+  onCategories: (cats: EmailCategory[]) => void;
   onReply?: () => void;
   replying?: boolean;
 }) {
@@ -331,20 +340,29 @@ function EmailRow({
               {replying ? "Cancel reply" : "Reply"}
             </button>
           )}
-          <span className="inline-flex items-center gap-1">
-            <Tag className="h-3 w-3" />
-            <span>filed under</span>
-            <select
-              value={category}
-              onChange={(ev) => onCategory(ev.target.value as EmailCategory)}
-              className="rounded-md border bg-card px-1.5 py-0.5 text-[11px] font-medium text-foreground"
-            >
-              {CATEGORY_ORDER.map((cat) => (
-                <option key={cat} value={cat}>{CATEGORY_LABEL[cat]}</option>
-              ))}
-            </select>
-          </span>
         </span>
+      </div>
+
+      {/* The filing — tick every filter this email should appear in. */}
+      <div className="flex flex-wrap items-center gap-1 px-2.5 pb-1.5 text-[11px] text-muted-foreground">
+        <Tag className="h-3 w-3" />
+        <span className="mr-0.5">filed under</span>
+        {CATEGORY_ORDER.map((cat) => {
+          const on = categories.includes(cat);
+          return (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => onCategories(on ? categories.filter((x) => x !== cat) : [...categories.filter((x) => x !== "OTHERS" || cat === "OTHERS"), cat])}
+              className={cn(
+                "rounded-full border px-2 py-0.5 font-medium transition",
+                on ? "border-primary bg-accent-soft text-primary" : "bg-card text-muted-foreground hover:bg-muted",
+              )}
+            >
+              {on ? "✓ " : ""}{CATEGORY_LABEL[cat]}
+            </button>
+          );
+        })}
       </div>
 
       {preview && (
@@ -371,6 +389,7 @@ function ReplyComposer({
   onCancel: () => void;
 }) {
   const sendLogisticsMessage = useStore((s) => s.sendLogisticsMessage);
+  const [toEmail, setToEmail] = useState(replyTo.who);
   const [cc, setCc] = useState("");
   const [bcc, setBcc] = useState("");
   const [subject, setSubject] = useState(replyTo.subject.startsWith("Re: ") ? replyTo.subject : `Re: ${replyTo.subject}`);
@@ -394,7 +413,8 @@ function ReplyComposer({
 
   const send = () => {
     sendLogisticsMessage(b.id, {
-      to: replyTo.with,
+      toEmail,
+      withParty: replyTo.with,
       cc: splitAddresses(cc),
       bcc: splitAddresses(bcc),
       subject,
@@ -409,7 +429,8 @@ function ReplyComposer({
       <p className="mb-2 text-[11px] text-muted-foreground">
         Replying to <b className="text-foreground">{replyTo.who}</b> — this lands in the same chain.
       </p>
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid gap-2 sm:grid-cols-3">
+        <Labeled label="To (email)" hint="editable"><Input value={toEmail} onChange={(e) => setToEmail(e.target.value)} /></Labeled>
         <Labeled label="CC" hint="comma-separated"><Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional" /></Labeled>
         <Labeled label="BCC" hint="comma-separated"><Input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="optional" /></Labeled>
       </div>

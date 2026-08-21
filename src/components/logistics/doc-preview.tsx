@@ -10,7 +10,7 @@
 import { Download, FileText, X } from "lucide-react";
 import { downloadTextFile } from "@/lib/download";
 
-export function DocPreview({ title, content, onClose }: { title: string; content: string; onClose: () => void }) {
+export function DocPreview({ title, content, onClose, hideClose }: { title: string; content: string; onClose: () => void; hideClose?: boolean }) {
   return (
     <div className="mt-2 overflow-hidden rounded-lg border">
       <div className="flex items-center gap-2 border-b bg-muted/40 px-2.5 py-1.5">
@@ -24,14 +24,17 @@ export function DocPreview({ title, content, onClose }: { title: string; content
           <Download className="h-3 w-3" />
           Download
         </button>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-md border bg-card p-1 text-muted-foreground hover:bg-muted"
-          aria-label="Close preview"
-        >
-          <X className="h-3 w-3" />
-        </button>
+        {/* Inside an expandable row the row itself is the close — no second ✕. */}
+        {!hideClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border bg-card p-1 text-muted-foreground hover:bg-muted"
+            aria-label="Close preview"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
       </div>
       {/* The paper itself. */}
       <pre className="max-h-80 overflow-auto whitespace-pre-wrap bg-card p-3 font-mono text-[11px] leading-relaxed">

@@ -146,11 +146,11 @@ export function DhlBookingForm({ orderId, onDone }: { orderId: string; onDone?: 
           <button type="button" onClick={addBox} className="mt-1.5 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">+ Add box</button>
           <p className="mt-1 text-[11px] text-faint">Boxes are auto-created from the supplier&apos;s packing list; add or edit rows here for mixed-size cargo.</p>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Labeled label="Goods description"><Input value={goods} onChange={(e) => setGoods(e.target.value)} /></Labeled>
           <Labeled label="HS code"><Input value={hsCode} onChange={(e) => setHsCode(e.target.value)} placeholder="8541.10" /></Labeled>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Labeled label="Declared value"><Input type="number" value={declaredValue} onChange={(e) => setDeclaredValue(+e.target.value)} /></Labeled>
           <Labeled label="Currency"><Select value={declaredCcy} onChange={(e) => setDeclaredCcy(e.target.value)}>{CURRENCIES.map((c) => <option key={c}>{c}</option>)}</Select></Labeled>
         </div>
@@ -185,7 +185,7 @@ export function DhlBookingForm({ orderId, onDone }: { orderId: string; onDone?: 
       {/* ── 3 · Pickup ───────────────────────────────────────────────────── */}
       <section className="space-y-3 border-t pt-3">
         <SectionHead n={3} title="Pickup" done={bookingMode === "SEPARATE" || Boolean(pickupDate)} optional />
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid gap-3 sm:grid-cols-3">
           <Labeled label="Pickup mode" hint="combined = with shipment">
             <Select value={bookingMode} onChange={(e) => {
               const m = e.target.value as "COMBINED" | "SEPARATE";

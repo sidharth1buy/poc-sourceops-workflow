@@ -77,7 +77,7 @@ const ME = "You (demo)";
 // The logistics desk's counterparty mailboxes. Party records carry no email and
 // the transport is a mock, so these are synthesized — but stable per order, so
 // the thread reads like a real one.
-const logisticsContact = (b: OrderBundle, p: LogisticsParty): string => {
+export const logisticsContact = (b: OrderBundle, p: LogisticsParty): string => {
   const slug = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "party";
   const leg = b.shipments.find((x) => x.leg === "INBOUND");
   switch (p) {
@@ -88,7 +88,29 @@ const logisticsContact = (b: OrderBundle, p: LogisticsParty): string => {
     case "CLIENT": return `orders@${slug(b.buyer.name)}.com`;
     case "INSURER": return "claims@marine-cover.in";
     case "FINANCE": return "finance@1buy.ai";
+    case "OTHER": return "";
   }
+};
+
+/*
+ * Who a typed address belongs to. Exact known mailboxes first, then plain
+ * heuristics on the address text; anything unrecognised is OTHER — which
+ * files under Others until somebody says better.
+ */
+export const inferLogisticsParty = (b: OrderBundle, email: string): LogisticsParty => {
+  const e = email.trim().toLowerCase();
+  if (!e) return "OTHER";
+  const known: LogisticsParty[] = ["SUPPLIER", "CARRIER", "CHA", "WAREHOUSE", "CLIENT", "INSURER", "FINANCE"];
+  for (const p of known) if (logisticsContact(b, p).toLowerCase() === e) return p;
+  const slug = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  if (/dhl|fedex|delhivery|carrier|booking|freight/.test(e)) return "CARRIER";
+  if (/cha|clearing|filing|customs|broker/.test(e)) return "CHA";
+  if (/dock|warehouse|hub/.test(e)) return "WAREHOUSE";
+  if (/finance|accounts|payable/.test(e)) return "FINANCE";
+  if (/claim|insur|cover/.test(e)) return "INSURER";
+  if (e.includes(slug(b.supplier.name).slice(0, 8))) return "SUPPLIER";
+  if (e.includes(slug(b.buyer.name).slice(0, 8))) return "CLIENT";
+  return "OTHER";
 };
 
 // Real-world API provider names per carrier — shown in the "calling …" loading popups so the
@@ -535,7 +557,7 @@ interface Store {
   recordInboundPod: (orderId: string, podRef?: string) => void;
 
   // ---- logistics desk correspondence + outbound documents ----
-  sendLogisticsMessage: (orderId: string, m: { to: LogisticsParty; subject: string; body: string; cc?: string[]; bcc?: string[]; category?: string; threadId?: string }) => void;
+  sendLogisticsMessage: (orderId: string, m: { toEmail: string; withParty?: LogisticsParty; subject: string; body: string; cc?: string[]; bcc?: string[]; categories?: string[]; threadId?: string }) => void;
   /** Poll for replies to whatever we sent and have not heard back on. */
   checkLogisticsInbox: (orderId: string) => void;
   /** Produce one of the desk's own documents and send it to its named recipients in one act. */
@@ -544,8 +566,8 @@ interface Store {
   seedLogisticsDemo: (orderId: string) => void;
   /** Demo: strip this order's inbound flow back to the start, to run the whole journey by hand. */
   resetLogisticsFlow: (orderId: string) => void;
-  /** File a thread email under a category ("OTHERS" for the unmappable). */
-  setLogisticsEmailCategory: (orderId: string, itemId: string, category: string) => void;
+  /** File a thread email under its set of categories — several at once is the point; empty means Others. */
+  setLogisticsEmailCategories: (orderId: string, itemId: string, categories: string[]) => void;
 
   generateEInvoice: (orderId: string) => void; // GST e-Invoice / IRP adapter
   cancelOrder: (orderId: string) => void;
@@ -2340,26 +2362,29 @@ export const useStore = create<Store>()(
       sendLogisticsMessage: (orderId, m) => {
         const b = get().orders[orderId];
         if (!b) return;
+        if (!m.toEmail.trim()) { toast.error("Type the recipient's email address"); return; }
         if (!m.subject.trim() || !m.body.trim()) { toast.error("A subject and a message are both needed"); return; }
-        const contact = logisticsContact(b, m.to);
+        const contact = m.toEmail.trim();
+        /* Who this is, read off the address unless the reply flow already knows. */
+        const party = m.withParty ?? inferLogisticsParty(b, contact);
         const cc = m.cc?.map((x) => x.trim()).filter(Boolean);
         const bcc = m.bcc?.map((x) => x.trim()).filter(Boolean);
         void (async () => {
           try {
-            await sendLogisticsMail({ party: m.to, to: contact, cc, bcc, subject: m.subject.trim(), body: m.body.trim(), orderNo: b.orderNo });
+            await sendLogisticsMail({ party, to: contact, cc, bcc, subject: m.subject.trim(), body: m.body.trim(), orderNo: b.orderNo });
             const id = uid("lm");
             set((s) => {
               const bb = s.orders[orderId];
               if (!bb) return;
               (bb.logisticsThread ??= []).push({
-                id, threadId: m.threadId, with: m.to, way: "OUT",
+                id, threadId: m.threadId, with: party, way: "OUT",
                 subject: m.subject.trim(), body: m.body.trim(), at: stamp(), who: contact,
                 cc: cc?.length ? cc : undefined, bcc: bcc?.length ? bcc : undefined,
               });
-              /* Filed at write time — the category is part of sending, not an afterthought. */
-              if (m.category && m.category !== m.to) (bb.logisticsEmailCategories ??= {})[id] = m.category;
+              /* Filed at write time — ticked filters ride with the send. */
+              if (m.categories?.length) (bb.logisticsEmailCategories ??= {})[id] = m.categories;
             });
-            toast.success(m.threadId ? "Reply sent — added to the chain" : `Sent to the ${LOGISTICS_PARTY_LABEL[m.to].toLowerCase()}`, { description: contact });
+            toast.success(m.threadId ? "Reply sent — added to the chain" : "Sent", { description: contact });
           } catch { toast.error("Send failed — mail relay unavailable"); }
         })();
       },
@@ -2530,11 +2555,11 @@ Please pre-file the entry so clearance starts before the goods land.`,
         });
       },
 
-      setLogisticsEmailCategory: (orderId, itemId, category) => {
+      setLogisticsEmailCategories: (orderId, itemId, categories) => {
         set((s) => {
           const b = s.orders[orderId];
           if (!b) return;
-          (b.logisticsEmailCategories ??= {})[itemId] = category;
+          (b.logisticsEmailCategories ??= {})[itemId] = categories;
         });
       },
 
@@ -3263,8 +3288,9 @@ Please pre-file the entry so clearance starts before the goods land.`,
       // 33 = LogisticsMessage.attachments (counterparty replies carry their paper) ·
       // 34 = FINANCE as a logistics counterparty + logisticsEmailCategories (per-email category filing, OTHERS bucket) ·
       // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply) ·
-      // 36 = 6-phase fulfilment clock: Escrow.fundedAt + OrderBundle.whlReturnedToSupplierAt
-      version: 36,
+      // 36 = multi-category email filing (string[] per email) + free-address To with inferred counterparty (OTHER) ·
+      // 37 = merge: 6-phase fulfilment clock (Escrow.fundedAt + OrderBundle.whlReturnedToSupplierAt) landed beside 36 on main — both schemas, one discard
+      version: 37,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than
