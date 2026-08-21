@@ -3,13 +3,13 @@
 import { useState, type ReactNode } from "react";
 import { Upload, Check, Lock, Ban, Send, Inbox, PlayCircle, Mail } from "lucide-react";
 import type { OrderBundle, EscrowOrderStatus, EscrowAgentEmail, EscrowContact, EscrowSendPurpose } from "@/types";
-import { ESCROW_STATUS_ORDER, prettyStatus } from "@/data/enums";
-import { Panel, Field, DataTable, StatusPill, Pill, Button, Notice, type Col } from "@/components/ui/primitives";
+import { ESCROW_STATUS_ORDER, prettyStatus, HKIN_EMAIL, FINANCE_EMAIL } from "@/data/enums";
+import { Panel, Field, DataTable, StatusPill, Pill, Button, Notice, FormTabBar, type Col } from "@/components/ui/primitives";
 import { Dialog } from "@/components/ui/dialog";
-import { Labeled, Input, Textarea } from "@/components/ui/form";
+import { Labeled, Input, Textarea, Select } from "@/components/ui/form";
 import { money, qtyfmt, cn } from "@/lib/utils";
 import { useStore, type EscrowEmailDraft } from "@/store/store";
-import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet, orderPhaseTimings } from "@/store/selectors";
+import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet, orderPhaseTimings, currentReport } from "@/store/selectors";
 import { ESCROW_API_BASE } from "@/lib/escrow-api";
 
 type Compose = (purpose: EscrowSendPurpose, milestoneIndex?: number) => void;
@@ -244,11 +244,13 @@ function PaymentFlowPanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose
 // on a retest, and if so, tell HKin + the supplier to initiate it. Shipment/goods-received/progress
 // all arrive via the single "Check inbox" action above — the verdict is the one exception, since
 // it's a real-world outcome someone has to report, not an email to fake-receive.
-function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onCompose: Compose }) {
+type EscrowPromptKey = null | "reject" | "extension" | "acceptPartial" | "rma";
+
+function WhlTestingPanel({
+  b, id, onCompose, setPrompt,
+}: { b: OrderBundle; id: string; onCompose: Compose; setPrompt: (p: EscrowPromptKey) => void }) {
   const recordWhlVerdict = useStore((s) => s.recordWhlVerdict);
   const acceptEscrowGoods = useStore((s) => s.acceptEscrowGoods);
-  const rejectEscrowGoods = useStore((s) => s.rejectEscrowGoods);
-  const requestEscrowExtension = useStore((s) => s.requestEscrowExtension);
   const simulateEscrowDeadlineReminder = useStore((s) => s.simulateEscrowDeadlineReminder);
   const recordEscrowRma = useStore((s) => s.recordEscrowRma);
   const e = b.escrow!;
@@ -258,7 +260,6 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
   // A fresh verdict can always be logged again once WHL/Testing-tab reports one (e.g. after a
   // retest run there) — unless a refund's already been instructed, at which point this order's done.
   const awaitingVerdict = (!e.whlVerdict || e.whlVerdict === "FAIL") && !e.refundInstructedAt;
-  const [prompt, setPrompt] = useState<null | "reject" | "extension" | "acceptPartial" | "rma">(null);
 
   return (
     <Panel title={needsTesting ? "WHL testing — shipment & verdict" : "Shipment & receipt (no testing agreed on this PO)"}>
@@ -301,7 +302,7 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
               <div className="mt-3">
                 <p className="text-xs font-medium">Buyer&apos;s decision (real portal: Accept All / Accept Partially / Reject All)</p>
                 <div className="mt-1.5 flex flex-wrap gap-2">
-                  <Button onClick={() => acceptEscrowGoods(id, {})}><Check className="h-4 w-4" /> Accept All</Button>
+                  <Button onClick={() => acceptEscrowGoods(id, { amount: e.poAmount })}><Check className="h-4 w-4" /> Accept All</Button>
                   <Button variant="outline" onClick={() => setPrompt("acceptPartial")}>Accept Partially</Button>
                   <Button variant="ghost" onClick={() => setPrompt("reject")}>Reject All</Button>
                 </div>
@@ -335,42 +336,6 @@ function WhlTestingPanel({ b, id, onCompose }: { b: OrderBundle; id: string; onC
             </div>
           )}
         </div>
-      )}
-
-      {prompt === "reject" && (
-        <TextPromptModal
-          title="Reject the goods"
-          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL report NOT ACCEPTABLE\"" }]}
-          onClose={() => setPrompt(null)}
-          onSubmit={(v) => { if (v.reason) rejectEscrowGoods(id, v.reason); setPrompt(null); }}
-        />
-      )}
-      {prompt === "extension" && (
-        <TextPromptModal
-          title="Request an inspection extension"
-          fields={[{ key: "reason", label: "Reason", placeholder: "e.g. \"WHL is taking longer than expected, revised report date is...\"" }]}
-          onClose={() => setPrompt(null)}
-          onSubmit={(v) => { if (v.reason) requestEscrowExtension(id, v.reason); setPrompt(null); }}
-        />
-      )}
-      {prompt === "acceptPartial" && (
-        <TextPromptModal
-          title="Accept partially"
-          fields={[{ key: "note", label: "Note", placeholder: "What's accepted / what isn't", hint: "optional" }]}
-          onClose={() => setPrompt(null)}
-          onSubmit={(v) => { acceptEscrowGoods(id, { partial: true, note: v.note || undefined }); setPrompt(null); }}
-        />
-      )}
-      {prompt === "rma" && (
-        <TextPromptModal
-          title="Record RMA / return details"
-          fields={[
-            { key: "rmaDetails", label: "RMA / return-address details", defaultValue: e.rmaDetails },
-            { key: "goodsReturnTracking", label: "Return tracking no.", defaultValue: e.goodsReturnTracking, hint: "optional" },
-          ]}
-          onClose={() => setPrompt(null)}
-          onSubmit={(v) => { recordEscrowRma(id, { rmaDetails: v.rmaDetails || undefined, goodsReturnTracking: v.goodsReturnTracking || undefined }); setPrompt(null); }}
-        />
       )}
     </Panel>
   );
@@ -427,6 +392,73 @@ function PaymentClosurePanel({ b, id, onUploadPaymentClosure }: { b: OrderBundle
     <Panel title="Payment closure" actions={<span className="font-mono text-xs text-muted-foreground">{pc.documentNo}</span>}>
       <Field label="Released amount">{money(pc.releasedAmount, b.escrow!.currency)}</Field>
       <Field label="Received">{pc.receivedAt}</Field>
+    </Panel>
+  );
+}
+
+type DocRowState = { label: string; status: "ok" | "warn"; statusLabel: string; fileName?: string; ref?: string; date?: string };
+
+function DocRow({ d }: { d: DocRowState }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-2.5">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-sm font-medium">{d.label}<Pill tone={d.status}>{d.statusLabel}</Pill></div>
+        {(d.fileName || d.ref) && (
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {d.fileName && <span className="font-mono">{d.fileName}</span>}
+            {d.fileName && d.ref && " · "}
+            {d.ref && <span>{d.ref}</span>}
+          </div>
+        )}
+      </div>
+      {d.date && <span className="shrink-0 text-xs tnum text-faint">{d.date}</span>}
+    </div>
+  );
+}
+
+/**
+ * The escrow paper trail's own status — separate from Details (which is reference info you set
+ * once and rarely revisit). PO/PI are already on file by the time an order reaches escrow; the
+ * HKin invoice's arrival is tracked here too even though the email itself lives on Correspondence;
+ * the WHL report is pulled from each lot's own current report, not the flat documents log, since
+ * that's the real source of truth for revisions. No Payment Closure row — that step is just a
+ * reference number (EscrowPaymentClosure.documentNo), not an actual document.
+ */
+function DocumentsPanel({ b }: { b: OrderBundle }) {
+  const e = b.escrow!;
+  const po = b.documents.find((d) => d.docType === "PO");
+  const pi = b.documents.find((d) => d.docType === "PI");
+  const invoiceDoc = b.documents.find((d) => d.docType === "ESCROW_INVOICE");
+  const reports = b.lots.map((l) => ({ lot: l, report: currentReport(l) })).filter((r) => r.report);
+
+  const rows: DocRowState[] = [
+    po
+      ? { label: "Purchase order (PO)", status: "ok", statusLabel: "On file", fileName: po.fileName, date: po.uploadedAt }
+      : { label: "Purchase order (PO)", status: "warn", statusLabel: "Awaiting" },
+    pi || b.piNo
+      ? { label: "Proforma invoice (PI)", status: "ok", statusLabel: "On file", fileName: pi?.fileName, ref: b.piNo, date: pi?.uploadedAt }
+      : { label: "Proforma invoice (PI)", status: "warn", statusLabel: "Awaiting" },
+    e.invoice
+      ? { label: "HKin escrow invoice", status: "ok", statusLabel: "Received", fileName: invoiceDoc?.fileName, ref: e.invoice.invoiceNo, date: e.invoice.receivedAt }
+      : { label: "HKin escrow invoice", status: "warn", statusLabel: "Awaiting — arrives by mail, see Correspondence" },
+  ];
+
+  return (
+    <Panel title="Documents — the escrow paper trail">
+      <div className="space-y-2">
+        {rows.map((r) => <DocRow key={r.label} d={r} />)}
+        {reports.length === 0 ? (
+          <DocRow d={{ label: "WHL testing report", status: "warn", statusLabel: "Awaiting" }} />
+        ) : (
+          reports.map(({ lot, report }) => (
+            <DocRow key={lot.id} d={{
+              label: `WHL testing report — ${lot.lotCode}`, status: "ok",
+              statusLabel: report!.current ? "Current" : `Superseded (rev ${report!.revision})`,
+              fileName: report!.fileName, ref: report!.reportNo, date: report!.reportDate,
+            }} />
+          ))
+        )}
+      </div>
     </Panel>
   );
 }
@@ -518,7 +550,7 @@ function TextPromptModal({
   title, fields, onClose, onSubmit,
 }: {
   title: string;
-  fields: { key: string; label: string; placeholder?: string; defaultValue?: string; hint?: string }[];
+  fields: { key: string; label: string; placeholder?: string; defaultValue?: string; hint?: string; type?: "text" | "number" | "file" }[];
   onClose: () => void;
   onSubmit: (values: Record<string, string>) => void;
 }) {
@@ -531,18 +563,42 @@ function TextPromptModal({
       <div className="space-y-3">
         {fields.map((f) => (
           <Labeled key={f.key} label={f.label} hint={f.hint}>
-            <Textarea
-              value={values[f.key] ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-              placeholder={f.placeholder}
-              className="min-h-[70px]"
-            />
+            {f.type === "number" ? (
+              <Input
+                type="number" min={0}
+                value={values[f.key] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+              />
+            ) : f.type === "file" ? (
+              <>
+                <label htmlFor={`prompt-file-${f.key}`}
+                  className="flex h-9 max-w-full cursor-pointer items-center gap-2 truncate rounded-lg border bg-card px-3 text-sm text-muted-foreground transition hover:border-primary hover:text-foreground">
+                  <Upload className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{values[f.key] || f.placeholder || "Upload a file"}</span>
+                </label>
+                <input id={`prompt-file-${f.key}`} type="file" className="hidden"
+                  onChange={(e) => { const file = e.target.files?.[0]; if (file) setValues((v) => ({ ...v, [f.key]: file.name })); }} />
+              </>
+            ) : (
+              <Textarea
+                value={values[f.key] ?? ""}
+                onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+                className="min-h-[70px]"
+              />
+            )}
           </Labeled>
         ))}
       </div>
     </Dialog>
   );
 }
+
+// Shared between the "Send email" modal's reject option and the contextual "Reject All" button in
+// WhlTestingPanel, so whichever door an operator uses starts from the same wording.
+const defaultRejectReasonFor = (b: OrderBundle) =>
+  `The testing report for order ${b.orderNo} has come back as failed / not acceptable. See the attached report for details.`;
 
 function hkinAccountAskDraftFor(b: OrderBundle, id: string): EscrowEmailDraft {
   const e = b.escrow!;
@@ -553,13 +609,6 @@ function hkinAccountAskDraftFor(b: OrderBundle, id: string): EscrowEmailDraft {
     body: `Hi ${e.sellerContact.contactPerson || "team"},\n\nWe're setting up an escrow order (${b.orderNo}) with HKin (hkinventory.com) for this purchase. Before we create the order on their platform, could you confirm — do you already have an account with HKin?\n\nIf not, please open one at your earliest convenience at https://www.hkinventory.com/ so we can proceed.\n\nThanks,\n1Buy SC Team`,
   };
 }
-
-// Must match escrow-agents' .env (HKIN_SENDER_EMAIL / FINANCE_SENDER_EMAIL) — these are only the
-// compose modal's *default* to/cc, shown editable before send; the backend's own drafter.py uses
-// the same two config values as the authoritative source, so leaving these fields untouched still
-// sends to the right real address.
-const HKIN_ADDRESS = "rekhasanjaygupta10@gmail.com";
-const FINANCE_ADDRESS = "harsh@1buy.ai";
 
 // Every subject carries "[id]" — the REAL escrow-agents order_id (e.g. "ord-abc123"), not just
 // the display orderNo — because scripts/poll_gmail_inbox.py routes real inbound mail by matching
@@ -575,23 +624,241 @@ function draftFor(purpose: EscrowSendPurpose, b: OrderBundle, id: string, milest
   const sellerPerson = e.sellerContact.contactPerson || "Seller";
   switch (purpose) {
     case "ORDER_TO_SELLER":
-      return { to: HKIN_ADDRESS, subject: `Order ${b.orderNo} — please confirm acceptance ${tag}`,
+      return { to: HKIN_EMAIL, subject: `Order ${b.orderNo} — please confirm acceptance ${tag}`,
         body: `Hi HKin team,\n\nPlease forward this order to ${e.sellerContact.company} for acceptance.\n\nOrder: ${b.orderNo}\nPO amount: ${money(e.poAmount, e.currency)}\nShip to (1Buy hub): ${e.recipient.company}\n\nThanks,\n1Buy SC Team` };
     case "PAYMENT_INSTRUCTION_TO_FINANCE":
-      return { to: FINANCE_ADDRESS, cc: HKIN_ADDRESS, subject: `Payment instruction — ${b.orderNo} ${tag}`,
+      return { to: FINANCE_EMAIL, cc: HKIN_EMAIL, subject: `Payment instruction — ${b.orderNo} ${tag}`,
         body: `Hi Finance,\n\nInvoice ${e.invoice?.invoiceNo} reviewed for ${b.orderNo}. Please remit per the release milestones on file:\n${milestonesText}\n\nTotal buyer T/T: ${e.invoice ? money(escrowInvoiceTotals(e.invoice.fees).totalBuyerTT, e.currency) : "—"}\n\nThanks,\nSC Team` };
     case "PAYMENT_CONFIRMATION_TO_HKIN":
-      return { to: HKIN_ADDRESS, cc: FINANCE_ADDRESS, subject: `Payment sent — ${b.orderNo} ${tag}`,
+      return { to: HKIN_EMAIL, cc: FINANCE_EMAIL, subject: `Payment sent — ${b.orderNo} ${tag}`,
         body: `Hi HKin team,\n\nWe've remitted the T/T per invoice ${e.invoice?.invoiceNo}${e.financeSwiftReference ? ` — SWIFT reference ${e.financeSwiftReference}` : ""}. Please confirm receipt.\n\nThanks,\nFinance / SC Team` };
     case "REFUND_INSTRUCTION":
-      return { to: HKIN_ADDRESS, cc: sellerTo, subject: `Refund requested — ${b.orderNo} ${tag}`,
+      return { to: HKIN_EMAIL, cc: sellerTo, subject: `Refund requested — ${b.orderNo} ${tag}`,
         body: `Hi HKin team,\n\nThe client has requested a refund on order ${b.orderNo} following the FAIL result (report ${e.whlReportRef ?? "attached"}), instead of a retest. Please initiate the refund per the escrow terms.\n\n(cc: ${sellerPerson}, for your awareness.)\n\nThanks,\nSC Team` };
     case "RELEASE_FUNDS_INSTRUCTION": {
       const m = milestoneIndex !== undefined ? e.invoice?.conditions.releaseMilestones[milestoneIndex] : undefined;
-      return { to: HKIN_ADDRESS, cc: sellerTo, subject: `Release funds${m ? ` — ${m.percent}%` : ""} — ${b.orderNo} ${tag}`,
+      return { to: HKIN_EMAIL, cc: sellerTo, subject: `Release funds${m ? ` — ${m.percent}%` : ""} — ${b.orderNo} ${tag}`,
         body: `Hi HKin team,\n\n${m ? m.trigger : "The release condition"} has been met for order ${b.orderNo}. Please release ${m ? `${m.percent}% of the escrowed funds` : "the funds"} to the seller per the invoice terms.\n\n(cc: ${sellerPerson}, for your awareness — this tranche is on its way.)\n\nFull release schedule on file:\n${milestonesText}\n\nThanks,\nSC Team` };
     }
+    // Ad-hoc/chase purposes — available regardless of what the state machine currently gates.
+    case "CHASE_INVOICE_FROM_HKIN":
+      return { to: HKIN_EMAIL, subject: `Following up — escrow invoice pending — ${b.orderNo} ${tag}`,
+        body: `Hi HKin team,\n\nJust following up — the seller confirmed this order but we haven't received the escrow invoice yet. Could you share an update, or issue it if it's ready?\n\nOrder: ${b.orderNo}\nPO amount: ${money(e.poAmount, e.currency)}\n\nThanks,\n1Buy SC Team` };
+    case "GENERAL_INQUIRY_HKIN":
+      return { to: HKIN_EMAIL, subject: `General inquiry — ${b.orderNo} ${tag}`, body: `Hi HKin team,\n\nRegarding order ${b.orderNo}:\n\n\n\nThanks,\n1Buy SC Team` };
+    case "GENERAL_INQUIRY_SUPPLIER":
+      return { to: sellerTo, subject: `General inquiry — ${b.orderNo}`, body: `Hi ${sellerPerson},\n\nRegarding order ${b.orderNo}:\n\n\n\nThanks,\n1Buy SC Team` };
+    case "GENERAL_INQUIRY_FINANCE":
+      return { to: FINANCE_EMAIL, subject: `General inquiry — ${b.orderNo} ${tag}`, body: `Hi Finance,\n\nRegarding order ${b.orderNo}:\n\n\n\nThanks,\nSC Team` };
   }
+}
+
+type EscrowParty = "HKIN" | "SUPPLIER" | "FINANCE";
+const ESCROW_PARTIES: { id: EscrowParty; label: string }[] = [
+  { id: "HKIN", label: "HKin" }, { id: "SUPPLIER", label: "Supplier" }, { id: "FINANCE", label: "Finance" },
+];
+
+type EscrowDecisionKey = "acceptAll" | "acceptPartial" | "reject" | "extension";
+
+type EscrowMailOption =
+  | { kind: "compose"; purpose: EscrowSendPurpose; label: string; available: boolean; unavailableReason?: string; milestoneIndex?: number }
+  | { kind: "decision"; decisionKey: EscrowDecisionKey; label: string; available: boolean; unavailableReason?: string };
+
+/** Every purpose valid for one party, gated exactly like the contextual buttons elsewhere on this
+ * tab — unavailable ones stay fully selectable (never disabled), with the reason shown once picked,
+ * so "Send email" always shows the complete list of what's possible, not just what's due today. */
+function optionsFor(party: EscrowParty, b: OrderBundle): EscrowMailOption[] {
+  const e = b.escrow!;
+  const idx = escrowStatusIndex(e.status);
+  if (party === "HKIN") {
+    const milestones = (e.invoice?.conditions.releaseMilestones ?? [])
+      .map((m, i) => ({ m, i, rec: e.milestoneReleases.find((r) => r.index === i), met: escrowMilestoneTriggerMet(b, m.trigger) }))
+      .filter(({ rec }) => !rec?.instructedAt);
+    const needsTesting = b.lines.some((l) => l.testingMode !== "NONE");
+    const awaitingVerdict = (!e.whlVerdict || e.whlVerdict === "FAIL") && !e.refundInstructedAt;
+    const atRecipientInspection = needsTesting && idx === escrowStatusIndex("RECIPIENT_INSPECTION") && awaitingVerdict;
+    const inspectionNote = "Available once the order reaches Recipient Inspection with a verdict still awaited.";
+    return [
+      { kind: "compose", purpose: "ORDER_TO_SELLER", label: "Order → seller (via HKin)",
+        available: e.status === "DRAFT" && !!e.hkinRpaStartedAt,
+        unavailableReason: "Available once the HKin order has been created (Step 0b)." },
+      { kind: "compose", purpose: "PAYMENT_CONFIRMATION_TO_HKIN", label: "Payment confirmation to HKin",
+        available: !!e.paymentInstructedAt && !!e.financeSwiftReference && !e.paymentSentToHkinAt,
+        unavailableReason: "Available once Finance has confirmed the SWIFT transfer." },
+      { kind: "decision", decisionKey: "acceptAll", label: "Accept All (buyer's decision)",
+        available: atRecipientInspection, unavailableReason: inspectionNote },
+      { kind: "decision", decisionKey: "acceptPartial", label: "Accept Partially (buyer's decision)",
+        available: atRecipientInspection, unavailableReason: inspectionNote },
+      { kind: "decision", decisionKey: "reject", label: "Reject All (buyer's decision)",
+        available: atRecipientInspection, unavailableReason: inspectionNote },
+      { kind: "decision", decisionKey: "extension", label: "Request inspection extension",
+        available: atRecipientInspection, unavailableReason: inspectionNote },
+      { kind: "compose", purpose: "REFUND_INSTRUCTION", label: "Refund instruction",
+        available: e.whlVerdict === "FAIL" && !!e.goodsReturnedAt && !e.refundInstructedAt,
+        unavailableReason: "Available after a FAIL verdict, once goods are confirmed back with the seller." },
+      ...milestones.map(({ m, i, met }): EscrowMailOption => ({
+        kind: "compose", purpose: "RELEASE_FUNDS_INSTRUCTION", label: `Release funds — ${m.percent}%`, milestoneIndex: i,
+        available: met, unavailableReason: "This milestone's trigger condition hasn't been met yet.",
+      })),
+      { kind: "compose", purpose: "CHASE_INVOICE_FROM_HKIN", label: "Chase invoice (not received yet)",
+        available: idx >= escrowStatusIndex("SELLER_CONFIRMED") && !e.invoice,
+        unavailableReason: "Only relevant before the invoice has arrived." },
+      { kind: "compose", purpose: "GENERAL_INQUIRY_HKIN", label: "General inquiry (free text)", available: true },
+    ];
+  }
+  if (party === "SUPPLIER") {
+    return [{ kind: "compose", purpose: "GENERAL_INQUIRY_SUPPLIER", label: "General inquiry (free text)", available: true }];
+  }
+  return [
+    { kind: "compose", purpose: "PAYMENT_INSTRUCTION_TO_FINANCE", label: "Payment instruction",
+      available: e.status === "ESCROW_FEE_INVOICED" && !e.paymentInstructedAt,
+      unavailableReason: "Available once the escrow invoice has been received." },
+    { kind: "compose", purpose: "GENERAL_INQUIRY_FINANCE", label: "General inquiry (free text)", available: true },
+  ];
+}
+
+/**
+ * "Send email" — one door onto every possible escrow email AND the buyer-decision actions that
+ * report back to HKin (Accept/Reject/Extension), styled like the WHL compose modal: pick a party,
+ * pick a purpose (options not due yet stay fully selectable, never disabled), fill in whatever the
+ * purpose needs, send. Nothing here is blocked on the state machine happening to show a button.
+ */
+function SendEscrowEmailModal({
+  b, onClose, onSend, onDecision,
+}: {
+  b: OrderBundle; onClose: () => void;
+  onSend: (purpose: EscrowSendPurpose, draft: EscrowEmailDraft, milestoneIndex?: number) => void;
+  onDecision: (key: EscrowDecisionKey, input: { reason?: string; note?: string; days?: number; amount?: number; reportFileName?: string }) => void;
+}) {
+  const e = b.escrow!;
+  const firstIndexOf = (opts: EscrowMailOption[]) => { const i = opts.findIndex((o) => o.available); return i >= 0 ? i : 0; };
+  const [party, setParty] = useState<EscrowParty>("HKIN");
+  const options = optionsFor(party, b);
+  const [selectedIndex, setSelectedIndex] = useState(() => firstIndexOf(options));
+  const selected = options[selectedIndex] ?? options[0];
+
+  const draftForOption = (opt: EscrowMailOption) => opt.kind === "compose" ? draftFor(opt.purpose, b, b.id, opt.milestoneIndex) : undefined;
+  const decisionDefaults = (opt: EscrowMailOption) => opt.kind === "decision"
+    ? { reason: opt.decisionKey === "reject" ? defaultRejectReasonFor(b) : "", note: "", days: "2", amount: opt.decisionKey === "acceptAll" ? String(e.poAmount) : "", reportFileName: undefined as string | undefined }
+    : { reason: "", note: "", days: "2", amount: "", reportFileName: undefined as string | undefined };
+  const initial = draftForOption(selected);
+  const initialDecision = decisionDefaults(selected);
+  const [to, setTo] = useState(initial?.to ?? "");
+  const [cc, setCc] = useState(initial?.cc ?? "");
+  const [subject, setSubject] = useState(initial?.subject ?? "");
+  const [body, setBody] = useState(initial?.body ?? "");
+  const [edited, setEdited] = useState(false);
+  const [reason, setReason] = useState(initialDecision.reason);
+  const [note, setNote] = useState(initialDecision.note);
+  const [days, setDays] = useState(initialDecision.days);
+  const [amount, setAmount] = useState(initialDecision.amount);
+  const [reportFileName, setReportFileName] = useState<string | undefined>(initialDecision.reportFileName);
+
+  const fillCompose = (opt: EscrowMailOption) => {
+    const d = draftForOption(opt); if (!d) return;
+    setTo(d.to); setCc(d.cc ?? ""); setSubject(d.subject); setBody(d.body); setEdited(false);
+  };
+  const selectOption = (i: number, opts: EscrowMailOption[] = options) => {
+    const opt = opts[i];
+    setSelectedIndex(i);
+    if (opt.kind === "compose") { fillCompose(opt); return; }
+    const d = decisionDefaults(opt);
+    setReason(d.reason); setNote(d.note); setDays(d.days); setAmount(d.amount); setReportFileName(d.reportFileName);
+  };
+  const onPartyChange = (p: EscrowParty) => { setParty(p); const opts = optionsFor(p, b); selectOption(firstIndexOf(opts), opts); };
+
+  const canSend = selected.kind === "compose"
+    ? !!subject.trim() && !!body.trim()
+    : selected.decisionKey === "reject" || selected.decisionKey === "extension" ? !!reason.trim()
+    : selected.decisionKey === "acceptPartial" ? !!amount.trim() && Number(amount) > 0
+    : true;
+  const handleSend = () => {
+    if (selected.kind === "compose") { onSend(selected.purpose, { to, cc: cc || undefined, subject, body }, selected.milestoneIndex); return; }
+    onDecision(selected.decisionKey, {
+      reason: reason.trim() || undefined, note: note.trim() || undefined, days: Number(days) || 2,
+      amount: amount.trim() ? Number(amount) : undefined, reportFileName,
+    });
+  };
+
+  return (
+    <Dialog open onClose={onClose} title="Send email"
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={handleSend} disabled={!canSend}><Send className="h-4 w-4" /> Send</Button></>}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Labeled label="Party">
+            <Select value={party} onChange={(e) => onPartyChange(e.target.value as EscrowParty)}>
+              {ESCROW_PARTIES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </Select>
+          </Labeled>
+          <Labeled label="Purpose">
+            <Select value={selectedIndex} onChange={(e) => selectOption(Number(e.target.value))}>
+              {options.map((o, i) => (
+                <option key={i} value={i}>{o.label}{!o.available ? " — not due yet" : ""}</option>
+              ))}
+            </Select>
+          </Labeled>
+        </div>
+        {!selected.available && (
+          <Notice tone="warn">Normally: {selected.unavailableReason} You can still send this now if you need to.</Notice>
+        )}
+
+        {selected.kind === "compose" ? (
+          <>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Labeled label="To"><Input value={to} onChange={(e) => { setTo(e.target.value); setEdited(true); }} /></Labeled>
+              <Labeled label="Cc" hint="optional"><Input value={cc} onChange={(e) => { setCc(e.target.value); setEdited(true); }} placeholder="—" /></Labeled>
+            </div>
+            <Labeled label="Subject"><Input value={subject} onChange={(e) => { setSubject(e.target.value); setEdited(true); }} /></Labeled>
+            <Labeled label="Body"><Textarea className="min-h-[180px]" value={body} onChange={(e) => { setBody(e.target.value); setEdited(true); }} /></Labeled>
+            {edited && (
+              <button type="button" onClick={() => fillCompose(selected)} className="text-xs font-medium text-primary hover:underline">
+                Reset to the &ldquo;{selected.label}&rdquo; draft
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            {selected.decisionKey === "extension" && (
+              <Labeled label="Extension requested (days)"><Input type="number" min={0} value={days} onChange={(e) => setDays(e.target.value)} /></Labeled>
+            )}
+            {(selected.decisionKey === "reject" || selected.decisionKey === "extension") && (
+              <Labeled label="Reason">
+                <Textarea className="min-h-[100px]" value={reason} onChange={(e) => setReason(e.target.value)}
+                  placeholder={selected.decisionKey === "reject" ? "e.g. \"WHL report NOT ACCEPTABLE\"" : "e.g. \"WHL is taking longer than expected, revised report date is...\""} />
+              </Labeled>
+            )}
+            {selected.decisionKey === "reject" && (
+              <Labeled label="Testing report" hint="optional">
+                <label htmlFor="reject-report-upload"
+                  className="flex h-9 max-w-full cursor-pointer items-center gap-2 truncate rounded-lg border bg-card px-3 text-sm text-muted-foreground transition hover:border-primary hover:text-foreground">
+                  <Upload className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{reportFileName ?? "Upload the WHL testing report"}</span>
+                </label>
+                <input id="reject-report-upload" type="file" className="hidden"
+                  onChange={(ev) => { const f = ev.target.files?.[0]; if (f) setReportFileName(f.name); }} />
+              </Labeled>
+            )}
+            {selected.decisionKey === "acceptPartial" && (
+              <>
+                <Labeled label="Amount accepted"><Input type="number" min={0} value={amount} onChange={(ev) => setAmount(ev.target.value)} placeholder={`0 – ${e.poAmount}`} /></Labeled>
+                <Labeled label="Note" hint="optional">
+                  <Textarea className="min-h-[80px]" value={note} onChange={(ev) => setNote(ev.target.value)} placeholder="What's accepted / what isn't" />
+                </Labeled>
+              </>
+            )}
+            {selected.decisionKey === "acceptAll" && (
+              <>
+                <Labeled label="Amount accepted"><Input value={money(e.poAmount, e.currency)} disabled /></Labeled>
+                <p className="text-sm text-muted-foreground">Records the buyer&apos;s decision to accept the goods in full (real portal: Accept All) and logs it to Correspondence.</p>
+              </>
+            )}
+          </>
+        )}
+        <p className="text-xs text-faint">Nothing is sent until you click Send — edit anything above first.</p>
+      </div>
+    </Dialog>
+  );
 }
 
 const NEXT_STEP_HINT: Record<EscrowOrderStatus, string> = {
@@ -604,6 +871,17 @@ const NEXT_STEP_HINT: Record<EscrowOrderStatus, string> = {
   RECIPIENT_INSPECTION: "Next: log the WHL result, then release each milestone as its trigger is met.",
   RELEASED_TO_SELLER: "Escrow complete.",
 };
+
+// Four tabs, one per mental mode: what needs doing now, the correspondence trail (which used
+// to sit dead last after everything else and cost a full scroll to reach), read-once reference
+// info that's rarely touched after the order is set up, and the escrow paper trail's own status.
+type EscrowTabKey = "action" | "correspondence" | "details" | "documents";
+const ESCROW_TABS: { id: EscrowTabKey; label: string }[] = [
+  { id: "action", label: "Action" },
+  { id: "correspondence", label: "Correspondence" },
+  { id: "details", label: "Details" },
+  { id: "documents", label: "Documents" },
+];
 
 export function EscrowTab({
   b, id, onUploadInvoice, onUploadPI, onUploadDoc, onUploadPaymentClosure,
@@ -618,9 +896,18 @@ export function EscrowTab({
   const askSupplierHkinAccount = useStore((s) => s.askSupplierHkinAccount);
   const confirmSupplierHkinAccount = useStore((s) => s.confirmSupplierHkinAccount);
   const sendEscrowEmail = useStore((s) => s.sendEscrowEmail);
+  const acceptEscrowGoods = useStore((s) => s.acceptEscrowGoods);
+  const rejectEscrowGoods = useStore((s) => s.rejectEscrowGoods);
+  const requestEscrowExtension = useStore((s) => s.requestEscrowExtension);
+  const recordEscrowRma = useStore((s) => s.recordEscrowRma);
   const [compose, setCompose] = useState<{ purpose: EscrowSendPurpose; milestoneIndex?: number } | null>(null);
   const onCompose: Compose = (purpose, milestoneIndex) => setCompose({ purpose, milestoneIndex });
   const [askHkinModalOpen, setAskHkinModalOpen] = useState(false);
+  const [tab, setTab] = useState<EscrowTabKey>("action");
+  const [sendMailOpen, setSendMailOpen] = useState(false);
+  // Owned here (not inside WhlTestingPanel) purely so it's declared alongside the tab's other modal
+  // state — WhlTestingPanel still owns the buttons that open these, via the setPrompt prop.
+  const [prompt, setPrompt] = useState<EscrowPromptKey>(null);
 
   if (!b.escrow) {
     return <Panel title="Escrow"><Empty text={`No escrow — supplier is paid via ${b.paymentMode}.`} /></Panel>;
@@ -646,6 +933,14 @@ export function EscrowTab({
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <FormTabBar tabs={ESCROW_TABS} active={tab} onChange={setTab} />
+        <Button variant="outline" className="shrink-0" onClick={() => setSendMailOpen(true)} disabled={cancelled}>
+          <Mail className="h-4 w-4" /> Send email
+        </Button>
+      </div>
+
+      {tab === "action" && (
       <Panel title="Escrow order — HKin-modelled" actions={cancelled ? <Pill tone="bad"><Ban className="h-3 w-3" /> Cancelled</Pill> : <StatusPill status={e.status} />}>
         <EscrowStepper status={e.status} />
         <div className="mt-4 grid grid-cols-1 gap-x-8 sm:grid-cols-2">
@@ -711,26 +1006,44 @@ export function EscrowTab({
           </>
         )}
       </Panel>
-
-      {/* Action panels first — whatever the SC/Finance person needs to DO next, grouped together
-          right under the main status panel. Reference info (PO/invoice/contacts) sits below,
-          since it's read-once-then-rarely-touched, not something acted on every visit. */}
-      {!cancelled && e.invoice && e.status === "ESCROW_FEE_INVOICED" && <PaymentFlowPanel b={b} onCompose={onCompose} />}
-      {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && escrowStatusIndex(e.status) <= escrowStatusIndex("RECIPIENT_INSPECTION") && (
-        <WhlTestingPanel b={b} id={id} onCompose={onCompose} />
       )}
-      {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && <ReleasePanel b={b} onCompose={onCompose} />}
-      {isFinal && <PaymentClosurePanel b={b} id={id} onUploadPaymentClosure={onUploadPaymentClosure} />}
 
-      <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <ContactPanel title="Buyer contact" contact={e.buyerContact} />
-        <ContactPanel title="Seller contact" contact={e.sellerContact} />
-        <ContactPanel title="Recipient contact (1Buy hub)" contact={e.recipient} />
-      </div>
-      <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+      {/* Action panels — whatever the SC/Finance person needs to DO next, grouped with the main
+          status panel above under the Action tab. */}
+      {tab === "action" && (
+        <>
+          {!cancelled && e.invoice && e.status === "ESCROW_FEE_INVOICED" && <PaymentFlowPanel b={b} onCompose={onCompose} />}
+          {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && escrowStatusIndex(e.status) <= escrowStatusIndex("RECIPIENT_INSPECTION") && (
+            <WhlTestingPanel b={b} id={id} onCompose={onCompose} setPrompt={setPrompt} />
+          )}
+          {!cancelled && e.invoice && escrowStatusIndex(e.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") && <ReleasePanel b={b} onCompose={onCompose} />}
+          {isFinal && <PaymentClosurePanel b={b} id={id} onUploadPaymentClosure={onUploadPaymentClosure} />}
+        </>
+      )}
 
-      <AgentInboxPanel b={b} />
+      {/* Correspondence — the full email trail, on its own tab instead of buried at the bottom
+          of everything else (used to cost a full-page scroll to reach). */}
+      {tab === "correspondence" && <AgentInboxPanel b={b} />}
+
+      {/* Details — read-once-then-rarely-touched reference info (PO/contacts/invoice), not
+          something acted on every visit. */}
+      {tab === "details" && (
+        <>
+          <PurchaseOrderPanel b={b} id={id} onUploadPI={onUploadPI} onUploadDoc={onUploadDoc} />
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <ContactPanel title="Buyer contact" contact={e.buyerContact} />
+            <ContactPanel title="Seller contact" contact={e.sellerContact} />
+            <ContactPanel title="Recipient contact (1Buy hub)" contact={e.recipient} />
+          </div>
+          <InvoicePanel b={b} id={id} onUploadInvoice={onUploadInvoice} onCompose={onCompose} />
+        </>
+      )}
+
+      {/* Documents — the escrow paper trail's own status, separate from Details' reference info:
+          PO/PI are already on file from order setup, the HKin invoice arrives by mail (Correspondence
+          tracks that separately), and the WHL report is the lab's own deliverable. No Payment
+          Closure row — that step has no associated document, just a reference number. */}
+      {tab === "documents" && <DocumentsPanel b={b} />}
 
       {compose && (
         <ComposeEmailModal
@@ -745,6 +1058,65 @@ export function EscrowTab({
           draft={hkinAccountAskDraftFor(b, id)}
           onClose={() => setAskHkinModalOpen(false)}
           onSend={() => { askSupplierHkinAccount(id); setAskHkinModalOpen(false); }}
+        />
+      )}
+      {sendMailOpen && (
+        <SendEscrowEmailModal
+          b={b}
+          onClose={() => setSendMailOpen(false)}
+          onSend={(purpose, draft, milestoneIndex) => { sendEscrowEmail(id, purpose, draft, milestoneIndex); setSendMailOpen(false); }}
+          onDecision={(key, input) => {
+            if (key === "acceptAll") acceptEscrowGoods(id, { amount: input.amount ?? e.poAmount });
+            else if (key === "acceptPartial") acceptEscrowGoods(id, { partial: true, note: input.note, amount: input.amount });
+            else if (key === "reject") { if (input.reason) rejectEscrowGoods(id, input.reason, input.reportFileName); }
+            else if (key === "extension") { if (input.reason) requestEscrowExtension(id, input.reason, input.days ?? 2); }
+            setSendMailOpen(false);
+          }}
+        />
+      )}
+
+      {prompt === "reject" && (
+        <TextPromptModal
+          title="Reject the goods"
+          fields={[
+            { key: "reason", label: "Reason", defaultValue: defaultRejectReasonFor(b), placeholder: "e.g. \"WHL report NOT ACCEPTABLE\"" },
+            { key: "reportFileName", label: "Testing report", type: "file", hint: "optional" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) rejectEscrowGoods(id, v.reason, v.reportFileName || undefined); setPrompt(null); }}
+        />
+      )}
+      {prompt === "extension" && (
+        <TextPromptModal
+          title="Request an inspection extension"
+          fields={[
+            { key: "days", label: "Extension requested (days)", type: "number", defaultValue: "2" },
+            { key: "reason", label: "Reason", placeholder: "e.g. \"WHL is taking longer than expected, revised report date is...\"" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { if (v.reason) requestEscrowExtension(id, v.reason, Number(v.days) || 2); setPrompt(null); }}
+        />
+      )}
+      {prompt === "acceptPartial" && (
+        <TextPromptModal
+          title="Accept partially"
+          fields={[
+            { key: "amount", label: "Amount accepted", type: "number", placeholder: `0 – ${e.poAmount}` },
+            { key: "note", label: "Note", placeholder: "What's accepted / what isn't", hint: "optional" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { acceptEscrowGoods(id, { partial: true, note: v.note || undefined, amount: v.amount ? Number(v.amount) : undefined }); setPrompt(null); }}
+        />
+      )}
+      {prompt === "rma" && (
+        <TextPromptModal
+          title="Record RMA / return details"
+          fields={[
+            { key: "rmaDetails", label: "RMA / return-address details", defaultValue: e.rmaDetails },
+            { key: "goodsReturnTracking", label: "Return tracking no.", defaultValue: e.goodsReturnTracking, hint: "optional" },
+          ]}
+          onClose={() => setPrompt(null)}
+          onSubmit={(v) => { recordEscrowRma(id, { rmaDetails: v.rmaDetails || undefined, goodsReturnTracking: v.goodsReturnTracking || undefined }); setPrompt(null); }}
         />
       )}
     </div>

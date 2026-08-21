@@ -179,6 +179,14 @@ export const TEST_PROCESS_STATUSES = ["PENDING", "IN_PROGRESS", "PASSED", "FAILE
 export const WHL_CONTACT = "reports@whitehorselabs.example";
 export const WHL_SLA_BUSINESS_DAYS = 3; // an unanswered "Request Update" past this is flagged
 
+// Must match escrow-agents' .env (HKIN_SENDER_EMAIL / FINANCE_SENDER_EMAIL) — these are only the
+// compose modal's *default* to/cc, shown editable before send; the backend's own drafter.py uses
+// the same two config values as the authoritative source, so leaving these fields untouched still
+// sends to the right real address. Shared between escrow-tab.tsx (compose drafts) and store.ts
+// (the accept/reject decision log).
+export const HKIN_EMAIL = "rekhasanjaygupta10@gmail.com";
+export const FINANCE_EMAIL = "harsh@1buy.ai";
+
 // ---- 6-phase fulfilment clock -------------------------------------------------------
 // Labels + default (estimated) durations for the phases orderPhaseTimings() (selectors.ts)
 // measures actual time against. Placeholder day counts, not derived from real ops data —
