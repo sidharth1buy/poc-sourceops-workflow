@@ -143,6 +143,16 @@ export function gateReason(b: OrderBundle, step: JourneyStep): string | null {
   return null; // manual gate (e.g. Supplier ACK + PI)
 }
 
+// Where an order actually is right now — same "current step" derivation the Orders Overview
+// page's Stage column uses, pulled out so a Purchase PO's spawned order can show the same
+// live status instead of freezing at "Ordered" the moment the order was created.
+export function currentOrderStage(b: OrderBundle): { cancelled: boolean; complete: boolean; stepName: string | null; blocked: string | null } {
+  if (b.status === "CANCELLED") return { cancelled: true, complete: false, stepName: null, blocked: null };
+  const cur = b.journey?.find((s) => s.status === "IN_PROGRESS" || s.status === "BLOCKED");
+  if (!cur) return { cancelled: false, complete: true, stepName: null, blocked: null };
+  return { cancelled: false, complete: false, stepName: cur.name, blocked: gateReason(b, cur) };
+}
+
 // ---- WHL testing: per-MPN specs, per-lot trackers, reports, correspondence ----
 
 export const specForMpn = (b: OrderBundle, mpn: string) => (b.mpnTests ?? []).find((s) => s.mpn === mpn);

@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
+import { Plus, ArrowRight } from "lucide-react";
 import { useStore } from "@/store/store";
 import { ONEBUY_HUB } from "@/data/fixtures";
-import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked } from "@/components/ui/primitives";
+import { Panel, Pill, Button, PageHeader, Pagination, RoleLocked, DataTable, StatusPill, type Col } from "@/components/ui/primitives";
+import { OrderStagePill } from "@/components/order/order-stage-pill";
 import { money, qtyfmt, cn } from "@/lib/utils";
 import { useRole } from "@/lib/role";
 
@@ -18,12 +19,13 @@ const filterLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-
 export default function SupplierPosPage() {
   const router = useRouter();
   const supplierPos = useStore((s) => s.supplierPos);
+  const orders = useStore((s) => s.orders);
   const createOrderFromSupplierPo = useStore((s) => s.createOrderFromSupplierPo);
   const { canAccessPurchaseOrders } = useRole();
 
   function createOrder(id: string) {
     const orderId = createOrderFromSupplierPo(id);
-    if (orderId) router.push(`/fulfilment/orders/${orderId}`);
+    if (orderId) router.push(`/fulfilment/order-flow/${orderId}`);
   }
 
   const [q, setQ] = useState("");
@@ -62,6 +64,29 @@ export default function SupplierPosPage() {
     });
   }
 
+  type Row = (typeof pageRows)[number];
+  const cols: Col<Row>[] = [
+    { key: "no", header: "PO No.", render: (spo) => (
+      <Link href={`/fulfilment/supplier-pos/${spo.id}`} onClick={(e) => e.stopPropagation()}
+        className="font-mono text-xs text-primary hover:underline">{spo.poNo}</Link>
+    ) },
+    { key: "supplier", header: "Supplier", render: (spo) => <>{spo.supplier.name} <span className="text-faint">({spo.supplier.country})</span></> },
+    { key: "lines", header: "Lines", align: "right", render: (spo) => `${spo.lines.length} · ${spo.lines.filter((l) => l.clientPoNo && l.clientLineMpn).length} linked` },
+    { key: "total", header: "Buy total", align: "right", render: (spo) => <span className="font-medium tnum">{money(spo.buyTotal, spo.currency)}</span> },
+    { key: "pay", header: "Payment", render: (spo) => <Pill tone={spo.paymentMode === "ESCROW" ? "warn" : "neutral"}>{spo.paymentMode}</Pill> },
+    { key: "postatus", header: "PO Status", render: (spo) => <Pill tone={spo.status === "ORDERED" ? "ok" : "warn"}>{spo.status === "ORDERED" ? "Ordered" : "Draft"}</Pill> },
+    { key: "orderstatus", header: "Order Status", render: (spo) => {
+      const b = spo.orderId ? orders[spo.orderId] : undefined;
+      if (!b) return <span className="text-xs text-faint">No order yet</span>;
+      return (
+        <div className="flex flex-col items-start gap-1">
+          <StatusPill status={b.status} />
+          <OrderStagePill b={b} />
+        </div>
+      );
+    } },
+  ];
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -92,82 +117,63 @@ export default function SupplierPosPage() {
         </div>
       )}
 
-      {supplierPos.length === 0 && (
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No purchase orders yet. <Link href="/fulfilment/supplier-pos/new" className="text-primary hover:underline">Create one</Link>.</div></Panel>
-      )}
-      {supplierPos.length > 0 && filtered.length === 0 && (
-        <Panel><div className="p-6 text-center text-sm text-muted-foreground">No purchase orders match these filters.</div></Panel>
-      )}
+      <Panel>
+        <DataTable<Row>
+          columns={cols}
+          rows={pageRows}
+          empty={supplierPos.length === 0
+            ? <>No purchase orders yet. <Link href="/fulfilment/supplier-pos/new" className="text-primary hover:underline">Create one</Link>.</>
+            : "No purchase orders match these filters."}
+          onRowClick={(spo) => toggle(spo.id)}
+          isExpanded={(spo) => expanded.has(spo.id)}
+          renderExpanded={(spo) => {
+            const linkedCount = spo.lines.filter((l) => l.clientPoNo && l.clientLineMpn).length;
+            return (
+              <div className="pt-3">
+                {(spo.supplier.gstin || spo.terms) && (
+                  <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 border-b pb-2 text-xs text-muted-foreground">
+                    {spo.terms?.referenceNo && <span>Raised against <span className="font-mono text-foreground">{spo.terms.referenceNo}</span></span>}
+                    {spo.supplier.gstin && <span>GSTIN {spo.supplier.gstin}{spo.supplier.state ? ` · ${spo.supplier.state}` : ""}</span>}
+                    {!spo.supplier.gstin && spo.supplier.state && <span>{spo.supplier.state}</span>}
+                    <span>{spo.tradeType === "INTERNATIONAL" ? "Intl" : "Domestic"} · {spo.incoterm}</span>
+                    <span>Ship to: {ONEBUY_HUB.name}</span>
+                    {spo.terms?.paymentMethod && <span>Pay: {spo.terms.paymentMethod}</span>}
+                    {spo.paymentMode === "CREDIT" && spo.creditDays && <span>Credit · {spo.creditDays} days</span>}
+                    {spo.incoterm === "CIF" && spo.terms?.destinationPort && <span>Ship to: {spo.terms.destinationPort}</span>}
+                    {spo.terms?.deliveryTerms && <span>{spo.terms.deliveryTerms}</span>}
+                    {spo.terms?.warranty && <span>Warranty {spo.terms.warranty}</span>}
+                    {!!spo.termsConditions?.length && <span>{spo.termsConditions.length} T&amp;C</span>}
+                    {!!spo.relabelCost && <span>Relabel {spo.relabelCost}</span>}
+                  </div>
+                )}
 
-      <div className="space-y-3">
-        {pageRows.map((spo) => {
-          const linkedCount = spo.lines.filter((l) => l.clientPoNo && l.clientLineMpn).length;
-          const isOpen = expanded.has(spo.id);
-          return (
-            <div key={spo.id} className="rounded-[var(--radius)] border bg-card shadow-sm">
-              <button type="button" onClick={() => toggle(spo.id)}
-                className="flex w-full flex-wrap items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-muted/40">
-                <span className="flex min-w-0 items-center gap-2">
-                  {isOpen ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                  <span className="truncate font-mono text-sm text-primary">{spo.poNo}</span>
-                  <span className="text-faint">·</span>
-                  <span className="truncate text-sm">{spo.supplier.name} <span className="text-faint">({spo.supplier.country})</span></span>
-                </span>
-                <span className="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-                  <span className="text-muted-foreground">{spo.lines.length} line{spo.lines.length === 1 ? "" : "s"} · {linkedCount} linked</span>
-                  <span className="font-medium tnum text-foreground">{money(spo.buyTotal, spo.currency)}</span>
-                  <Pill tone={spo.paymentMode === "ESCROW" ? "warn" : "neutral"}>{spo.paymentMode}</Pill>
-                  <Pill tone={spo.status === "ORDERED" ? "ok" : "warn"}>{spo.status === "ORDERED" ? "Ordered" : "Draft"}</Pill>
-                </span>
-              </button>
-
-              {isOpen && (
-                <div className="border-t p-4">
-                  {(spo.supplier.gstin || spo.terms) && (
-                    <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 border-b pb-2 text-xs text-muted-foreground">
-                      {spo.terms?.referenceNo && <span>Raised against <span className="font-mono text-foreground">{spo.terms.referenceNo}</span></span>}
-                      {spo.supplier.gstin && <span>GSTIN {spo.supplier.gstin}{spo.supplier.state ? ` · ${spo.supplier.state}` : ""}</span>}
-                      {!spo.supplier.gstin && spo.supplier.state && <span>{spo.supplier.state}</span>}
-                      <span>{spo.tradeType === "INTERNATIONAL" ? "Intl" : "Domestic"} · {spo.incoterm}</span>
-                      <span>Ship to: {ONEBUY_HUB.name}</span>
-                      {spo.terms?.paymentMethod && <span>Pay: {spo.terms.paymentMethod}</span>}
-                      {spo.paymentMode === "CREDIT" && spo.creditDays && <span>Credit · {spo.creditDays} days</span>}
-                      {spo.incoterm === "CIF" && spo.terms?.destinationPort && <span>Ship to: {spo.terms.destinationPort}</span>}
-                      {spo.terms?.deliveryTerms && <span>{spo.terms.deliveryTerms}</span>}
-                      {spo.terms?.warranty && <span>Warranty {spo.terms.warranty}</span>}
-                      {!!spo.termsConditions?.length && <span>{spo.termsConditions.length} T&amp;C</span>}
-                      {!!spo.relabelCost && <span>Relabel {spo.relabelCost}</span>}
+                <div className="space-y-2">
+                  {spo.lines.map((l, i) => (
+                    <div key={`${l.mpn}-${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border bg-card p-3 text-sm">
+                      <span className="min-w-[150px] flex-1"><span className="font-mono text-xs">{l.mpn}</span>{l.make && <span className="ml-1.5 text-[11px] text-faint">{l.make}</span>}{l.dateCode && <span className="ml-1.5 text-[11px] text-faint">DC {l.dateCode}</span>}</span>
+                      <span className="text-muted-foreground">qty <b className="text-foreground tnum">{qtyfmt(l.qty)}</b></span>
+                      <span className="text-faint">@ {money(l.buyUnitPrice, spo.currency)}</span>
+                      {l.clientPoNo && l.clientLineMpn
+                        ? <Pill tone="info">→ {l.clientPoNo} · {l.clientLineMpn}</Pill>
+                        : <Pill tone="warn">unlinked — map later</Pill>}
                     </div>
-                  )}
-
-                  <div className="space-y-2">
-                    {spo.lines.map((l, i) => (
-                      <div key={`${l.mpn}-${i}`} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border p-3 text-sm">
-                        <span className="min-w-[150px] flex-1"><span className="font-mono text-xs">{l.mpn}</span>{l.make && <span className="ml-1.5 text-[11px] text-faint">{l.make}</span>}{l.dateCode && <span className="ml-1.5 text-[11px] text-faint">DC {l.dateCode}</span>}</span>
-                        <span className="text-muted-foreground">qty <b className="text-foreground tnum">{qtyfmt(l.qty)}</b></span>
-                        <span className="text-faint">@ {money(l.buyUnitPrice, spo.currency)}</span>
-                        {l.clientPoNo && l.clientLineMpn
-                          ? <Pill tone="info">→ {l.clientPoNo} · {l.clientLineMpn}</Pill>
-                          : <Pill tone="warn">unlinked — map later</Pill>}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-sm">
-                    <span className="text-muted-foreground">
-                      Buy total <b className="text-foreground tnum">{money(spo.buyTotal, spo.currency)}</b>
-                      <span className="ml-2 text-faint">{spo.lines.length} line(s) · {linkedCount} linked</span>
-                    </span>
-                    {spo.status === "ORDERED" && spo.orderId
-                      ? <Link href={`/fulfilment/orders/${spo.orderId}`} className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-sm font-medium hover:border-primary">Open order <ArrowRight className="h-4 w-4" /></Link>
-                      : <Button onClick={() => createOrder(spo.id)}>Create order <ArrowRight className="h-4 w-4" /></Button>}
-                  </div>
+                  ))}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-sm">
+                  <span className="text-muted-foreground">
+                    Buy total <b className="text-foreground tnum">{money(spo.buyTotal, spo.currency)}</b>
+                    <span className="ml-2 text-faint">{spo.lines.length} line(s) · {linkedCount} linked</span>
+                  </span>
+                  {spo.status === "ORDERED" && spo.orderId
+                    ? <Link href={`/fulfilment/order-flow/${spo.orderId}`} className="inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-sm font-medium hover:border-primary">Open order <ArrowRight className="h-4 w-4" /></Link>
+                    : <Button onClick={() => createOrder(spo.id)}>Create order <ArrowRight className="h-4 w-4" /></Button>}
+                </div>
+              </div>
+            );
+          }}
+        />
+      </Panel>
 
       {filtered.length > 0 && <Pagination page={pageSafe} totalPages={totalPages} onChange={setPage} />}
       {supplierPos.length > 0 && (
