@@ -66,8 +66,7 @@ export default function EscrowBoardPage() {
     { key: "inv", header: "Invoice no.", render: (r) => <span className="font-mono text-xs">{r.e.invoice?.invoiceNo ?? "—"}</span> },
     { key: "amt", header: "PO amount", align: "right", render: (r) => money(r.e.poAmount, r.e.currency) },
     { key: "status", header: "Status", render: (r) => r.e.cancelledAt ? <Pill tone="bad">Cancelled</Pill> : <StatusPill status={r.e.status} /> },
-    { key: "risk", header: "", render: (r) => r.funding?.atRisk ? <Pill tone="bad" title={r.funding.atRisk.reason}>action needed</Pill> : null },
-    { key: "act", header: "", align: "right", render: (r) => <Link href={`/fulfilment/escrow/${r.orderId}`} className="text-xs font-medium text-primary hover:underline">Open →</Link> },
+    { key: "risk", header: "", align: "right", render: (r) => r.funding?.atRisk ? <Pill tone="bad" title={r.funding.atRisk.reason}>action needed</Pill> : null },
   ];
 
   if (!canAccessEscrow) {

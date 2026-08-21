@@ -604,7 +604,10 @@ export interface Escrow {
 // Every outbound email goes through ComposeEmailModal — SC can edit the draft before it's sent.
 export type EscrowSendPurpose =
   | "ORDER_TO_SELLER" | "PAYMENT_INSTRUCTION_TO_FINANCE" | "PAYMENT_CONFIRMATION_TO_HKIN"
-  | "REFUND_INSTRUCTION" | "RELEASE_FUNDS_INSTRUCTION";
+  | "REFUND_INSTRUCTION" | "RELEASE_FUNDS_INSTRUCTION"
+  // Ad-hoc/chase purposes — available regardless of what the state machine currently gates, so an
+  // operator is never blocked from nudging someone (see the "Send email" menu, escrow-tab.tsx).
+  | "CHASE_INVOICE_FROM_HKIN" | "GENERAL_INQUIRY_HKIN" | "GENERAL_INQUIRY_SUPPLIER" | "GENERAL_INQUIRY_FINANCE";
 
 // Inbound emails — internal to the store's checkEscrowInbox "agent"; never picked by the UI
 // directly (see checkEscrowInbox in store.ts). Milestone release confirmations are handled

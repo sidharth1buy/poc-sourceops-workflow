@@ -13,12 +13,13 @@ import type {
 import { ORDERS, CLIENT_POS, SUPPLIER_POS, ONEBUY_HUB, getOrderBundle, buildJourney } from "@/data/fixtures";
 import { remainingToShipLeg, remainingToAllocate, gateReason, sourcedForClientLine, mappedForOrderLine, orderSourcedForClient, deliveredForClientLine, lotStage } from "@/store/selectors";
 import type { OrdersMap } from "@/store/selectors";
-import { ESCROW_STATUS_ORDER } from "@/data/enums";
+import { ESCROW_STATUS_ORDER, HKIN_EMAIL } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
 import { fileBillOfEntry, getAssessment, getClearanceStatus, getIgmEntry } from "@/integrations/customs-icegate";
 import { bookShipment, getTracking, dhlCreatePickup, dhlUpdatePickup, dhlCancelPickup, dhlGetInvoices, dhlUploadImage, sendLogisticsMail, fetchLogisticsReplies, LOGISTICS_PARTY_LABEL, type Carrier, type LogisticsParty } from "@/integrations/logistics";
 import { requestSupplierShippingDocs, extractSupplierShippingDocs, notifyCustomsTeamToFileBoe, sendAwbToChaMail, shippingDocList } from "@/integrations/shipping-docs";
 import { weClearImportCustoms } from "@/lib/incoterm";
+import { money } from "@/lib/utils";
 import {
   whlSubmitTestJob, whlPollTestReport, mapVerdict, whlFetchReport, whlSendMail, whlPollInbox,
   conclusionToLotStatus, processToTestStatus,
@@ -501,9 +502,9 @@ interface Store {
   // Real HKin portal evidence (2026-08-12 session) — see Escrow's fields in @/types for the write-up.
   markEscrowApplicationRejected: (orderId: string) => void;
   recordEscrowRma: (orderId: string, input: { rmaDetails?: string; goodsReturnTracking?: string; markReturned?: boolean }) => void;
-  acceptEscrowGoods: (orderId: string, input: { partial?: boolean; note?: string }) => void;
-  rejectEscrowGoods: (orderId: string, reason: string) => void;
-  requestEscrowExtension: (orderId: string, reason: string) => void;
+  acceptEscrowGoods: (orderId: string, input: { partial?: boolean; note?: string; amount?: number }) => void;
+  rejectEscrowGoods: (orderId: string, reason: string, reportFileName?: string) => void;
+  requestEscrowExtension: (orderId: string, reason: string, days: number) => void;
   // Demo/dev button — simulates HKin's real deadline-reminder email arriving (an independent
   // signal, not something Check inbox's awaiting-purpose mechanism can produce on its own).
   simulateEscrowDeadlineReminder: (orderId: string) => void;
@@ -1732,7 +1733,21 @@ export const useStore = create<Store>()(
         void (async () => {
           try {
             const escrow = await acceptGoodsApi(orderId, input);
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            const sellerTo = e.sellerContact.email && e.sellerContact.email !== "—" ? e.sellerContact.email : undefined;
+            const amountText = input.amount !== undefined ? ` — ${money(input.amount, e.currency)}` : "";
+            set((s) => {
+              const bb = s.orders[orderId]; if (!bb?.escrow) return;
+              bb.escrow = escrow;
+              bb.escrow.agentEmails.push({
+                id: uid("ea"), direction: "SENT",
+                subject: `Goods accepted${input.partial ? " (partially)" : ""} — ${bb.orderNo}`,
+                from: "you@1buy.ai", to: HKIN_EMAIL, cc: sellerTo,
+                snippet: input.partial
+                  ? `Goods accepted partially${amountText}.${input.note ? ` ${input.note}` : ""}`
+                  : `Goods accepted in full${amountText}.`,
+                receivedAt: today(),
+              });
+            });
             toast.success(`Goods accepted${input.partial ? " (partially)" : ""} — release will proceed.`);
           } catch (err) { toast.error(errMsg(err)); }
         })();
@@ -1740,12 +1755,21 @@ export const useStore = create<Store>()(
 
       // Real portal: buyer clicks Reject All, citing the WHL report — kicks off the same
       // refund -> RMA -> goods-return -> refund-instruction sequence as a WHL FAIL would.
-      rejectEscrowGoods: (orderId, reason) => {
+      rejectEscrowGoods: (orderId, reason, reportFileName) => {
         const e = get().orders[orderId]?.escrow; if (!e) return;
         void (async () => {
           try {
             const escrow = await rejectGoodsApi(orderId, { reason });
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = escrow; });
+            const sellerTo = e.sellerContact.email && e.sellerContact.email !== "—" ? e.sellerContact.email : undefined;
+            set((s) => {
+              const bb = s.orders[orderId]; if (!bb?.escrow) return;
+              bb.escrow = escrow;
+              bb.escrow.agentEmails.push({
+                id: uid("ea"), direction: "SENT", subject: `Goods rejected — ${bb.orderNo}`,
+                from: "you@1buy.ai", to: HKIN_EMAIL, cc: sellerTo, snippet: `Goods rejected — ${reason}`,
+                attachmentFileName: reportFileName, receivedAt: today(),
+              });
+            });
             toast.message("Goods rejected — refund/return sequence started.");
           } catch (err) { toast.error(errMsg(err)); }
         })();
@@ -1755,14 +1779,20 @@ export const useStore = create<Store>()(
       // almost always citing a WHL delay. The reason text IS the review step (the UI shows/edits
       // it before calling this) — so this creates the draft on the backend and sends it in the
       // same action, rather than requiring a second separate send click on an auto-generated draft.
-      requestEscrowExtension: (orderId, reason) => {
+      // No real approval flow is modelled, so the request is treated as granted immediately —
+      // the deadline moves out by `days` right away rather than waiting on a reply.
+      requestEscrowExtension: (orderId, reason, days) => {
         const e = get().orders[orderId]?.escrow; if (!e) return;
         void (async () => {
           try {
-            const res = await requestExtension(orderId, { reason });
+            const res = await requestExtension(orderId, { reason: `Requesting a ${days}-day extension. ${reason}` });
             const sent = await sendEscrowDraft(res.draftId, { reviewedBy: "You (demo)" });
-            set((s) => { const bb = s.orders[orderId]; if (bb) bb.escrow = sent.escrow; });
-            toast.success("Extension request sent to HKin.");
+            set((s) => {
+              const bb = s.orders[orderId]; if (!bb?.escrow) return;
+              bb.escrow = sent.escrow;
+              bb.escrow.inspectionDeadline = addDays(bb.escrow.inspectionDeadline ?? today(), days);
+            });
+            toast.success(`Extension request sent to HKin — deadline moved out by ${days} day(s).`);
           } catch (err) { toast.error(errMsg(err)); }
         })();
       },
