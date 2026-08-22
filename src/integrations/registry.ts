@@ -122,10 +122,12 @@ export const INTEGRATIONS: IntegrationSystem[] = [
     criticalPath: false,
     envVar: "NEXT_PUBLIC_DOC_EXTRACT_URL",
     baseUrl: "https://doc-ai.sandbox.1buy.ai/api",
-    description: "Demand capture: parse an uploaded sales order / supplier PI into structured fields + line items with per-field confidence (mirrors 1Buy's BOM-upload pattern).",
-    wiredInto: ["Sales Order → New → Parse"],
+    description: "Demand capture: parse an uploaded sales order / supplier PI into structured fields + line items with per-field confidence (mirrors 1Buy's BOM-upload pattern). Also reads the two documents the testing desk uploads — the lab's booking appointment (which lots, which samples, which test plan) and the lab's own invoice.",
+    wiredInto: ["Sales Order → New → Parse", "Testing → Upload booking appointment", "Testing → lot fee → Upload invoice"],
     endpoints: [
       { method: "POST", path: "/extract/client-po", purpose: "parse a sales order document" },
+      { method: "POST", path: "/extract/booking-appointment", purpose: "read the lab's booking appointment — lots, samples, work orders and the agreed test plan" },
+      { method: "POST", path: "/extract/lab-invoice", purpose: "read the lab's testing invoice — amount, tax, rate and terms" },
     ],
   },
 ];

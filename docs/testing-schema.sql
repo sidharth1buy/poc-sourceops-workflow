@@ -187,7 +187,7 @@ create index if not exists whl_report_access_report on whl_report_access_log (re
 create table if not exists lot_stage_events (
   id              text primary key,
   lot_id          text not null references lots (id) on delete cascade,
-  stage           text not null,   -- TEST_REQUESTED | WHL_PAYMENT | SUPPLIER_DISPATCHING |
+  stage           text not null,   -- TEST_BOOKED | WHL_PAYMENT | SUPPLIER_DISPATCHING |
                                    -- COMPONENTS_RECEIVED | TESTING_IN_PROGRESS |
                                    -- TESTING_COMPLETED | REPORT_SHARED
   at              text not null,

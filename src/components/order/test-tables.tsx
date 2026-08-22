@@ -27,7 +27,11 @@ import { cn } from "@/lib/utils";
  *   LotTestTable   — one row per test on ONE lot: requirement, live status, quantities and
  *                    the report line that settled it. The report section keeps the header
  *                    fields and the conclusion; it no longer re-lists the processes.
- *   MpnTestMatrix  — one row per test on ONE MPN, with a column per lot. Answers "is this
+ *   MpnTestMatrix  — PARKED (2026-08-21): the Testing-overview section that rendered it was
+ *                    removed from the workspace, so nothing mounts it. Kept because it is the
+ *                    only requirements-by-MPN view and the only place a requirement can be
+ *                    added or deleted with an audit row; delete it if that never comes back.
+ *                    One row per test on ONE MPN, with a column per lot. Answers "is this
  *                    requirement covered on every lot, and what did each one say" — which
  *                    a flat list of names never did.
  */
@@ -207,14 +211,14 @@ export function MpnFeeStrip({ b, mpn }: { b: OrderBundle; mpn: string }) {
         ? <Pill tone={LAB_TERMS_TONE[fee.terms[0]]} title={LAB_TERMS_HINT[fee.terms[0]]}>{LAB_TERMS_LABEL[fee.terms[0]]}</Pill>
         : fee.terms.length > 1 && <Pill tone="warn" title="This MPN's lots were invoiced on different terms — check each lot.">mixed terms</Pill>}
       {fee.unpaid > 0
-        ? <span className="text-warn">{fee.currency} {fee.unpaidGross.toLocaleString()} unpaid across {fee.unpaid} lot(s)</span>
+        ? <span className="text-warn">{fee.currency} {fee.unpaidGross.toLocaleString()} unpaid across {fee.unpaid} test lot(s)</span>
         : <span className="text-ok">settled</span>}
       {fee.blocked.length > 0 && (
         <span className="inline-flex items-center gap-1 text-bad">
           <Lock className="h-3 w-3" /> {fee.blocked.join(", ")} held for advance payment
         </span>
       )}
-      {fee.invoiced < fee.lots && <span className="text-faint">{fee.lots - fee.invoiced} lot(s) not invoiced yet</span>}
+      {fee.invoiced < fee.lots && <span className="text-faint">{fee.lots - fee.invoiced} test lot(s) not invoiced yet</span>}
     </div>
   );
 }
@@ -263,7 +267,7 @@ export function MpnTestMatrix({
                 {t.standard && <span className="ml-1.5 text-[11px] text-faint">{t.standard}</span>}
               </td>
               <td className="px-3 py-2">
-                <Pill tone={t.source === "AUTO_PO" ? "info" : "warn"}>{t.source === "AUTO_PO" ? "from PO" : "manual"}</Pill>
+                <Pill tone={t.source === "AUTO_BOOKING" ? "info" : "warn"}>{t.source === "AUTO_BOOKING" ? "from booking" : "manual"}</Pill>
                 {t.source === "MANUAL" && t.addedBy && <span className="ml-1.5 text-[11px] text-faint">{t.addedBy} · {t.addedAt}</span>}
               </td>
               {rate !== undefined && <td className="px-3 py-2 text-right tnum text-xs text-muted-foreground">{rate}</td>}

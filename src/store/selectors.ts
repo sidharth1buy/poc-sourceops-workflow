@@ -226,14 +226,16 @@ export function lotTestRows(lot: Lot): LotTestRow[] {
  */
 function derivedStage(lot: Lot): TestingStage | undefined {
   const p = lotTestProgress(lot);
-  // the report is the last thing to arrive, so having one settles the whole chain
+  // the two post-report stages are stamped facts, so they derive straight off their fields
+  if (lot.logisticsAssignedAt) return "ASSIGNED_TO_LOGISTICS";
+  if (lot.returnedToSellerAt) return "RETURNED_TO_SELLER";
   if ((lot.reports ?? []).length > 0) return "REPORT_SHARED";
   // every process conducted, nothing still running → the lab is done on the bench
   if (p.total > 0 && p.open === 0) return "TESTING_COMPLETED";
   if ((lot.tests ?? []).some((t) => t.status !== "PENDING")) return "TESTING_IN_PROGRESS";
   if (lot.dispatch) return "SUPPLIER_DISPATCHING";
   if (lot.labPayment?.status === "PAID") return "WHL_PAYMENT";
-  if (lot.workOrderNo) return "TEST_REQUESTED";
+  if (lot.workOrderNo) return "TEST_BOOKED";
   return undefined;
 }
 
@@ -371,7 +373,14 @@ export const lotEmails = (b: OrderBundle, lotId: string) =>
   (b.labEmails ?? []).filter((m) => m.lotId === lotId);
 
 /** Inbound mail the platform couldn't route to a lot - must be matched by hand, never dropped. */
-export const unmatchedEmails = (b: OrderBundle) => (b.labEmails ?? []).filter((m) => m.direction === "IN" && !m.lotId);
+/**
+ * Inbound lab mail that couldn't be routed to a lot. A booking confirmation is **order-level by
+ * design** — it is the mail that creates the lots, so it cannot name one — and must not sit in the
+ * match queue asking an operator to file it against something.
+ */
+export const unmatchedEmails = (b: OrderBundle) => (b.labEmails ?? []).filter(
+  (m) => m.direction === "IN" && !m.lotId && m.kind !== "BOOKING_CONFIRMED",
+);
 
 /** MPNs whose PO parse failed or was never run - "needs manual review". */
 export function testAutofillGaps(b: OrderBundle) {
@@ -683,6 +692,34 @@ export const allPayments = (o: OrdersMap) =>
     ...p, orderId: b.id, orderNo: b.orderNo,
     party: p.direction === "CLIENT_TO_1BUY" ? b.buyer.name : b.supplier.name,
   })));
+
+/**
+ * Test lots the testing desk has handed over (report shared → `assignLotToLogistics`), for the
+ * Logistics board's own queue. Newest hand-off first — the desk works what just landed.
+ */
+/**
+ * The slot this order is waiting on, if any. While one exists the testing desk is **blocked**:
+ * the lab has not agreed to test anything yet, so there is nothing legitimate to act on. Checking
+ * the mailbox is the way out — that is what delivers the confirmation.
+ */
+export const pendingTestSlot = (b: OrderBundle) => (b.testSlots ?? []).find((x) => x.status === "REQUESTED");
+
+/** Slots newest-first, with the lots each one produced. */
+export const testSlotsOf = (b: OrderBundle) =>
+  (b.testSlots ?? []).map((slot) => ({
+    slot,
+    lots: b.lots.filter((l) => l.testSlotId === slot.id),
+  }));
+
+/** Lots whose verdict came back FAIL — the candidates for a re-test booking. */
+export const failedLots = (b: OrderBundle) => b.lots.filter((l) => l.testStatus === "FAIL");
+
+export const assignedTestLots = (o: OrdersMap) =>
+  Object.values(o)
+    .flatMap((b) => b.lots
+      .filter((l) => !!l.logisticsAssignedAt)
+      .map((l) => ({ lot: l, orderId: b.id, orderNo: b.orderNo, supplier: b.supplier.name, report: currentReport(l) })))
+    .sort((x, y) => String(y.lot.logisticsAssignedAt).localeCompare(String(x.lot.logisticsAssignedAt)));
 
 export const allLots = (o: OrdersMap) =>
   Object.values(o).flatMap((b) => b.lots.map((l) => ({ ...l, orderId: b.id, orderNo: b.orderNo })));

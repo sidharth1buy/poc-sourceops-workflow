@@ -46,7 +46,7 @@ const spec = (
 ): MpnTestSpec => {
   const rows = (o.tests ?? []).map(([name, std]) => ({
     id: nid("req"), name, standard: std,
-    source: (o.manual?.includes(name) ? "MANUAL" : "AUTO_PO") as TestSource,
+    source: (o.manual?.includes(name) ? "MANUAL" : "AUTO_BOOKING") as TestSource,
     addedBy: o.manual?.includes(name) ? "A. Sharma" : undefined,
     addedAt: o.manual?.includes(name) ? parsedAt : undefined,
   }));
@@ -56,7 +56,7 @@ const spec = (
     audit: [
       audit("Doc extraction (auto)", "AUTOFILL", parsedAt, {
         target: mpn, before: "—",
-        after: o.autofill === "FAILED" ? "auto-fill failed" : `${rows.filter((r) => r.source === "AUTO_PO").length} test(s) from ${doc}`,
+        after: o.autofill === "FAILED" ? "auto-fill failed" : `${rows.filter((r) => r.source === "AUTO_BOOKING").length} test(s) from ${doc}`,
         note: o.note ?? `Confidence ${Math.round((o.conf ?? 0.95) * 100)}%.`,
       }),
       ...(o.manual ?? []).map((m) => audit("A. Sharma", "ADD", parsedAt, { target: m, before: "—", after: "manual test", note: "Manual override of the auto-filled list." })),
@@ -69,7 +69,7 @@ const lt = (
   name: string, status: TestProcessStatus,
   o: { std?: string; a?: number; r?: number; src?: TestSource; raised?: string; at?: string; by?: string; note?: string } = {},
 ): LotTest => ({
-  id: nid("lt"), name, standard: o.std, source: o.src ?? "AUTO_PO", status,
+  id: nid("lt"), name, standard: o.std, source: o.src ?? "AUTO_BOOKING", status,
   acceptQty: o.a, rejectQty: o.r, updatedAt: o.at,
   history: [
     audit(o.src === "MANUAL" ? "A. Sharma" : "Doc extraction (auto)", "STATUS", o.raised ?? "2026-07-20 09:20",

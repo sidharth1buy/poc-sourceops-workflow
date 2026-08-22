@@ -1,4 +1,4 @@
-import type { NotifyParty, TestingStage, LabPaymentStatus, LabPaymentTerms, PhaseKey, PaymentMode } from "@/types";
+import type { NotifyParty, TestingStage, TestSlotStatus, LabPaymentStatus, LabPaymentTerms, PhaseKey, PaymentMode } from "@/types";
 
 export type Tone = "neutral" | "active" | "warn" | "ok" | "bad" | "info";
 
@@ -229,17 +229,43 @@ export const RISK_GRACE_DAYS = { ESCROW_SUBSTEP: 2, TESTING_RETURN: 2, LOGISTICS
 //
 // Note the tail: testing finishing and the report landing are separate events, and the
 // gap between them can be days — the lab can be done on the bench while the write-up is
-// still with its reviewer. So "Testing Completed" sits before "Test Report Shared",
-// which is the point we can actually act on.
+// still with its reviewer. So "Testing Completed" sits before "Test Report Shared".
+//
+// Two stages follow the report (added 2026-08-21), because a shared report is not the end
+// of the lot's physical journey: the samples still have to come back out of the lab
+// ("Returned to Seller from WHL") and the lot still has to be handed to the freight desk
+// ("Assigned to Logistics", completed by the Assign-to-logistics click itself). The chain
+// therefore ends on an act of ours, not on a document from the lab.
+//
+// "Payment to WHL" ALSO sits behind the report (moved there 2026-08-21). The lab invoices
+// once it has issued the report, not on booking, so putting payment at index 1 described a
+// billing model WHL does not use — it left every live lot showing an un-started payment
+// stage for weeks. Note the knock-on: `labFeeBlocking()` still models an unpaid *advance*
+// invoice holding the bench, which can no longer happen in this order of events. The
+// machinery is kept because terms are read off whatever document arrives, not assumed.
+
+// ---- test slots (booking requests to the lab) ----
+export const TEST_SLOT_LABEL: Record<TestSlotStatus, string> = {
+  REQUESTED: "Awaiting WHL confirmation",
+  CONFIRMED: "Confirmed by WHL",
+  DECLINED: "Declined by WHL",
+};
+export const TEST_SLOT_TONE: Record<TestSlotStatus, Tone> = {
+  REQUESTED: "warn",
+  CONFIRMED: "ok",
+  DECLINED: "bad",
+};
 
 export const TESTING_STAGES: readonly TestingStage[] = [
-  "TEST_REQUESTED",
-  "WHL_PAYMENT",
+  "TEST_BOOKED",
   "SUPPLIER_DISPATCHING",
   "COMPONENTS_RECEIVED",
   "TESTING_IN_PROGRESS",
   "TESTING_COMPLETED",
   "REPORT_SHARED",
+  "WHL_PAYMENT",
+  "RETURNED_TO_SELLER",
+  "ASSIGNED_TO_LOGISTICS",
 ] as const;
 
 /** The chain's end state — reaching it is what "done" means for a lot. */
@@ -257,17 +283,17 @@ export interface TestingStageMeta {
 }
 
 export const TESTING_STAGE_META: Record<TestingStage, TestingStageMeta> = {
-  TEST_REQUESTED: {
-    label: "Test Requested",
-    description: "Testing request has been initiated.",
+  TEST_BOOKED: {
+    label: "Test Booked",
+    description: "The lab has confirmed a test slot — its booking appointment names the lots, their sample quantities and the agreed test plan.",
     owner: "1BUY",
-    trigger: "Work order raised with WHL for this lot.",
+    trigger: "Booking appointment from the lab — upload the PDF and the lots and their tests are read off it.",
   },
   WHL_PAYMENT: {
     label: "Payment to WHL",
-    description: "WHL's testing invoice has been received and settled — on advance terms this is what frees the bench.",
+    description: "WHL's testing invoice has been received and settled. The lab bills after it has shared the report, so this sits behind it — not at the start.",
     owner: "1BUY",
-    trigger: "Invoice mail states the terms; WHL's payment acknowledgement closes it.",
+    trigger: "Request the invoice (or upload it if it came another way); WHL's payment acknowledgement closes it.",
   },
   SUPPLIER_DISPATCHING: {
     label: "Supplier Dispatching Components",
@@ -298,6 +324,18 @@ export const TESTING_STAGE_META: Record<TestingStage, TestingStageMeta> = {
     description: "WHL has shared the completed test report and results.",
     owner: "WHL",
     trigger: "Report received and parsed onto the lot.",
+  },
+  RETURNED_TO_SELLER: {
+    label: "Returned to Seller from WHL",
+    description: "WHL has sent the samples back to the seller — the goods are out of the lab and with the party that will ship them.",
+    owner: "WHL",
+    trigger: "WHL confirms the return, or record it by hand on the lot.",
+  },
+  ASSIGNED_TO_LOGISTICS: {
+    label: "Assigned to Logistics",
+    description: "The testing desk has handed this test lot to logistics — its result is final and the goods are cleared to move.",
+    owner: "1BUY",
+    trigger: "Assign to logistics on the test lot. That click alone completes this stage.",
   },
 };
 

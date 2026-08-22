@@ -22,18 +22,20 @@ export type TestProcessStatus = "PENDING" | "IN_PROGRESS" | "PASSED" | "FAILED" 
  * both only added a node the operator had to read past.
  */
 export type TestingStage =
-  | "TEST_REQUESTED"
+  | "TEST_BOOKED"
   | "WHL_PAYMENT"
   | "SUPPLIER_DISPATCHING"
   | "COMPONENTS_RECEIVED"
   | "TESTING_IN_PROGRESS"
   | "TESTING_COMPLETED"
-  | "REPORT_SHARED";
+  | "REPORT_SHARED"
+  | "RETURNED_TO_SELLER"
+  | "ASSIGNED_TO_LOGISTICS";
 // WHL report verdicts: per-process result and the report's overall conclusion
 export type WhlProcessResult = "ACCEPTABLE" | "NOT_ACCEPTABLE" | "FAR" | "NOT_CONDUCTED";
 export type WhlConclusion = "ACCEPTABLE" | "NOT_ACCEPTABLE" | "SUSPECT_COUNTERFEIT";
 // where a test requirement came from: parsed off the PO, or hand-added by an operator
-export type TestSource = "AUTO_PO" | "MANUAL";
+export type TestSource = "AUTO_BOOKING" | "MANUAL";
 export type AutofillState = "PENDING" | "OK" | "FAILED";
 export type LabEmailDirection = "OUT" | "IN";
 export type LabEmailStatus = "AWAITING_RESPONSE" | "UPDATE_RECEIVED" | "REPORT_DELIVERED" | "ESCALATED" | "SENT";
@@ -295,6 +297,54 @@ export interface WhlReport {
 }
 
 /** One message in the WHL correspondence thread for a lot. */
+/**
+ * A **test slot** booked with the lab: what we asked for, the mail that asked, and the lab's
+ * confirmation.
+ *
+ * Nothing about a lot exists until a slot is confirmed. The desk fills in what it wants tested,
+ * mails the lab, and waits — `REQUESTED` is a real blocking state, because acting on lots that
+ * the lab has not agreed to test is how a tracker starts lying. The confirmation is what creates
+ * the lots and their test plans.
+ *
+ * A **re-test** is another slot pointing back at the one that failed (`retestOf*`). Its lots start
+ * at `COMPONENTS_RECEIVED`, not `TEST_BOOKED`: the parts are already sitting at the lab, so the
+ * dispatch and receipt stages happened the first time round and re-running them would be a lie.
+ */
+export type TestSlotStatus = "REQUESTED" | "CONFIRMED" | "DECLINED";
+
+export interface TestSlotLine {
+  mpn: string;
+  qty: number;
+  sampleQty: number;
+  dateCode: string;
+  tests: { name: string; standard?: string }[];
+  /** per-MPN preferred start, when one part has to go on the bench before another. Falls back to
+   *  the slot's own `preferredDate`, which is the default for every line. */
+  preferredDate?: string;
+}
+
+export interface TestSlot {
+  id: string;
+  slotNo: string;              // our own reference, quoted in the mail
+  lab: string;
+  status: TestSlotStatus;
+  preferredDate?: string;
+  lines: TestSlotLine[];
+  note?: string;
+  requestedAt: string;
+  requestedBy: string;
+  requestEmailId?: string;     // the outbound booking request on the WHL thread
+  /** set by the lab's confirmation */
+  confirmedAt?: string;
+  appointmentNo?: string;
+  confirmEmailId?: string;
+  createdLotIds?: string[];
+  /** a re-test points back at the slot whose result it is re-running */
+  retestOfSlotId?: string;
+  retestOfSlotNo?: string;
+  retestReason?: string;
+}
+
 export interface LabEmail {
   id: string;
   direction: LabEmailDirection;
@@ -308,7 +358,8 @@ export interface LabEmail {
   at: string;
   by: string;                 // sender ("You (demo)" / "WHL Reports")
   status: LabEmailStatus;
-  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE" | "DISPATCH" | "PAYMENT";
+  kind: "REQUEST_UPDATE" | "CUSTOM" | "STATUS_UPDATE" | "REPORT" | "ESCALATION" | "INVOICE" | "DISPATCH" | "PAYMENT"
+    | "BOOKING_REQUEST" | "BOOKING_CONFIRMED";
   attachments?: string[];
   matchedBy?: string;         // set when an operator resolved it out of the manual-match queue
   matchNote?: string;         // why auto-matching failed
@@ -433,6 +484,20 @@ export interface Lot {
   dispatch?: LotDispatch;     // supplier → WHL leg, recorded when the supplier tells us
   labPayment?: LabPayment;    // WHL's testing invoice and its settlement
   notifications?: LotNotification[]; // result circulated to supplier / buyer / escrow / WHL / finance
+  /**
+   * Handed to the logistics desk once its report is shared — the testing desk's way of saying
+   * "done with this, move the goods". Deliberately just a stamp: it books nothing and moves no
+   * stage, it puts the test lot on the Logistics board's queue so that desk can act on it.
+   */
+  /** which booking this lot came from, and — if it is a re-test — which slot it re-tests */
+  testSlotId?: string;
+  testSlotNo?: string;
+  retestOfSlotNo?: string;
+  /** WHL has sent the samples back to the seller — the stage before the freight hand-off. */
+  returnedToSellerAt?: string;
+  returnedToSellerBy?: string;
+  logisticsAssignedAt?: string;
+  logisticsAssignedBy?: string;
 }
 
 export interface JourneyStep {
@@ -850,6 +915,7 @@ export interface OrderBundle extends Order {
   lots: Lot[];
   mpnTests?: MpnTestSpec[];   // PO-parsed test requirements per MPN on this order
   labEmails?: LabEmail[];     // full WHL correspondence (incl. unmatched inbound)
+  testSlots?: TestSlot[];     // booking requests to the lab and their confirmations
   escrow?: Escrow;
   payments: Payment[];
   shipments: Shipment[];

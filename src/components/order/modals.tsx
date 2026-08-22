@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Upload } from "lucide-react";
+import { Upload, Wand2, Mail, Plus, Trash2 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
 import { Button, Pill } from "@/components/ui/primitives";
@@ -16,11 +16,10 @@ import { computeDuty } from "@/lib/fx";
 import { money, fmtAddress, cn } from "@/lib/utils";
 import {
   WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, notifyTemplate, notifyDigest, LAB_TERMS_LABEL, CURRENCIES,
-  WHL_TEST_FEE_PER_PROCESS, WHL_INVOICE_TAX_PCT, WHL_CREDIT_DAYS, type WhlMailCtx, type NotifyCtx,
+  WHL_PROCESSES, TEST_STANDARDS, type WhlMailCtx, type NotifyCtx,
 } from "@/data/enums";
 import type {
   PaymentDirection, PaymentMode, ShipmentLeg, JourneyPhase, TradeType, TestingMode, LabEmail, NotifyParty, OrderBundle,
-  LabPaymentTerms,
 } from "@/types";
 
 const PHASES: JourneyPhase[] = ["KICKOFF", "PAYMENT", "TESTING", "EXPORT", "IMPORT", "CUSTOMS", "RELABEL", "DELIVERY", "CLOSE"];
@@ -51,28 +50,412 @@ export function AddStepModal({ orderId, onClose }: { orderId: string; onClose: (
   );
 }
 
+/**
+ * Book a test slot with the lab — the step before any lot exists.
+ *
+ * The desk says what it wants tested (per MPN: lot qty, the sample the lab should pull, the date
+ * code and the test plan), and the only thing this modal *does* is **mail the lab**. No lot, no
+ * work order, no tracker: those arrive with the lab's confirmation, which is the point the desk
+ * is allowed to act. The form is deliberately the same shape as the appointment it is asking for,
+ * so the confirmation can be checked against what was requested.
+ *
+ * `retestOf` turns it into a re-test request: the mail cites the failed slot, and the lots the
+ * confirmation creates skip straight to `COMPONENTS_RECEIVED` because the parts never left.
+ */
+export function BookTestSlotModal({
+  orderId, retestOfSlotId, onlyMpn, onClose,
+}: { orderId: string; retestOfSlotId?: string; onlyMpn?: string; onClose: () => void }) {
+  const b = useStore((s) => s.orders[orderId]);
+  const requestTestSlot = useStore((s) => s.requestTestSlot);
+  const prior = (b?.testSlots ?? []).find((x) => x.id === retestOfSlotId);
+
+  const testable = (b?.lines ?? []).filter((l) => l.testingMode !== "NONE");
+  // the lab pulls a sample, not the lot: ~5% clamped into a sane bench range
+  const sampleFor = (qty: number) => Math.max(5, Math.min(50, Math.round(qty * 0.05)));
+  const blank = (mpn: string) => {
+    const line = testable.find((l) => l.mpn === mpn);
+    const qty = line?.quantity ?? 0;
+    return { key: `r${Math.round(qty)}-${mpn}-${testable.length}`, mpn, qty, sampleQty: sampleFor(qty), dateCode: "", preferredDate: "", tests: [] as { name: string; standard?: string }[] };
+  };
+  /**
+   * One row per MPN the operator **chooses**, not one per testable line.
+   *
+   * The form used to open with a block for every testable line and a tick to exclude the ones you
+   * did not want — which is backwards: a booking is usually for one part, occasionally two, and
+   * unticking five blocks to book one is work. It opens with a single row and an `+ Add MPN` button
+   * instead. Duplicate MPNs are allowed on purpose: splitting one line across two date codes is two
+   * lots at the lab, not a mistake.
+   *
+   * A re-test still seeds from the failed submission — re-screening a lot that passed is paid work
+   * nobody asked for, so only the MPNs whose verdict came back FAIL are pre-filled.
+   */
+  const failedMpns = new Set(
+    (b?.lots ?? []).filter((l) => l.testSlotId === prior?.id && l.testStatus === "FAIL").map((l) => l.orderLineMpn),
+  );
+  const seed = prior
+    ? prior.lines
+        .filter((l) => failedMpns.size === 0 || failedMpns.has(l.mpn))
+        .map((l, i) => ({ key: `rt${i}`, preferredDate: "", ...l }))
+    // `onlyMpn` = booked from that MPN's own row, so open on it. The picker still lists every
+    // testable line and `+ Add MPN` still works — pre-selection is the shortcut, not a lock.
+    : [blank(onlyMpn && testable.some((l) => l.mpn === onlyMpn) ? onlyMpn : testable[0]?.mpn ?? "")];
+
+  const [lab, setLab] = useState(prior?.lab ?? b?.lots[0]?.lab ?? "WHL Shenzhen");
+  const [preferredDate, setPreferredDate] = useState("");
+  const [note, setNote] = useState("");
+  const [retestReason, setRetestReason] = useState(prior ? "Result not acceptable — re-screen required." : "");
+  const [rows, setRows] = useState(seed);
+  // no outbound mail leaves this app unseen: "details" collects it, "draft" shows exactly what
+  // will be sent, and it stays editable right up to the send
+  const [step, setStep] = useState<"details" | "draft">("details");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const draftTestSlotMail = useStore((s) => s.draftTestSlotMail);
+  if (!b) return null;
+
+  const patch = (i: number, d: Partial<(typeof rows)[number]>) =>
+    setRows((p) => p.map((r, j) => (j === i ? { ...r, ...d } : r)));
+  // picking a different MPN re-seeds its quantities off that order line, since the old ones
+  // belonged to the part that was there before
+  const pickMpn = (i: number, mpn: string) => setRows((p) => p.map((r, j) => {
+    if (j !== i) return r;
+    const qty = testable.find((l) => l.mpn === mpn)?.quantity ?? r.qty;
+    return { ...r, mpn, qty, sampleQty: sampleFor(qty) };
+  }));
+  const addRow = () => setRows((p) => [...p, { ...blank(testable[0]?.mpn ?? ""), key: `r${Date.now()}` }]);
+  const removeRow = (i: number) => setRows((p) => p.filter((_, j) => j !== i));
+  const toggleTest = (i: number, name: string) =>
+    setRows((p) => p.map((r, j) => {
+      if (j !== i) return r;
+      const has = r.tests.some((t) => t.name === name);
+      // no standard on a booking request — the lab states the standard it screens to on its
+      // confirmation, so asking an operator to pick one here was asking them to guess
+      return { ...r, tests: has ? r.tests.filter((t) => t.name !== name) : [...r.tests, { name }] };
+    }));
+
+  const chosen = rows.filter((r) => !!r.mpn);
+  const ok = chosen.length > 0 && chosen.every((r) => r.qty > 0 && r.sampleQty > 0);
+
+  const payload = () => ({
+    lab: lab.trim() || "WHL Shenzhen",
+    preferredDate: preferredDate || undefined,
+    note: note.trim() || undefined,
+    retestOfSlotId: prior?.id,
+    retestReason: prior ? (retestReason.trim() || undefined) : undefined,
+    lines: chosen.map(({ mpn, qty, sampleQty, dateCode, tests, preferredDate: rowDate }) => ({
+      mpn, qty, sampleQty, dateCode, tests, preferredDate: rowDate || undefined,
+    })),
+  });
+
+  const review = () => {
+    if (!ok) return;
+    const d = draftTestSlotMail(orderId, payload());
+    setSubject(d.subject);
+    setBody(d.body);
+    setStep("draft");
+  };
+
+  const send = () => {
+    if (!subject.trim() || !body.trim()) return;
+    requestTestSlot(orderId, { ...payload(), subject, body });
+    onClose();
+  };
+
+  return (
+    <Dialog open onClose={onClose}
+      title={prior ? `Book a re-test — against ${prior.slotNo}`
+        : onlyMpn ? `Book a test slot — ${onlyMpn}`
+        : "Book a test slot with the lab"}
+      footer={step === "details"
+        ? <><Button variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button onClick={review} disabled={!ok}><Mail className="h-4 w-4" /> Review the mail</Button></>
+        : <><Button variant="ghost" onClick={() => setStep("details")}>← Back to details</Button>
+            <Button onClick={send} disabled={!subject.trim() || !body.trim()}><Mail className="h-4 w-4" /> Send to {lab.split(" ")[0]}</Button></>}>
+      {step === "draft" ? (
+        <div className="space-y-3">
+          <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
+            This is the mail that will go to <b className="text-foreground">{lab}</b> — edit anything before
+            sending. Nothing has left yet, and the slot is only created once it does. It lands on the
+            order&apos;s WHL thread under <b className="text-foreground">Communication</b>, and the lab&apos;s reply
+            comes back the same way.
+          </div>
+          <Labeled label="Subject"><Input value={subject} onChange={(e) => setSubject(e.target.value)} /></Labeled>
+          <Labeled label="Message" hint={`${chosen.length} MPN(s) · ${chosen.reduce((a, r) => a + r.tests.length, 0)} test(s) quoted`}>
+            <Textarea rows={18} className="font-mono text-[11px]" value={body} onChange={(e) => setBody(e.target.value)} />
+          </Labeled>
+        </div>
+      ) : (
+      <div className="space-y-3">
+        <div className={cn("rounded-lg p-2.5 text-xs", prior ? "bg-warn-bg text-warn" : "bg-muted text-muted-foreground")}>
+          {prior ? (
+            <>
+              Re-testing against <b>{prior.slotNo}</b>{prior.appointmentNo ? ` (${prior.appointmentNo})` : ""}. The
+              components are already at {prior.lab}, so the lots this creates start at{" "}
+              <b>Components Received by WHL</b> — no dispatch is claimed that never happened.
+            </>
+          ) : (
+            <>
+              This <b className="text-foreground">only sends the request</b>. No lot, work order or tracker
+              exists until {lab} confirms — check the mailbox on the testing screen to bring the
+              confirmation in, and it creates the lots and their test plans.
+            </>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Labeled label="Lab"><Input value={lab} onChange={(e) => setLab(e.target.value)} /></Labeled>
+          <Labeled label="Preferred start" hint="the default for every MPN below">
+            <Input type="date" value={preferredDate} onChange={(e) => setPreferredDate(e.target.value)} />
+          </Labeled>
+        </div>
+        {prior && (
+          <Labeled label="Why it is being re-tested" hint="quoted in the mail">
+            <Input value={retestReason} onChange={(e) => setRetestReason(e.target.value)} />
+          </Labeled>
+        )}
+
+        {testable.length === 0 ? (
+          <p className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+            No line on this order needs incoming testing.
+          </p>
+        ) : (
+          <>
+            {rows.map((r, i) => (
+              <div key={r.key} className="rounded-lg border p-3">
+                {/* the MPN picker keeps a fixed width so the meta controls stay on its line
+                    instead of wrapping under it */}
+                <div className="mb-2 flex flex-wrap items-end gap-x-3 gap-y-1">
+                  <div className="w-[17rem] shrink-0">
+                    <Labeled label={`MPN ${rows.length > 1 ? `#${i + 1}` : ""}`}>
+                      <Select value={r.mpn} onChange={(e) => pickMpn(i, e.target.value)}>
+                        {testable.map((l) => (
+                          <option key={l.id} value={l.mpn}>{l.mpn} — {l.make} · order qty {l.quantity}</option>
+                        ))}
+                      </Select>
+                    </Labeled>
+                  </div>
+                  {/* one group, so a narrow dialog moves all three together instead of orphaning
+                      "remove" on its own line */}
+                  <span className="ml-auto flex items-center gap-3 whitespace-nowrap pb-2 text-[11px]">
+                    <span className="text-faint">{r.tests.length} test(s) selected</span>
+                    <button type="button" className="font-medium text-primary hover:underline"
+                      onClick={() => patch(i, { tests: r.tests.length === WHL_PROCESSES.length ? [] : WHL_PROCESSES.map((n) => ({ name: n })) })}>
+                      {r.tests.length === WHL_PROCESSES.length ? "clear tests" : "select all tests"}
+                    </button>
+                    {/* always available, including on the last row: deleting it leaves an empty
+                        booking, which is recoverable (Add MPN) and better than a control that
+                        appears and disappears depending on how many rows there happen to be */}
+                    <button type="button" onClick={() => removeRow(i)}
+                      className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium text-muted-foreground transition hover:border-bad hover:text-bad"
+                      title="Delete this MPN from the booking">
+                      <Trash2 className="h-3 w-3" /> Delete
+                    </button>
+                  </span>
+                </div>
+                {/* 2×2, not four across: the dialog is ~500px and a four-column row squeezed
+                    "Preferred start" onto two label lines with a stub of an input under it */}
+                <div className="grid grid-cols-2 gap-3">
+                  <Labeled label="Lot qty"><Input type="number" value={r.qty} onChange={(e) => patch(i, { qty: +e.target.value })} /></Labeled>
+                  <Labeled label="Sample qty" hint="what the lab pulls"><Input type="number" value={r.sampleQty} onChange={(e) => patch(i, { sampleQty: +e.target.value })} /></Labeled>
+                  <Labeled label="Date code"><Input value={r.dateCode} onChange={(e) => patch(i, { dateCode: e.target.value })} placeholder="2410" /></Labeled>
+                  {/* only quoted to the lab when it differs from the slot-level default above —
+                      one part having to go on the bench before another is a real request, but
+                      repeating the same date under every MPN is noise */}
+                  <Labeled label="Preferred start" hint={preferredDate ? "overrides the default" : "optional"}>
+                    <Input type="date" value={r.preferredDate ?? ""} onChange={(e) => patch(i, { preferredDate: e.target.value })} />
+                  </Labeled>
+                </div>
+                <div className="mt-2 grid gap-1 rounded-lg border p-2 sm:grid-cols-2">
+                  {WHL_PROCESSES.map((name) => (
+                    <label key={name} className="flex items-start gap-2 text-xs">
+                      <input type="checkbox" className="mt-0.5" checked={r.tests.some((t) => t.name === name)} onChange={() => toggleTest(i, name)} />
+                      <span>{name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {rows.length === 0 && (
+              <p className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
+                No MPN on this booking — add one to send the request.
+              </p>
+            )}
+            <Button variant="outline" onClick={addRow} title="Add another MPN to this booking — same fields and test plan">
+              <Plus className="h-4 w-4" /> Add MPN
+            </Button>
+          </>
+        )}
+
+        <Labeled label="Note to the lab" hint="anything else the booking needs">
+          <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
+        </Labeled>
+        <p className="text-xs text-faint">
+          Leaving a test plan empty asks the lab for its standard screen — the confirmation states what it will run.
+        </p>
+      </div>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * Raise a test lot, two ways.
+ *
+ * A lot exists because the lab agreed to test it, and that agreement arrives as a **booking
+ * appointment** — which names the lots, their samples, the work orders and the test plan. So the
+ * normal path is to upload that document and let it write everything. But an operator who has
+ * booked over the phone, or is setting up before the paperwork lands, still needs to raise a lot
+ * and say what is being run: hence the manual form, which asks for the test plan too (the
+ * per-MPN requirements surface is parked — see CONTEXT §9.2 — so this form is where a hand-typed
+ * plan gets in).
+ *
+ * The appointment path here is the **only order-wide** call to `uploadBookingAppointment`: it is
+ * the one that *creates* lots. Everywhere else the action is lot-scoped (§9.3).
+ */
 export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
   const b = useStore((s) => s.orders[orderId]);
   const addLot = useStore((s) => s.addLot);
+  const uploadBookingAppointment = useStore((s) => s.uploadBookingAppointment);
+
+  const [mode, setMode] = useState<"manual" | "appointment">("appointment");
   const [mpn, setMpn] = useState(b?.lines[0]?.mpn ?? "");
   const [lotCode, setLotCode] = useState("");
   const [dateCode, setDateCode] = useState("");
   const [qty, setQty] = useState(0);
   const [sampleQty, setSampleQty] = useState(0);
+  const [lab, setLab] = useState("WHL Shenzhen");
+  const [standard, setStandard] = useState<string>("AS6081");
+  const [tests, setTests] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
   if (!b) return null;
-  const save = () => { if (!mpn || !lotCode.trim()) return; addLot(orderId, { orderLineMpn: mpn, lotCode, dateCode, qty, sampleQty, lab: "WHL Shenzhen" }); onClose(); };
+
+  const toggleTest = (name: string) => setTests((p) => (p.includes(name) ? p.filter((x) => x !== name) : [...p, name]));
+
+  const save = () => {
+    if (!mpn || !lotCode.trim()) return;
+    addLot(orderId, {
+      orderLineMpn: mpn, lotCode: lotCode.trim(), dateCode, qty, sampleQty,
+      lab: lab.trim() || "WHL Shenzhen",
+      tests: tests.map((name) => ({ name, standard: standard || undefined })),
+    });
+    onClose();
+  };
+
+  const readAppointment = async (file: { name: string; size: number } | null) => {
+    setBusy(true);
+    await uploadBookingAppointment(orderId, file);   // order-wide: this is what creates the lots
+    setBusy(false);
+    onClose();
+  };
+
   return (
-    <Dialog open onClose={onClose} title="Add test lot" footer={<Footer onClose={onClose} onSave={save} saveLabel="Add lot" disabled={!lotCode.trim()} />}>
+    <Dialog open onClose={onClose} title="Add test lot"
+      footer={mode === "manual"
+        ? <Footer onClose={onClose} onSave={save} saveLabel="Add test lot" disabled={!lotCode.trim() || !mpn} />
+        : <Button variant="ghost" onClick={onClose}>Cancel</Button>}>
       <div className="space-y-3">
-        <Labeled label="MPN"><Select value={mpn} onChange={(e) => setMpn(e.target.value)}>{b.lines.map((l) => <option key={l.id} value={l.mpn}>{l.mpn}</option>)}</Select></Labeled>
-        <div className="grid grid-cols-2 gap-3">
-          <Labeled label="Lot code"><Input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="LOT-C" /></Labeled>
-          <Labeled label="Date code"><Input value={dateCode} onChange={(e) => setDateCode(e.target.value)} placeholder="2410" /></Labeled>
+        {/* two ways in, same as the app's other segmented controls */}
+        <div className="inline-flex items-center gap-1 rounded-lg border bg-background p-0.5">
+          {([
+            ["appointment", "From booking appointment"],
+            ["manual", "Enter details by hand"],
+          ] as const).map(([m, label]) => (
+            <button key={m} type="button" onClick={() => setMode(m)} aria-current={mode === m ? "true" : undefined}
+              className={cn("rounded-md px-3 py-1.5 text-sm font-medium transition",
+                mode === m ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
+              {label}
+            </button>
+          ))}
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Labeled label="Lot qty"><Input type="number" value={qty} onChange={(e) => setQty(+e.target.value)} /></Labeled>
-          <Labeled label="Sample qty"><Input type="number" value={sampleQty} onChange={(e) => setSampleQty(+e.target.value)} /></Labeled>
-        </div>
+
+        {mode === "appointment" ? (
+          <>
+            <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
+              The lab&apos;s booking appointment is the document that starts testing: it names{" "}
+              <b className="text-foreground">which lots</b> go in, the{" "}
+              <b className="text-foreground">sample</b> pulled from each, the date codes, the{" "}
+              <b className="text-foreground">work order</b> it will bill against, the quoted TAT and the{" "}
+              <b className="text-foreground">test plan</b>. Reading it creates the lots and fills their
+              trackers in one step — nothing below needs typing.
+              <p className="mt-1">A lot that already exists is topped up, never overwritten.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="add-lot-appointment"
+                className={cn("inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition",
+                  busy ? "pointer-events-none opacity-50" : "cursor-pointer bg-primary text-primary-foreground hover:brightness-110")}>
+                <Upload className="h-4 w-4" /> Choose appointment PDF
+              </label>
+              <input id="add-lot-appointment" type="file" accept="application/pdf,.pdf" className="hidden"
+                disabled={busy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void readAppointment({ name: f.name, size: f.size });
+                }} />
+              <Button variant="outline" disabled={busy} onClick={() => void readAppointment(null)}
+                title="Fill from a sample booking appointment (demo data — the real lab feed replaces this)">
+                <Wand2 className="h-4 w-4" /> Use a sample appointment
+              </Button>
+              {busy && <span className="text-xs text-muted-foreground">reading…</span>}
+            </div>
+            <p className="text-xs text-faint">
+              No appointment yet? Switch to <b className="text-muted-foreground">Enter details by hand</b>.
+            </p>
+          </>
+        ) : (
+          <>
+            <Labeled label="MPN">
+              <Select value={mpn} onChange={(e) => setMpn(e.target.value)}>
+                {b.lines.map((l) => <option key={l.id} value={l.mpn}>{l.mpn}</option>)}
+              </Select>
+            </Labeled>
+            <div className="grid grid-cols-2 gap-3">
+              <Labeled label="Lot code *"><Input value={lotCode} onChange={(e) => setLotCode(e.target.value)} placeholder="LOT-C" /></Labeled>
+              <Labeled label="Date code"><Input value={dateCode} onChange={(e) => setDateCode(e.target.value)} placeholder="2410" /></Labeled>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Labeled label="Lot qty"><Input type="number" value={qty} onChange={(e) => setQty(+e.target.value)} /></Labeled>
+              <Labeled label="Sample qty" hint="what the lab pulls off the lot"><Input type="number" value={sampleQty} onChange={(e) => setSampleQty(+e.target.value)} /></Labeled>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Labeled label="Lab"><Input value={lab} onChange={(e) => setLab(e.target.value)} placeholder="WHL Shenzhen" /></Labeled>
+              <Labeled label="Standard" hint="applied to every test ticked below">
+                <Select value={standard} onChange={(e) => setStandard(e.target.value)}>
+                  <option value="">—</option>
+                  {TEST_STANDARDS.map((t) => <option key={t}>{t}</option>)}
+                </Select>
+              </Labeled>
+            </div>
+
+            <div>
+              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Test plan — what the lab is running
+                </span>
+                <span className="text-[11px] text-faint">
+                  {tests.length} selected ·{" "}
+                  <button type="button" className="font-medium text-primary hover:underline"
+                    onClick={() => setTests(tests.length === WHL_PROCESSES.length ? [] : [...WHL_PROCESSES])}>
+                    {tests.length === WHL_PROCESSES.length ? "clear" : "select all"}
+                  </button>
+                </span>
+              </div>
+              <div className="grid gap-1 rounded-lg border p-2 sm:grid-cols-2">
+                {WHL_PROCESSES.map((name) => (
+                  <label key={name} className="flex items-start gap-2 text-xs">
+                    <input type="checkbox" className="mt-0.5" checked={tests.includes(name)} onChange={() => toggleTest(name)} />
+                    <span>{name}</span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-faint">
+                Ticked tests are written onto this lot <b className="text-muted-foreground">and</b>{" "}
+                onto the MPN&apos;s
+                requirement list, flagged manual and logged. Leave all unticked to inherit whatever the MPN already carries.
+              </p>
+            </div>
+          </>
+        )}
       </div>
     </Dialog>
   );
@@ -159,130 +542,6 @@ export function RecordDispatchModal({
  * reading for whoever pays it, and the saved invoice is flagged `entered by hand` everywhere it
  * shows so nobody mistakes it for the mail.
  */
-export function UploadLabInvoiceModal({
-  orderId, lotId, onClose,
-}: { orderId: string; lotId: string; onClose: () => void }) {
-  const b = useStore((s) => s.orders[orderId]);
-  const lot = b?.lots.find((l) => l.id === lotId);
-  const upload = useStore((s) => s.uploadLabInvoiceManually);
-  const existing = lot?.labPayment?.invoice;
-
-  const defaultProcesses = existing?.processCount ?? (lot?.tests?.length || 4);
-  const [invoiceNo, setInvoiceNo] = useState(existing?.invoiceNo ?? "");
-  const [currency, setCurrency] = useState(existing?.currency ?? "USD");
-  const [processCount, setProcessCount] = useState(String(defaultProcesses));
-  const [ratePerProcess, setRatePerProcess] = useState(String(existing?.ratePerProcess ?? WHL_TEST_FEE_PER_PROCESS));
-  const [amount, setAmount] = useState(String(existing?.amount ?? defaultProcesses * WHL_TEST_FEE_PER_PROCESS));
-  const [taxAmount, setTaxAmount] = useState(String(existing?.taxAmount ?? Math.round(defaultProcesses * WHL_TEST_FEE_PER_PROCESS * WHL_INVOICE_TAX_PCT)));
-  const [terms, setTerms] = useState<LabPaymentTerms>(existing?.terms ?? "CREDIT");
-  const [creditDays, setCreditDays] = useState(String(existing?.creditDays ?? WHL_CREDIT_DAYS));
-  const [dueDate, setDueDate] = useState(existing?.dueDate ?? "");
-  const [fileName, setFileName] = useState(existing?.fileName ?? "");
-  const [receivedVia, setReceivedVia] = useState(existing?.receivedVia ?? "");
-  const [note, setNote] = useState("");
-
-  if (!lot) return null;
-  const net = Number(amount) || 0;
-  const tax = Number(taxAmount) || 0;
-  const ok = invoiceNo.trim().length > 0 && net > 0;
-
-  // keep the priced-test-list arithmetic honest as the operator edits processes × rate
-  const reprice = (pc: string, rate: string) => {
-    const n = (Number(pc) || 0) * (Number(rate) || 0);
-    if (n > 0) { setAmount(String(n)); setTaxAmount(String(Math.round(n * WHL_INVOICE_TAX_PCT))); }
-  };
-
-  const save = () => {
-    upload(orderId, lotId, {
-      invoiceNo, currency, amount: net, taxAmount: tax || undefined, terms,
-      creditDays: Number(creditDays) || undefined, dueDate: dueDate || undefined,
-      processCount: Number(processCount) || undefined, ratePerProcess: Number(ratePerProcess) || undefined,
-      fileName: fileName.trim() || undefined, receivedVia, note,
-    });
-    onClose();
-  };
-
-  return (
-    <Dialog open onClose={onClose} title={existing ? "Replace WHL testing invoice" : "Upload WHL testing invoice"}
-      footer={<Footer onClose={onClose} onSave={save} saveLabel={existing ? "Replace invoice" : "Save invoice"} disabled={!ok} />}>
-      <div className="space-y-3">
-        <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
-          <b className="text-foreground">{lot.lotCode}</b> · <span className="font-mono">{lot.orderLineMpn}</span>
-          {lot.workOrderNo ? <> · WO {lot.workOrderNo}</> : null} · {lot.lab ?? "WHL"}
-          <p className="mt-1">
-            Use this when the lab&apos;s invoice mail never arrived or the bill came another way. You&apos;re
-            copying <b className="text-foreground">WHL&apos;s</b> document — the terms below are whatever it states,
-            not a choice we make. It saves flagged <b className="text-foreground">entered by hand</b>, and the
-            file is added to the order&apos;s documents.
-          </p>
-          {existing && (
-            <p className="mt-1 text-warn">
-              {existing.invoiceNo} is already on file{existing.source === "MANUAL" ? " (also entered by hand)" : " (from the lab's mail)"} — saving replaces it.
-            </p>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <Labeled label="Invoice number *" hint="exactly as the lab wrote it">
-            <Input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="WHL-INV-352146" />
-          </Labeled>
-          <Labeled label="How it reached us" hint="mail that never parsed, WhatsApp, a call, the portal…">
-            <Input value={receivedVia} onChange={(e) => setReceivedVia(e.target.value)} placeholder="WhatsApp from WHL accounts" />
-          </Labeled>
-          <Labeled label="Processes billed" hint="the invoice is the test list priced">
-            <Input value={processCount} inputMode="numeric"
-              onChange={(e) => { setProcessCount(e.target.value); reprice(e.target.value, ratePerProcess); }} />
-          </Labeled>
-          <Labeled label="Rate per process">
-            <Input value={ratePerProcess} inputMode="numeric"
-              onChange={(e) => { setRatePerProcess(e.target.value); reprice(processCount, e.target.value); }} />
-          </Labeled>
-          <Labeled label="Net amount *">
-            <Input value={amount} inputMode="decimal" onChange={(e) => setAmount(e.target.value)} />
-          </Labeled>
-          <Labeled label="Tax">
-            <Input value={taxAmount} inputMode="decimal" onChange={(e) => setTaxAmount(e.target.value)} />
-          </Labeled>
-          <Labeled label="Currency">
-            <Select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              {CURRENCIES.map((c) => <option key={c}>{c}</option>)}
-            </Select>
-          </Labeled>
-          <Labeled label="Terms *" hint="read off the invoice — advance holds the lot, credit doesn't">
-            <Select value={terms} onChange={(e) => setTerms(e.target.value as LabPaymentTerms)}>
-              <option value="CREDIT">{LAB_TERMS_LABEL.CREDIT}</option>
-              <option value="ADVANCE">{LAB_TERMS_LABEL.ADVANCE}</option>
-            </Select>
-          </Labeled>
-          {terms === "CREDIT" && (
-            <Labeled label="Credit days">
-              <Input value={creditDays} inputMode="numeric" onChange={(e) => setCreditDays(e.target.value)} />
-            </Labeled>
-          )}
-          <Labeled label="Due date">
-            <Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-          </Labeled>
-          <Labeled label="File name" hint="filed in the order's documents; defaults to the invoice no">
-            <Input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="WHL-INV-352146.pdf" />
-          </Labeled>
-        </div>
-
-        <Labeled label="Note" hint="anything the payer needs — e.g. bank details differ from the usual">
-          <Textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} />
-        </Labeled>
-
-        <p className="text-xs text-muted-foreground">
-          Payable: <b className="text-foreground">{currency} {(net + tax).toLocaleString()}</b>
-          {net > 0 && Number(processCount) > 0 && Number(ratePerProcess) > 0 && Number(processCount) * Number(ratePerProcess) !== net
-            ? <span className="text-warn"> — doesn&apos;t match {processCount} × {ratePerProcess}; check the invoice.</span>
-            : null}
-          {" "}The fee becomes payable on {terms === "ADVANCE" ? "advance terms, so the lot stays held until it clears" : "credit terms, so nothing is blocked"}.
-        </p>
-      </div>
-    </Dialog>
-  );
-}
-
 export function MarkLabFeePaidModal({
   orderId, lotId, onClose,
 }: { orderId: string; lotId: string; onClose: () => void }) {
@@ -577,7 +836,7 @@ export function BulkNotifyModal({
   };
 
   return (
-    <Dialog open onClose={onClose} title={`${tpl.label} — ${lots.length} lot(s)`}
+    <Dialog open onClose={onClose} title={`${tpl.label} — ${lots.length} test lot(s)`}
       footer={<Footer onClose={onClose} onSave={send} saveLabel={`Send ${groups.length} mail${groups.length > 1 ? "s" : ""}`} disabled={!curTo.trim() || !curSubject.trim()} />}>
       <div className="space-y-3">
         <div className="rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">
@@ -588,8 +847,8 @@ export function BulkNotifyModal({
         {(isFinance ? noInvoice : noReport).length > 0 && (
           <p className="rounded-lg border border-[color-mix(in_srgb,var(--warn)_40%,transparent)] bg-warn-bg px-2.5 py-2 text-xs text-warn">
             {isFinance
-              ? <>{noInvoice.length} selected lot(s) have no WHL invoice yet ({noInvoice.map((l) => l.lotCode).join(", ")}) — they are excluded from this payment run. {withInvoice.length} of {lots.length} carry an invoice.</>
-              : <>{noReport.length} selected lot(s) have no report yet ({noReport.map((l) => l.lotCode).join(", ")}) — they are listed as “result pending”. {withReport.length} of {lots.length} carry a report.</>}
+              ? <>{noInvoice.length} selected test lot(s) have no WHL invoice yet ({noInvoice.map((l) => l.lotCode).join(", ")}) — they are excluded from this payment run. {withInvoice.length} of {lots.length} carry an invoice.</>
+              : <>{noReport.length} selected test lot(s) have no report yet ({noReport.map((l) => l.lotCode).join(", ")}) — they are listed as “result pending”. {withReport.length} of {lots.length} carry a report.</>}
           </p>
         )}
 
@@ -598,7 +857,7 @@ export function BulkNotifyModal({
             {groups.map((g, i) => (
               <button key={g.key} type="button" onClick={() => setActive(i)}
                 className={`rounded-md border px-2.5 py-1 text-xs font-medium ${i === (active < groups.length ? active : 0) ? "border-primary bg-accent-soft text-primary" : "hover:border-primary"}`}>
-                {g.key} · {g.lots.length} lot(s)
+                {g.key} · {g.lots.length} test lot(s)
               </button>
             ))}
           </div>

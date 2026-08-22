@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  ClipboardList, Truck, PackageCheck, FlaskConical, Activity, BadgeCheck, FileText,
+  CalendarCheck, Truck, PackageCheck, FlaskConical, Activity, BadgeCheck, FileText, Undo2,
   Check, CircleDot, RefreshCw, Hourglass, Receipt, Mail, Download, Landmark, Lock, Upload,
 } from "lucide-react";
 import type { Lot, TestingStage } from "@/types";
@@ -19,13 +19,15 @@ import { cn } from "@/lib/utils";
 // that actually gets asked while a lot is sitting at the lab.
 
 const STAGE_ICON: Record<TestingStage, React.ComponentType<{ className?: string }>> = {
-  TEST_REQUESTED: ClipboardList,
+  TEST_BOOKED: CalendarCheck,
   WHL_PAYMENT: Receipt,
   SUPPLIER_DISPATCHING: Truck,
   COMPONENTS_RECEIVED: PackageCheck,
   TESTING_IN_PROGRESS: Activity,
   TESTING_COMPLETED: BadgeCheck,
   REPORT_SHARED: FileText,
+  RETURNED_TO_SELLER: Undo2,
+  ASSIGNED_TO_LOGISTICS: Truck,
 };
 
 /** Compact one-line indicator — used on lot lists and the cross-order testing board. */
@@ -61,7 +63,7 @@ export function TestingStageBar({ lot, className }: { lot: Lot; className?: stri
  * than showing them done without a timestamp.
  */
 export function TestingStageChain({
-  orderId, lot, canEdit, readOnly, onRecordDispatch, onSendToFinance, onMarkPaid, onUploadInvoice,
+  orderId, lot, canEdit, readOnly, onRecordDispatch, onSendToFinance, onMarkPaid,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
   /** view-only rendering (the order-flow page) — no action row at all */
@@ -69,7 +71,6 @@ export function TestingStageChain({
   onRecordDispatch?: () => void;
   onSendToFinance?: () => void;
   onMarkPaid?: () => void;
-  onUploadInvoice?: () => void;
 }) {
   const syncWhlInbox = useStore((s) => s.syncWhlInbox);
   const setLotStage = useStore((s) => s.setLotStage);
@@ -206,7 +207,7 @@ export function TestingStageChain({
 
       {/* the lab's own bill — a different document from the report, on its own track */}
       <LabFeePanel orderId={orderId} lot={lot} canEdit={canEdit} readOnly={readOnly}
-        onSendToFinance={onSendToFinance} onMarkPaid={onMarkPaid} onUploadInvoice={onUploadInvoice} />
+        onSendToFinance={onSendToFinance} onMarkPaid={onMarkPaid} />
 
       {lot.dispatch && (
         <div className="mt-3 rounded-lg border bg-card-2 p-3 text-xs">
@@ -238,18 +239,19 @@ export function TestingStageChain({
  * fee is a ledger item (credit) or a stop sign (advance).
  */
 export function LabFeePanel({
-  orderId, lot, canEdit, readOnly, onSendToFinance, onMarkPaid, onUploadInvoice,
+  orderId, lot, canEdit, readOnly, onSendToFinance, onMarkPaid,
 }: {
   orderId: string; lot: Lot; canEdit: boolean;
   /** view-only: the invoice and its terms still show, the settlement controls don't */
   readOnly?: boolean;
   onSendToFinance?: () => void;
   onMarkPaid?: () => void;
-  /** enter the lab's invoice by hand — the way out when its mail never arrives */
-  onUploadInvoice?: () => void;
 }) {
   const requestWhlInvoice = useStore((s) => s.requestWhlInvoice);
   const logInvoiceAccess = useStore((s) => s.logInvoiceAccess);
+  const uploadLabInvoiceFile = useStore((s) => s.uploadLabInvoiceFile);
+  // one picker per lot — two lots open at once must not share a file input
+  const invoiceInputId = `lab-invoice-${lot.id}`;
   const pay = labPaymentOf(lot);
   const inv = pay.invoice;
   const unpaid = labFeeUnpaid(lot);
@@ -320,14 +322,30 @@ export function LabFeePanel({
             <Mail className="h-4 w-4" /> Request invoice
           </Button>
         )}
-        {/* the mail is the normal source; this is the way out when it never arrives */}
-        {!readOnly && onUploadInvoice && (
-          <Button variant={inv ? "ghost" : "outline"} disabled={!canEdit} onClick={onUploadInvoice}
-            title={canEdit
-              ? inv ? "Replace this invoice with one entered by hand" : "Enter the lab's invoice by hand — for when its mail never arrived or the bill came another way"
-              : "Only SC / Mgmt may enter an invoice"}>
-            <Upload className="h-4 w-4" /> {inv ? "Replace invoice" : "Upload invoice"}
-          </Button>
+        {/* The mail is the normal source; this is the way out when it never arrives. It is a
+            plain file picker on purpose — the operator has the lab's PDF, and that PDF is the
+            whole input. It used to open a 13-field modal asking them to re-key the lab's own
+            amount, tax, rate and terms; the fields are read off the file instead. */}
+        {!readOnly && (
+          <>
+            <label htmlFor={invoiceInputId}
+              aria-disabled={!canEdit}
+              title={canEdit
+                ? inv ? "Pick the lab's PDF to replace this invoice" : "Pick the lab's invoice PDF from your device"
+                : "Only SC / Mgmt may upload an invoice"}
+              className={cn("inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition",
+                !canEdit ? "pointer-events-none opacity-50"
+                  : inv ? "cursor-pointer hover:bg-muted" : "cursor-pointer border bg-card hover:border-primary hover:text-primary")}>
+              <Upload className="h-4 w-4" /> {inv ? "Replace invoice" : "Upload invoice"}
+            </label>
+            <input id={invoiceInputId} type="file" accept="application/pdf,.pdf" className="hidden"
+              disabled={!canEdit}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";              // so re-picking the same file fires again
+                if (f) uploadLabInvoiceFile(orderId, lot.id, { name: f.name, size: f.size });
+              }} />
+          </>
         )}
         {!readOnly && inv && (
           <Button variant="outline" onClick={() => logInvoiceAccess(orderId, lot.id, "DOWNLOAD")}

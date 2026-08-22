@@ -11,7 +11,7 @@ import type {
   DemandLinesMap, RfqBundlesMap, SupplierQuotesMap, ClientQuoteDecisionsMap, ClientQuotesMap,
 } from "@/types";
 import { ORDERS, CLIENT_POS, SUPPLIER_POS, ONEBUY_HUB, getOrderBundle, buildJourney } from "@/data/fixtures";
-import { remainingToShipLeg, remainingToAllocate, gateReason, sourcedForClientLine, mappedForOrderLine, orderSourcedForClient, deliveredForClientLine, lotStage } from "@/store/selectors";
+import { remainingToShipLeg, remainingToAllocate, gateReason, sourcedForClientLine, mappedForOrderLine, orderSourcedForClient, deliveredForClientLine, lotStage, currentReport } from "@/store/selectors";
 import type { OrdersMap } from "@/store/selectors";
 import { ESCROW_STATUS_ORDER, HKIN_EMAIL } from "@/data/enums";
 // ---- mock external-API adapters (swap for real fetch() in production) ----
@@ -24,7 +24,7 @@ import {
   whlSubmitTestJob, whlPollTestReport, mapVerdict, whlFetchReport, whlSendMail, whlPollInbox,
   conclusionToLotStatus, processToTestStatus,
 } from "@/integrations/lab-whl";
-import { extractPoTestRequirements } from "@/integrations/doc-extract";
+import { extractLabInvoice, extractBookingAppointment } from "@/integrations/doc-extract";
 import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx, LAB_TERMS_LABEL } from "@/data/enums";
 import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure } from "@/integrations/escrow-agent";
 import { bankInitiateTransfer, bankGetTransferStatus } from "@/integrations/banking";
@@ -157,6 +157,83 @@ const SUPPLIER_RELAY = "Supplier (relayed)";
  * the floor here silently swallowed those rows, so a stage the lab genuinely reported
  * never got a timestamp.
  */
+/**
+ * The booking-request mail for a test slot: subject + body + the slot reference it quotes.
+ *
+ * Split out of `requestTestSlot` so the modal can **show the draft for review before anything is
+ * sent** and still send exactly what was shown. Same rule the escrow module follows — no outbound
+ * mail leaves this app without a human seeing it first.
+ */
+/**
+ * The booking-request mail for a test slot: subject + body + the slot reference **we** keep.
+ *
+ * Split out of `requestTestSlot` so the modal can show the draft for review before anything is sent
+ * and still send exactly what was shown. Same rule the escrow module follows — no outbound mail
+ * leaves this app without a human seeing it first.
+ *
+ * `slotNo` is **ours and stays ours**: it is never quoted to the lab (2026-08-21). We do not issue
+ * the lab a booking reference — the lab issues *us* one, in its confirmation, and its appointment no
+ * plus the work orders are the references both sides then use. A re-test therefore cites the lab's
+ * own appointment and work orders, not our earlier slot number.
+ */
+function buildSlotMail(
+  b: OrderBundle,
+  input: {
+    lab: string; preferredDate?: string; note?: string;
+    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    retestOfSlotId?: string; retestReason?: string;
+  },
+) {
+  const prior = input.retestOfSlotId ? (b.testSlots ?? []).find((x) => x.id === input.retestOfSlotId) : undefined;
+  const slotNo = `TS-${b.orderNo.replace(/\D/g, "").slice(-4)}-${(b.testSlots ?? []).length + 1}`;
+
+  // what the LAB calls the earlier submission — its appointment, and the work orders it issued
+  const priorWos = prior
+    ? b.lots.filter((l) => l.testSlotId === prior.id).map((l) => l.workOrderNo).filter(Boolean)
+    : [];
+  const priorRef = prior
+    ? [prior.appointmentNo ? `appointment ${prior.appointmentNo}` : null,
+       priorWos.length ? `work order${priorWos.length === 1 ? "" : "s"} ${priorWos.join(", ")}` : null]
+      .filter(Boolean).join(", ")
+    : "";
+
+  const subject = prior
+    ? `Re-test request${priorRef ? ` — ${priorRef}` : ""} — ${input.lines.map((l) => l.mpn).join(", ")}`
+    : `Test slot request — ${input.lines.map((l) => l.mpn).join(", ")}`;
+
+  const body = [
+    `Hi ${input.lab} team,`,
+    "",
+    prior
+      ? `We would like to book a RE-TEST slot against your ${priorRef || "earlier submission for these parts"}.${input.retestReason ? ` Reason: ${input.retestReason.replace(/[.\s]+$/, "")}.` : ""} The components are already with you from that submission.`
+      : "We would like to book a testing slot for the lots below.",
+    "",
+    `Client P/O: ${b.supplierPoNo ?? b.orderNo}`,
+    input.preferredDate ? `Preferred start: ${input.preferredDate}${input.lines.some((l) => l.preferredDate) ? " (unless stated per MPN below)" : ""}` : "",
+    "",
+    // one block per MPN, tests as a numbered list — a comma-run of ten process names is
+    // unreadable on the lab's side and is exactly the part they have to work from
+    ...input.lines.flatMap((l) => [
+      `MPN ${l.mpn}`,
+      `  Lot qty: ${l.qty}`,
+      `  Sample qty: ${l.sampleQty}`,
+      ...(l.dateCode ? [`  Date code: ${l.dateCode}`] : []),
+      // a per-MPN start only earns a line when it differs from what the header already said
+      ...(l.preferredDate && l.preferredDate !== input.preferredDate ? [`  Preferred start: ${l.preferredDate}`] : []),
+      l.tests.length ? "  Tests requested:" : "  Tests requested: as per your standard AS6081 screen",
+      ...l.tests.map((t, i) => `    ${i + 1}. ${t.name}${t.standard ? ` (${t.standard})` : ""}`),
+      "",
+    ]),
+    input.note ? `${input.note}\n` : "",
+    "Please confirm the slot with your booking appointment — work order numbers, sample quantities and the agreed test plan — and we will action it from there.",
+    "",
+    "Thanks,",
+    "Sourcing Ops",
+  ].filter((x) => x !== "" || true).join("\n").replace(/\n{3,}/g, "\n\n");
+
+  return { subject, body, slotNo };
+}
+
 function moveStage(
   lot: Lot,
   stage: TestingStage,
@@ -453,12 +530,31 @@ interface Store {
   markRelabelled: (orderId: string) => void;
   markTestingReturnedToSupplier: (orderId: string) => void;
 
-  addLot: (orderId: string, lot: { orderLineMpn: string; lotCode: string; dateCode: string; qty: number; sampleQty: number; lab?: string }) => void;
+  /**
+   * Raise a lot by hand. `tests` is the plan typed in on the Add-lot form: with the per-MPN
+   * requirements surface parked, an operator who has no booking appointment needs *some* way to
+   * say what the lab is running, so the form asks and this writes it onto the lot **and** onto
+   * the MPN's spec (source `MANUAL`, audited) so the two never disagree. Omitted ⇒ the lot
+   * inherits whatever the MPN's spec already carries, as before.
+   */
+  addLot: (orderId: string, lot: { orderLineMpn: string; lotCode: string; dateCode: string; qty: number; sampleQty: number; lab?: string; tests?: { name: string; standard?: string }[] }) => void;
   setLotStatus: (orderId: string, lotId: string, status: TestStatus) => void;
   fetchLabResult: (orderId: string, lotId: string) => void; // WHL adapter - poll the report
 
   // ---- WHL testing platform ----
-  autofillMpnTests: (orderId: string, mpn?: string) => void;          // parse the PO's test table (never hand-typed)
+  /**
+   * Read the lab's **booking appointment** and let it create the lots and their test plans.
+   *
+   * `file === null` is the demo/auto-fill path: same parse, no document to file against the
+   * order. This is what "Auto-fill tests from PO" used to be — the PO says what the buyer
+   * requires, the appointment says what the lab agreed to run, and the tracker mirrors the
+   * second. Real backend integration later; the adapter seam is unchanged.
+   *
+   * `lotId` scopes it to **one lot**: labs book per lot, so an operator with the appointment
+   * for LOT-B must be able to apply it to LOT-B without touching the others (and without a
+   * re-read inventing lots for lines that have not been booked yet). Order-wide when omitted.
+   */
+  uploadBookingAppointment: (orderId: string, file: { name: string; size: number } | null, lotId?: string) => Promise<void>;
   addMpnTest: (orderId: string, mpn: string, t: { name: string; standard?: string }) => void;  // audited manual override
   removeMpnTest: (orderId: string, mpn: string, testId: string) => void;                        // audited manual override
   setLotTestStatus: (orderId: string, lotId: string, lotTestId: string, status: TestProcessStatus, note?: string) => void;
@@ -468,13 +564,49 @@ interface Store {
   // ---- WHL's testing fee: ask for the invoice, hand it to finance, record the payment ----
   requestWhlInvoice: (orderId: string, lotId: string) => void;
   // fallback for when the lab's invoice never arrives by mail (or came by another medium)
-  uploadLabInvoiceManually: (orderId: string, lotId: string, input: {
-    invoiceNo: string; currency: string; amount: number; taxAmount?: number;
-    terms: LabPaymentTerms; creditDays?: number; dueDate?: string;
-    processCount?: number; ratePerProcess?: number; fileName?: string;
-    receivedVia?: string; note?: string;
-  }) => void;
+  /**
+   * "Upload invoice" is exactly that: the operator picks WHL's PDF off their device and this
+   * reads the invoice out of it (`extractLabInvoice`) — no form, because every field on that
+   * document is the lab's, and the terms in particular decide whether the lot is held. Still
+   * flagged `source: "MANUAL"` / "entered by hand": the record didn't come off the lab's mail.
+   */
+  uploadLabInvoiceFile: (orderId: string, lotId: string, file: { name: string; size: number }) => Promise<void>;
   markLabFeePaid: (orderId: string, lotId: string, d: { paidRef?: string; paidAt?: string; note?: string }) => void;
+  /**
+   * WHL has returned the samples to the seller — the stage between the report landing and the
+   * freight hand-off. Normally the lab's own confirmation mail; this is the by-hand fallback.
+   */
+  /**
+   * Ask the lab for a test slot. Records the outbound booking-request mail on the WHL thread and
+   * creates the slot as `REQUESTED` — **no lots yet**. Nothing about a lot exists until the lab
+   * confirms, because acting on lots the lab has not agreed to test is how a tracker starts lying.
+   * `retestOf` makes it a re-test of an earlier slot.
+   */
+  requestTestSlot: (orderId: string, input: {
+    lab: string; preferredDate?: string; note?: string;
+    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    retestOfSlotId?: string; retestReason?: string;
+    /** the reviewed draft. Omitted only by callers that have no UI — the modal always sends both. */
+    subject?: string; body?: string;
+  }) => void;
+  /**
+   * The draft this order's booking request would send, so the modal can show it for review before
+   * anything leaves. Pure — builds the same subject/body `requestTestSlot` would.
+   */
+  draftTestSlotMail: (orderId: string, input: {
+    lab: string; preferredDate?: string; note?: string;
+    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    retestOfSlotId?: string; retestReason?: string;
+  }) => { subject: string; body: string; slotNo: string };
+  markLotReturnedToSeller: (orderId: string, lotId: string) => void;
+  /**
+   * Hand a tested lot to the logistics desk. Only meaningful once its report is shared — the
+   * testing screen gates the control on that. It is a **stamp, not a booking**: no stage moves,
+   * no shipment is created; the lot simply appears on the Logistics board's "assigned test lots"
+   * queue for that desk to pick up. Idempotent — assigning twice changes nothing. The click does
+   * **complete the `ASSIGNED_TO_LOGISTICS` stage**, which is the end of the chain.
+   */
+  assignLotToLogistics: (orderId: string, lotId: string) => void;
   logInvoiceAccess: (orderId: string, lotId: string, action: "VIEW" | "DOWNLOAD") => void;
   fetchWhlReport: (orderId: string, lotId: string) => void;           // pull (or revise) the report + parse it on screen
   requestWhlUpdate: (orderId: string, lotId: string) => void;         // pre-mapped outbound chase
@@ -874,11 +1006,39 @@ export const useStore = create<Store>()(
         const lotId = uid("lot");
         set((s) => {
           const b = s.orders[orderId]; if (!b) return;
-          // lot logic is unchanged - it just inherits the MPN's PO-parsed test list as its status tracker
-          const spec = (b.mpnTests ?? []).find((x) => x.mpn === lot.orderLineMpn);
-          const tests: LotTest[] = (spec?.tests ?? []).map((t) => ({
+          b.mpnTests ??= [];
+          let spec = b.mpnTests.find((x) => x.mpn === lot.orderLineMpn);
+
+          // a plan typed on the form is the operator's own: record it as the MPN's requirements
+          // too, so the lot's tracker and the MPN's spec can't drift apart
+          if (lot.tests?.length) {
+            const doc = `Entered by hand with lot ${lot.lotCode}`;
+            if (!spec) {
+              spec = {
+                id: uid("spec"), mpn: lot.orderLineMpn, autofill: "OK", sourceDoc: doc,
+                parsedAt: stamp(), tests: [], audit: [],
+              };
+              b.mpnTests.push(spec);
+            }
+            for (const t of lot.tests) {
+              if (spec.tests.some((x) => x.name.toLowerCase() === t.name.toLowerCase())) continue;
+              const reqId = uid("req");
+              spec.tests.push({ id: reqId, name: t.name, standard: t.standard, source: "MANUAL", addedBy: ME, addedAt: stamp() });
+              spec.audit.push(auditRow({
+                by: ME, action: "ADD", target: t.name, before: "-",
+                after: `manual test${t.standard ? ` (${t.standard})` : ""}`,
+                note: `Typed on the Add-lot form for ${lot.lotCode}.`,
+              }));
+            }
+          }
+
+          // the lot's tracker: the plan just typed, else whatever the MPN's spec already carries
+          const source = lot.tests?.length
+            ? lot.tests.map((t) => ({ ...(spec!.tests.find((x) => x.name.toLowerCase() === t.name.toLowerCase())!) }))
+            : (spec?.tests ?? []);
+          const tests: LotTest[] = source.map((t) => ({
             id: uid("lt"), requirementId: t.id, name: t.name, standard: t.standard, source: t.source, status: "PENDING",
-            history: [auditRow({ by: ME, action: "STATUS", target: t.name, after: "PENDING", note: `Inherited from ${spec?.sourceDoc ?? "the PO"} when lot ${lot.lotCode} was raised.` })],
+            history: [auditRow({ by: ME, action: "STATUS", target: t.name, after: "PENDING", note: `${lot.tests?.length ? "Entered by hand" : `Inherited from ${spec?.sourceDoc ?? "the MPN's plan"}`} when lot ${lot.lotCode} was raised.` })],
           }));
           const clientPoNo = b.sourcingAllocations.find((a) => a.orderLineMpn === lot.orderLineMpn)?.clientPoNo;
           b.lots.push({
@@ -894,7 +1054,7 @@ export const useStore = create<Store>()(
             set((s) => {
               const l = s.orders[orderId]?.lots.find((x) => x.id === lotId); if (!l) return;
               l.workOrderNo = wo.workOrderNo; l.tatDays = wo.estimatedTatDays; l.lab = lot.lab ?? "WHL Shenzhen";
-              moveStage(l, "TEST_REQUESTED", ME, { note: `Work order ${wo.workOrderNo} raised with ${l.lab} — quoted TAT ${wo.estimatedTatDays} days.` });
+              moveStage(l, "TEST_BOOKED", ME, { note: `Test slot booked with ${l.lab} — work order ${wo.workOrderNo}, quoted TAT ${wo.estimatedTatDays} days.` });
             });
             toast.success(`WHL work order ${wo.workOrderNo}`);
           } catch (e) { toast.error(`WHL: ${errMsg(e)}`); }
@@ -932,72 +1092,123 @@ export const useStore = create<Store>()(
       // ---- WHL testing platform ----------------------------------------------------
       // Test requirements already exist in the PO, so they're parsed from it rather than
       // typed. An MPN whose table can't be read is flagged for manual review, never blank.
-      autofillMpnTests: (orderId, mpn) => {
+      uploadBookingAppointment: async (orderId, file, lotId) => {
         const b0 = get().orders[orderId]; if (!b0) return;
-        const targets = (mpn ? b0.lines.filter((l) => l.mpn === mpn) : b0.lines).map((l) => l.mpn);
-        if (targets.length === 0) return;
-        const sourceDoc = b0.supplierPoNo ? `Purchase Order ${b0.supplierPoNo}` : `Order ${b0.orderNo}`;
-        const modes: Record<string, string> = {};
-        for (const l of b0.lines) modes[l.mpn] = l.testingMode;
-        toast.message(`Parsing test table off ${sourceDoc}…`);
-        void (async () => {
-          try {
-            const res = await extractPoTestRequirements({ sourceDoc, mpns: Array.from(new Set(targets)), testingModes: modes });
-            set((s) => {
-              const b = s.orders[orderId]; if (!b) return;
-              b.mpnTests ??= [];
-              for (const m of res.mpns) {
-                const failed = m.tests.length === 0 && !!m.note && !m.note.startsWith("PO specifies no");
-                const spec: MpnTestSpec = {
-                  id: uid("spec"), mpn: m.mpn,
-                  autofill: failed ? "FAILED" : "OK",
-                  autofillNote: m.note, sourceDoc: res.sourceDoc, parsedAt: stamp(), confidence: m.confidence,
-                  tests: m.tests.map((t) => ({ id: uid("req"), name: t.name, standard: t.standard, source: "AUTO_PO" as const })),
-                  audit: [],
-                };
-                const prev = b.mpnTests.find((x) => x.mpn === m.mpn);
-                // keep manual additions across a re-parse - they're human corrections, not PO data
-                const manual = prev?.tests.filter((t) => t.source === "MANUAL") ?? [];
-                spec.tests.push(...manual);
-                spec.audit = [
-                  ...(prev?.audit ?? []),
-                  auditRow({
-                    by: "Doc extraction (auto)", action: "AUTOFILL", target: m.mpn,
-                    before: prev ? `${prev.tests.length} test(s)` : "-",
-                    after: failed ? "auto-fill failed" : `${m.tests.length} test(s) from ${res.sourceDoc}`,
-                    note: m.note ?? `Confidence ${Math.round(m.confidence * 100)}%.`,
-                  }),
-                ];
-                if (prev) Object.assign(prev, spec, { id: prev.id }); else b.mpnTests.push(spec);
-                // push newly-parsed tests onto lots of this MPN that don't have them yet
-                for (const lot of b.lots.filter((l) => l.orderLineMpn === m.mpn)) {
-                  lot.tests ??= [];
-                  for (const t of spec.tests) {
-                    if (lot.tests.some((x) => x.name === t.name)) continue;
-                    lot.tests.push({ id: uid("lt"), requirementId: t.id, name: t.name, standard: t.standard, source: t.source, status: "PENDING",
-                      history: [auditRow({ by: "Doc extraction (auto)", action: "ADD", target: t.name, after: "PENDING", note: `Auto-filled from ${res.sourceDoc}.` })] });
-                  }
-                }
-              }
-            });
-            const bad = res.mpns.filter((m) => m.tests.length === 0 && m.note && !m.note.startsWith("PO specifies no")).length;
-            if (bad) toast.warning(`${bad} MPN(s) need manual review - auto-fill failed.`);
-            else toast.success("Test requirements auto-filled from the PO");
-          } catch (e) {
-            // whole-document failure: flag every target MPN rather than silently leaving them blank
-            set((s) => {
-              const b = s.orders[orderId]; if (!b) return;
-              b.mpnTests ??= [];
-              for (const m of Array.from(new Set(targets))) {
-                const prev = b.mpnTests.find((x) => x.mpn === m);
-                const row = auditRow({ by: "Doc extraction (auto)", action: "AUTOFILL", target: m, after: "auto-fill failed", note: errMsg(e) });
-                if (prev) { prev.autofill = "FAILED"; prev.autofillNote = errMsg(e); prev.audit.push(row); }
-                else b.mpnTests.push({ id: uid("spec"), mpn: m, autofill: "FAILED", autofillNote: errMsg(e), sourceDoc, parsedAt: stamp(), tests: [], audit: [row] });
-              }
-            });
-            toast.error(`Auto-fill failed - needs manual review (${errMsg(e)})`);
+        const target = lotId ? b0.lots.find((l) => l.id === lotId) : undefined;
+        if (lotId && !target) return;
+        // scoped to one lot ⇒ only that lot's own line goes to the parser, so a re-read can
+        // never invent lots for lines nobody has booked yet
+        const lines = (target ? b0.lines.filter((l) => l.mpn === target.orderLineMpn) : b0.lines)
+          .map((l) => ({ mpn: l.mpn, qty: l.quantity, testingMode: l.testingMode }));
+        if (!lines.some((l) => l.testingMode !== "NONE")) {
+          toast.error(target
+            ? `${target.lotCode}'s line needs no incoming test, so there is nothing to book.`
+            : "No line on this order needs testing, so there is nothing to book.");
+          return;
+        }
+        const fileName = file?.name ?? `booking-appointment-${b0.orderNo}.pdf`;
+        toast.message(file ? `Reading ${file.name}…` : "Filling from a sample booking appointment…");
+
+        let res;
+        try {
+          res = await extractBookingAppointment({
+            fileName, bytesLen: file?.size ?? 0, orderNo: b0.orderNo,
+            lab: target?.lab ?? b0.lots[0]?.lab, lines,
+          });
+        } catch (e) {
+          toast.error(errMsg(e));
+          return;
+        }
+
+        let createdLots = 0, updatedLots = 0, specCount = 0;
+        set((s) => {
+          const b = s.orders[orderId]; if (!b) return;
+          b.mpnTests ??= [];
+          const doc = `Booking appointment ${res.appointmentNo}`;
+
+          // scoped run: the appointment row for this lot — matched on its code, else on its MPN,
+          // and its own lotCode wins so the row is applied to the lot the operator picked
+          const rows = target
+            ? res.lots
+              .filter((r) => r.lotCode === target.lotCode || r.mpn === target.orderLineMpn)
+              .slice(0, 1)
+              .map((r) => ({ ...r, lotCode: target.lotCode }))
+            : res.lots;
+
+          for (const bl of rows) {
+            // ---- the MPN's test plan, as the lab agreed to run it ----
+            const prev = b.mpnTests.find((x) => x.mpn === bl.mpn);
+            // a manual addition is a human correction, not appointment data — keep it across a re-read
+            const manual = prev?.tests.filter((t) => t.source === "MANUAL") ?? [];
+            const spec: MpnTestSpec = {
+              id: prev?.id ?? uid("spec"), mpn: bl.mpn, autofill: "OK",
+              autofillNote: undefined, sourceDoc: doc, parsedAt: stamp(), confidence: res.overallConfidence,
+              tests: [
+                ...bl.tests.map((t) => ({ id: uid("req"), name: t.name, standard: t.standard, source: "AUTO_BOOKING" as const })),
+                ...manual,
+              ],
+              audit: [
+                ...(prev?.audit ?? []),
+                auditRow({
+                  by: "Doc extraction (auto)", action: "AUTOFILL", target: bl.mpn,
+                  before: prev ? `${prev.tests.length} test(s)` : "-",
+                  after: `${bl.tests.length} test(s) from ${doc}`,
+                  note: `Confidence ${Math.round(res.overallConfidence * 100)}%.`,
+                }),
+              ],
+            };
+            if (prev) Object.assign(prev, spec); else b.mpnTests.push(spec);
+            specCount++;
+            const effective = prev ?? spec;
+
+            // ---- the lot itself: the appointment says which lots are going in ----
+            const lotTests: LotTest[] = effective.tests.map((t) => ({
+              id: uid("lt"), requirementId: t.id, name: t.name, standard: t.standard, source: t.source,
+              status: "PENDING" as const,
+              history: [auditRow({ by: "Doc extraction (auto)", action: "ADD", target: t.name, after: "PENDING", note: `Read off ${doc}.` })],
+            }));
+            const existing = b.lots.find((l) => l.lotCode === bl.lotCode || (l.orderLineMpn === bl.mpn && l.workOrderNo === bl.workOrderNo));
+            if (existing) {
+              // don't clobber a lot mid-flight: top up its tracker, refresh the booking facts
+              existing.tests ??= [];
+              for (const t of lotTests) if (!existing.tests.some((x) => x.name === t.name)) existing.tests.push(t);
+              existing.workOrderNo ||= bl.workOrderNo;
+              existing.tatDays ||= bl.estimatedTatDays;
+              existing.lab ||= bl.lab;
+              updatedLots++;
+            } else {
+              const lot: Lot = {
+                id: uid("lot"), orderLineMpn: bl.mpn, lotCode: bl.lotCode, dateCode: bl.dateCode,
+                qty: bl.qty, sampleQty: bl.sampleQty, testStatus: "PENDING",
+                lab: bl.lab, workOrderNo: bl.workOrderNo, tatDays: bl.estimatedTatDays,
+                clientPoNo: b.sourcingAllocations.find((a) => a.orderLineMpn === bl.mpn)?.clientPoNo,
+                tests: lotTests, reports: [],
+              };
+              // the appointment IS the booking, so the lot starts at TEST_BOOKED
+              moveStage(lot, "TEST_BOOKED", ME, {
+                note: `Test slot booked with ${bl.lab} — appointment ${res.appointmentNo}, work order ${bl.workOrderNo}, quoted TAT ${bl.estimatedTatDays} days.`,
+              });
+              b.lots.push(lot);
+              createdLots++;
+            }
           }
-        })();
+
+          if (file) {
+            b.documents.push({
+              id: uid("doc"), subjectType: "ORDER", docType: "OTHER",
+              fileName: file.name, uploadedBy: ME, uploadedAt: today(),
+            });
+          }
+          b.events.unshift({
+            id: uid("ev"), eventType: "GENERAL",
+            message: `Booking appointment ${res.appointmentNo} (${res.lab}) read${file ? ` off ${file.name}` : " from a sample"}${target ? ` for ${target.lotCode}` : ""} — ${createdLots} lot(s) created, ${updatedLots} updated, ${specCount} test plan(s) filled.`,
+            source: "WHL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+
+        toast.success(target
+          ? `${res.appointmentNo} applied to ${target.lotCode} — test plan filled`
+          : `${res.appointmentNo}: ${createdLots} lot(s) created${updatedLots ? `, ${updatedLots} updated` : ""} — test plans filled`);
       },
 
       addMpnTest: (orderId, mpn, t) => {
@@ -1028,7 +1239,7 @@ export const useStore = create<Store>()(
           const spec = (b.mpnTests ?? []).find((x) => x.mpn === mpn); if (!spec) return;
           const t = spec.tests.find((x) => x.id === testId); if (!t) return;
           spec.tests = spec.tests.filter((x) => x.id !== testId);
-          spec.audit.push(auditRow({ by: ME, action: "DELETE", target: t.name, before: `${t.source === "AUTO_PO" ? "auto-filled" : "manual"} test`, after: "-", note: "Removed by operator." }));
+          spec.audit.push(auditRow({ by: ME, action: "DELETE", target: t.name, before: `${t.source === "AUTO_BOOKING" ? "auto-filled" : "manual"} test`, after: "-", note: "Removed by operator." }));
           for (const lot of b.lots.filter((l) => l.orderLineMpn === mpn)) {
             const lt = (lot.tests ?? []).find((x) => x.name === t.name);
             if (lt) lot.tests = (lot.tests ?? []).filter((x) => x.id !== lt.id);
@@ -1105,39 +1316,142 @@ export const useStore = create<Store>()(
        * invoice records `source: "MANUAL"`, who entered it and how it arrived, and the UI labels
        * it as transcribed wherever the terms are shown.
        */
-      uploadLabInvoiceManually: (orderId, lotId, input) => {
-        if (!input.invoiceNo.trim() || !(input.amount > 0)) { toast.error("Invoice number and net amount are required."); return; }
+      uploadLabInvoiceFile: async (orderId, lotId, file) => {
+        const lot0 = get().orders[orderId]?.lots.find((x) => x.id === lotId);
+        if (!lot0) return;
+        let parsed;
+        try {
+          parsed = await extractLabInvoice({
+            fileName: file.name, bytesLen: file.size,
+            workOrderNo: lot0.workOrderNo, lotCode: lot0.lotCode,
+            processCount: lot0.tests?.length || undefined,
+          });
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Could not read that file");
+          return;
+        }
         let replaced = false;
         set((s) => {
           const b = s.orders[orderId]; if (!b) return;
           const lot = b.lots.find((x) => x.id === lotId); if (!lot) return;
           lot.labPayment ??= { status: "NOT_REQUESTED" };
           replaced = !!lot.labPayment.invoice;
-          const fileName = input.fileName?.trim() || `${input.invoiceNo.trim()}.pdf`;
           lot.labPayment.invoice = {
-            id: uid("inv"), invoiceNo: input.invoiceNo.trim(),
-            amount: input.amount, taxAmount: input.taxAmount, currency: input.currency,
-            fileName, receivedAt: stamp(), dueDate: input.dueDate || undefined,
-            terms: input.terms, creditDays: input.terms === "CREDIT" ? input.creditDays : undefined,
-            ratePerProcess: input.ratePerProcess, processCount: input.processCount,
-            note: input.note?.trim()
-              || `Entered by hand${input.receivedVia ? ` — received via ${input.receivedVia}` : ""}.`,
-            source: "MANUAL", enteredBy: ME, receivedVia: input.receivedVia?.trim() || undefined,
+            id: uid("inv"), invoiceNo: parsed.invoiceNo,
+            amount: parsed.amount, taxAmount: parsed.taxAmount, currency: parsed.currency,
+            // the operator's actual file name, so the document row points at what they uploaded
+            fileName: file.name, receivedAt: stamp(), dueDate: parsed.dueDate,
+            terms: parsed.terms, creditDays: parsed.terms === "CREDIT" ? parsed.creditDays : undefined,
+            ratePerProcess: parsed.ratePerProcess, processCount: parsed.processCount,
+            note: `Uploaded by hand from ${file.name} — fields read off the document.`,
+            source: "MANUAL", enteredBy: ME, receivedVia: "uploaded PDF",
             accessLog: [],
           };
           // a paid fee stays paid; otherwise this invoice is now ours to settle
           if (lot.labPayment.status !== "PAID") lot.labPayment.status = "INVOICE_RECEIVED";
           b.documents.push({
             id: uid("doc"), subjectType: "LOT", docType: "WHL_INVOICE",
-            fileName, uploadedBy: `${ME} (by hand)`, uploadedAt: today(),
+            fileName: file.name, uploadedBy: `${ME} (by hand)`, uploadedAt: today(),
           });
           b.events.unshift({
             id: uid("ev"), eventType: "GENERAL",
-            message: `WHL testing invoice ${input.invoiceNo.trim()} entered by hand for ${lot.lotCode} (${lot.orderLineMpn}) — ${LAB_TERMS_LABEL[input.terms].toLowerCase()} terms${input.receivedVia ? `, received via ${input.receivedVia}` : ""}.`,
+            message: `WHL testing invoice ${parsed.invoiceNo} uploaded by hand for ${lot.lotCode} (${lot.orderLineMpn}) — ${LAB_TERMS_LABEL[parsed.terms].toLowerCase()} terms, from ${file.name}.`,
             source: "WHL", occurredAt: today(), recordedBy: ME,
           });
         });
-        toast.success(replaced ? "Testing invoice replaced" : "Testing invoice recorded — the fee is now payable");
+        toast.success(
+          `${replaced ? "Invoice replaced" : "Invoice recorded"} — ${parsed.invoiceNo}, ${parsed.currency} ${(parsed.amount + parsed.taxAmount).toLocaleString()} on ${LAB_TERMS_LABEL[parsed.terms].toLowerCase()} terms`,
+        );
+      },
+
+      draftTestSlotMail: (orderId, input) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return { subject: "", body: "", slotNo: "" };
+        return buildSlotMail(b0, input);
+      },
+
+      requestTestSlot: (orderId, input) => {
+        const b0 = get().orders[orderId]; if (!b0) return;
+        if (input.lines.length === 0) { toast.error("Add at least one MPN to the booking request."); return; }
+        const prior = input.retestOfSlotId ? (b0.testSlots ?? []).find((x) => x.id === input.retestOfSlotId) : undefined;
+        const built = buildSlotMail(b0, input);
+        const slotNo = built.slotNo;
+        const emailId = uid("lm");
+        const slotId = uid("slot");
+        // the modal sends the reviewed draft; a caller without UI falls back to the generated one
+        const subject = input.subject?.trim() || built.subject;
+        const body = input.body ?? built.body;
+
+        set((s) => {
+          const b = s.orders[orderId]; if (!b) return;
+          b.labEmails ??= [];
+          b.testSlots ??= [];
+          b.labEmails.unshift({
+            id: emailId, direction: "OUT", subject, body,
+            at: stamp(), by: ME, status: "AWAITING_RESPONSE", kind: "BOOKING_REQUEST",
+            poNo: b.supplierPoNo,
+          });
+          b.testSlots.unshift({
+            id: slotId, slotNo, lab: input.lab, status: "REQUESTED",
+            preferredDate: input.preferredDate, lines: input.lines, note: input.note,
+            requestedAt: stamp(), requestedBy: ME, requestEmailId: emailId,
+            retestOfSlotId: prior?.id, retestOfSlotNo: prior?.slotNo, retestReason: input.retestReason,
+          });
+          b.events.unshift({
+            id: uid("ev"), eventType: "GENERAL",
+            message: `${prior ? "Re-test" : "Test"} slot ${slotNo} requested from ${input.lab} for ${input.lines.map((l) => l.mpn).join(", ")}${prior ? ` (re-test of ${prior.slotNo})` : ""}.`,
+            source: "WHL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success(`${slotNo} requested — awaiting ${input.lab}'s confirmation`);
+      },
+
+      markLotReturnedToSeller: (orderId, lotId) => {
+        let moved = false, code = "";
+        set((s) => {
+          const b = s.orders[orderId]; if (!b) return;
+          const lot = b.lots.find((x) => x.id === lotId); if (!lot) return;
+          code = lot.lotCode;
+          lot.returnedToSellerAt ??= stamp();
+          lot.returnedToSellerBy ??= ME;
+          moved = moveStage(lot, "RETURNED_TO_SELLER", ME, {
+            note: `${lot.lab ?? "WHL"} returned the samples to the seller.`, manual: true,
+          });
+          if (moved) {
+            b.events.unshift({
+              id: uid("ev"), eventType: "GENERAL",
+              message: `Test lot ${lot.lotCode} (${lot.orderLineMpn}) returned to the seller by ${lot.lab ?? "WHL"}.`,
+              source: "WHL", occurredAt: today(), recordedBy: ME,
+            });
+          }
+        });
+        if (moved) toast.success(`${code} returned to seller`);
+        else if (code) toast.message(`${code} is already past that stage`);
+      },
+
+      assignLotToLogistics: (orderId, lotId) => {
+        let done = false, code = "";
+        set((s) => {
+          const b = s.orders[orderId]; if (!b) return;
+          const lot = b.lots.find((x) => x.id === lotId); if (!lot) return;
+          code = lot.lotCode;
+          if (lot.logisticsAssignedAt) return;      // idempotent
+          lot.logisticsAssignedAt = stamp();
+          lot.logisticsAssignedBy = ME;
+          done = true;
+          // the click is the stage: this is the last node on the chain
+          moveStage(lot, "ASSIGNED_TO_LOGISTICS", ME, {
+            note: `Handed to the logistics desk — report ${currentReport(lot)?.reportNo ?? "—"} shared, goods cleared to move.`,
+            manual: true,
+          });
+          b.events.unshift({
+            id: uid("ev"), eventType: "GENERAL",
+            message: `Test lot ${lot.lotCode} (${lot.orderLineMpn}) assigned to logistics — report ${currentReport(lot)?.reportNo ?? "—"} shared, goods ready to move.`,
+            source: "WHL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        if (done) toast.success(`${code} assigned to logistics`);
+        else if (code) toast.message(`${code} is already assigned to logistics`);
       },
 
       /** Finance confirms the transfer — this is what closes the Payment-to-WHL stage. */
@@ -1236,7 +1550,7 @@ export const useStore = create<Store>()(
                 const next = processToTestStatus(p.result);
                 let t = l.tests.find((x) => x.name === p.name);
                 if (!t) {
-                  t = { id: uid("lt"), name: p.name, source: "AUTO_PO", status: "PENDING", history: [] };
+                  t = { id: uid("lt"), name: p.name, source: "AUTO_BOOKING", status: "PENDING", history: [] };
                   l.tests.push(t);
                 }
                 const before = t.status;
@@ -1309,6 +1623,130 @@ export const useStore = create<Store>()(
       // Inbound mail drives the tracker. Mails that can't be matched go to a manual-match queue.
       syncWhlInbox: (orderId) => {
         const b0 = get().orders[orderId]; if (!b0) return;
+
+        // A slot awaiting confirmation is answered FIRST and the poll stops there. Nothing about
+        // a lot exists until the lab agrees to test it, so there is nothing else this mailbox
+        // could usefully say — and the confirmation is the mail that creates the lots.
+        const pending = (b0.testSlots ?? []).find((x) => x.status === "REQUESTED");
+        if (pending) {
+          toast.message(`Checking the WHL mailbox for ${pending.slotNo}…`);
+          void (async () => {
+            // the lab reads our request and answers with its booking appointment
+            let parsed;
+            try {
+              parsed = await extractBookingAppointment({
+                fileName: `${pending.slotNo}-confirmation.pdf`, bytesLen: 0, orderNo: b0.orderNo,
+                lab: pending.lab,
+                lines: pending.lines.map((l) => ({ mpn: l.mpn, qty: l.qty, testingMode: "WHL" })),
+              });
+            } catch (e) { toast.error(errMsg(e)); return; }
+
+            const created: string[] = [];
+            set((s) => {
+              const b = s.orders[orderId]; if (!b) return;
+              const slot = (b.testSlots ?? []).find((x) => x.id === pending.id); if (!slot) return;
+              const prior = slot.retestOfSlotId ? (b.testSlots ?? []).find((x) => x.id === slot.retestOfSlotId) : undefined;
+              const confirmId = uid("lm");
+              b.mpnTests ??= [];
+
+              slot.lines.forEach((line, i) => {
+                const appt = parsed!.lots[i] ?? parsed!.lots[0];
+                // the test plan we asked for wins — the lab confirmed it; fall back to its own
+                const plan = line.tests.length ? line.tests : (appt?.tests ?? []);
+                const doc = `Booking appointment ${parsed!.appointmentNo} (slot ${slot.slotNo})`;
+
+                let spec = b.mpnTests!.find((x) => x.mpn === line.mpn);
+                if (!spec) {
+                  spec = { id: uid("spec"), mpn: line.mpn, autofill: "OK", sourceDoc: doc, parsedAt: stamp(), tests: [], audit: [] };
+                  b.mpnTests!.push(spec);
+                } else { spec.sourceDoc = doc; spec.parsedAt = stamp(); }
+                for (const t of plan) {
+                  if (spec.tests.some((x) => x.name.toLowerCase() === t.name.toLowerCase())) continue;
+                  spec.tests.push({ id: uid("req"), name: t.name, standard: t.standard, source: "AUTO_BOOKING" });
+                }
+                spec.audit.push(auditRow({
+                  by: `${slot.lab} (confirmation)`, action: "AUTOFILL", target: line.mpn,
+                  before: "-", after: `${plan.length} test(s) from ${doc}`,
+                }));
+
+                const lotCode = prior
+                  ? `${(prior.createdLotIds ?? []).length ? "" : ""}RT${(b.testSlots ?? []).filter((x) => x.retestOfSlotId).length}-${appt?.lotCode ?? `L${i + 1}`}`
+                  : appt?.lotCode ?? `LOT-${String.fromCharCode(65 + b.lots.length)}`;
+                const lotId = uid("lot");
+                const lot: Lot = {
+                  id: lotId, orderLineMpn: line.mpn, lotCode, dateCode: line.dateCode || (appt?.dateCode ?? ""),
+                  qty: line.qty, sampleQty: line.sampleQty, testStatus: "PENDING",
+                  lab: slot.lab, workOrderNo: appt?.workOrderNo, tatDays: appt?.estimatedTatDays,
+                  clientPoNo: b.sourcingAllocations.find((a) => a.orderLineMpn === line.mpn)?.clientPoNo,
+                  testSlotId: slot.id, testSlotNo: slot.slotNo,
+                  retestOfSlotNo: slot.retestOfSlotNo,
+                  tests: plan.map((t) => {
+                    const req = spec!.tests.find((x) => x.name.toLowerCase() === t.name.toLowerCase());
+                    return {
+                      id: uid("lt"), requirementId: req?.id, name: t.name, standard: t.standard,
+                      source: req?.source ?? "AUTO_BOOKING", status: "PENDING" as const,
+                      history: [auditRow({ by: `${slot.lab} (confirmation)`, action: "ADD", target: t.name, after: "PENDING", note: `Confirmed on ${doc}.` })],
+                    };
+                  }),
+                  reports: [],
+                };
+                moveStage(lot, "TEST_BOOKED", `${slot.lab} (confirmation)`, {
+                  note: `${slot.lab} confirmed slot ${slot.slotNo} — appointment ${parsed!.appointmentNo}, work order ${appt?.workOrderNo ?? "—"}.`,
+                  sourceEmailId: confirmId,
+                });
+                // a re-test re-uses components already sitting at the lab, so the dispatch and
+                // receipt stages happened on the original submission — recording them again
+                // would claim a shipment that never left
+                if (prior) {
+                  moveStage(lot, "SUPPLIER_DISPATCHING", `${slot.lab} (confirmation)`, {
+                    note: `Carried over from ${prior.slotNo} — components already dispatched for the original test.`,
+                    sourceEmailId: confirmId,
+                  });
+                  moveStage(lot, "COMPONENTS_RECEIVED", `${slot.lab} (confirmation)`, {
+                    note: `Carried over from ${prior.slotNo} — components already at ${slot.lab}.`,
+                    sourceEmailId: confirmId,
+                  });
+                }
+                b.lots.push(lot);
+                created.push(lotCode);
+                slot.createdLotIds = [...(slot.createdLotIds ?? []), lotId];
+              });
+
+              slot.status = "CONFIRMED";
+              slot.confirmedAt = stamp();
+              slot.appointmentNo = parsed!.appointmentNo;
+              slot.confirmEmailId = confirmId;
+
+              const req = (b.labEmails ?? []).find((m) => m.id === slot.requestEmailId);
+              if (req) req.status = "UPDATE_RECEIVED";
+              b.labEmails ??= [];
+              b.labEmails.unshift({
+                id: confirmId, direction: "IN",
+                subject: `Booking confirmed — ${parsed!.appointmentNo}${slot.retestOfSlotNo ? " (re-test)" : ""} — ${slot.lines.map((l) => l.mpn).join(", ")}`,
+                body: [
+                  `Hi Sourcing Ops,`, "",
+                  `We confirm the ${slot.retestOfSlotNo ? "re-test " : ""}slot for ${slot.lines.map((l) => l.mpn).join(", ")}.`,
+                  `Our booking appointment: ${parsed!.appointmentNo}${slot.retestOfSlotNo ? " (re-test — components already held here)" : ""}`,
+                  "",
+                  ...created.map((c) => `  ${c}`),
+                  "",
+                  `The agreed test plan and work orders are on the attached appointment.`,
+                  "", `Regards,`, `${slot.lab}`,
+                ].join("\n"),
+                at: stamp(), by: `${slot.lab} Bookings`, status: "UPDATE_RECEIVED", kind: "BOOKING_CONFIRMED",
+                attachments: [`${parsed!.appointmentNo}.pdf`],
+              });
+              b.events.unshift({
+                id: uid("ev"), eventType: "GENERAL",
+                message: `${slot.lab} confirmed slot ${slot.slotNo} (${parsed!.appointmentNo}) — ${created.length} test lot(s) created: ${created.join(", ")}.`,
+                source: "WHL", occurredAt: today(), recordedBy: slot.lab,
+              });
+            });
+            toast.success(`${pending.slotNo} confirmed — ${created.length} test lot(s) created`);
+          })();
+          return;
+        }
+
         // the lot's current stage goes with the request so the lab answers with the
         // mail that plausibly comes next, rather than one for a stage already passed
         const wos = b0.lots.filter((l) => !!l.workOrderNo).map((l) => ({
@@ -1359,7 +1797,7 @@ export const useStore = create<Store>()(
                 for (const u of msg.testUpdates ?? []) {
                   lot.tests ??= [];
                   let t = lot.tests.find((x) => x.name === u.name);
-                  if (!t) { t = { id: uid("lt"), name: u.name, source: "AUTO_PO", status: "PENDING", history: [] }; lot.tests.push(t); }
+                  if (!t) { t = { id: uid("lt"), name: u.name, source: "AUTO_BOOKING", status: "PENDING", history: [] }; lot.tests.push(t); }
                   const before = t.status;
                   if (before === "PASSED" || before === "FAILED") continue; // a report already settled this test
                   t.status = u.status; t.updatedAt = msg.receivedAt;
@@ -3320,7 +3758,7 @@ Please pre-file the entry so clearance starts before the goods land.`,
       // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply) ·
       // 36 = multi-category email filing (string[] per email) + free-address To with inferred counterparty (OTHER) ·
       // 37 = merge: 6-phase fulfilment clock (Escrow.fundedAt + OrderBundle.whlReturnedToSupplierAt) landed beside 36 on main — both schemas, one discard
-      version: 37,
+      version: 40,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

@@ -16,7 +16,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Search } from "lucide-react";
+import { Search, FlaskConical } from "lucide-react";
 import { useStore } from "@/store/store";
 import {
   inboundView,
@@ -28,9 +28,10 @@ import {
   type InboundView,
   type Pressure,
 } from "@/lib/logistics-order";
-import { orderPhaseTimings, type PhaseAtRisk } from "@/store/selectors";
+import { orderPhaseTimings, assignedTestLots, type PhaseAtRisk } from "@/store/selectors";
 import type { OrderBundle } from "@/types";
-import { DataTable, PageHeader, Pagination, Panel, Pill, type Col } from "@/components/ui/primitives";
+import Link from "next/link";
+import { Button, DataTable, PageHeader, Pagination, Panel, Pill, type Col } from "@/components/ui/primitives";
 import { Input } from "@/components/ui/form";
 import { cn } from "@/lib/utils";
 
@@ -72,6 +73,9 @@ function LogisticsQueue() {
   const [q, setQ] = useState("");
   const [pressure, setPressure] = useState<Pressure | "ALL">("ALL");
   const [page, setPage] = useState(1);
+
+  // test lots the testing desk has handed over — their own queue, not part of the order table
+  const testLots = useMemo(() => assignedTestLots(orders), [orders]);
 
   const rows = useMemo<Row[]>(() => {
     const all = Object.values(orders)
@@ -181,6 +185,41 @@ function LogisticsQueue() {
         title="Logistics — inbound orders"
         description="Worst first: the orders with the least road left to the customer's date sit at the top, so the next thing to pick up is always the first row. Click a row to work the order."
       />
+
+      {/* Handed over by the testing desk: report shared, goods cleared to move. Its own block
+          because it is a different grain from the order queue below — a lot, not an order — and
+          the freight for it has not been booked yet. */}
+      {testLots.length > 0 && (
+        <Panel title={`Test lots assigned to logistics · ${testLots.length}`}>
+          <div className="space-y-2">
+            {testLots.map(({ lot, orderId, orderNo, supplier, report }) => (
+              <div key={lot.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border p-3 text-sm">
+                <span className="inline-flex flex-wrap items-center gap-2">
+                  <FlaskConical className="h-4 w-4 text-primary" />
+                  <b>{lot.lotCode}</b>
+                  <span className="font-mono text-xs text-muted-foreground">{lot.orderLineMpn}</span>
+                  <Pill tone={lot.testStatus === "PASS" ? "ok" : lot.testStatus === "FAIL" ? "bad" : "warn"}>{lot.testStatus}</Pill>
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  <Link href={`/fulfilment/testing/${orderId}`} className="font-mono text-primary hover:underline">{orderNo}</Link>
+                  {" · "}{supplier}{" · "}qty {lot.qty}
+                  {report ? <> · report <span className="font-mono">{report.reportNo}</span></> : null}
+                </span>
+                <span className="ml-auto text-[11px] text-faint">
+                  assigned {lot.logisticsAssignedAt}{lot.logisticsAssignedBy ? ` · ${lot.logisticsAssignedBy}` : ""}
+                </span>
+                <Button variant="outline" onClick={() => router.push(`/fulfilment/logistics?order=${orderId}&lot=${lot.id}`)}>
+                  Book freight
+                </Button>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Assigned on the testing screen once a lot&apos;s report is shared. The hand-off books nothing by
+            itself — it says the goods are cleared to move.
+          </p>
+        </Panel>
+      )}
 
       <Panel>
         {/* How the queue stands, and the filter in the same breath. */}

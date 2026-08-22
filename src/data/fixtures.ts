@@ -459,17 +459,17 @@ const aud = (n: number, by: string, action: TestAuditEntry["action"], o: Partial
   ({ id: `aud-${n}`, at: o.at ?? "2026-07-20 09:14", by, action, ...o });
 
 const STM32_TESTS = [
-  { id: "req-a1", name: "Documentation & Packaging Inspection", standard: "AS6081", source: "AUTO_PO" as const },
-  { id: "req-a2", name: "General Inspection", standard: "AS6081", source: "AUTO_PO" as const },
-  { id: "req-a3", name: "External Visual Inspection", standard: "AS6081", source: "AUTO_PO" as const },
-  { id: "req-a4", name: "Electrical Test", standard: "AS6081", source: "AUTO_PO" as const },
-  { id: "req-a5", name: "X-Ray Inspection", standard: "AS6081", source: "AUTO_PO" as const },
+  { id: "req-a1", name: "Documentation & Packaging Inspection", standard: "AS6081", source: "AUTO_BOOKING" as const },
+  { id: "req-a2", name: "General Inspection", standard: "AS6081", source: "AUTO_BOOKING" as const },
+  { id: "req-a3", name: "External Visual Inspection", standard: "AS6081", source: "AUTO_BOOKING" as const },
+  { id: "req-a4", name: "Electrical Test", standard: "AS6081", source: "AUTO_BOOKING" as const },
+  { id: "req-a5", name: "X-Ray Inspection", standard: "AS6081", source: "AUTO_BOOKING" as const },
   { id: "req-a6", name: "Decapsulation & Die Analysis", standard: "AS6171", source: "MANUAL" as const, addedBy: "A. Sharma", addedAt: "2026-07-20 11:02" },
 ];
 
 const HERO_MPN_TESTS: MpnTestSpec[] = [
   {
-    id: "spec-a", mpn: "STM32F407VGT6", autofill: "OK", sourceDoc: "Purchase Order SPO-2026-0148",
+    id: "spec-a", mpn: "STM32F407VGT6", autofill: "OK", sourceDoc: "Booking appointment WHL-BK-352146",
     parsedAt: "2026-07-20 09:14", confidence: 0.96, tests: STM32_TESTS,
     audit: [
       aud(1, "Doc extraction (auto)", "AUTOFILL", { target: "STM32F407VGT6", before: "—", after: "5 test(s) from Purchase Order SPO-2026-0148", note: "Confidence 96%." }),
@@ -477,7 +477,7 @@ const HERO_MPN_TESTS: MpnTestSpec[] = [
     ],
   },
   {
-    id: "spec-b", mpn: "TPS54560DDAR", autofill: "FAILED", sourceDoc: "Purchase Order SPO-2026-0148",
+    id: "spec-b", mpn: "TPS54560DDAR", autofill: "FAILED", sourceDoc: "Booking appointment WHL-BK-352146",
     parsedAt: "2026-07-20 09:14", confidence: 0.31,
     autofillNote: "Test table on page 2 is a low-resolution scan — columns could not be resolved.",
     tests: [
@@ -500,7 +500,7 @@ const HERO_MPN_TESTS: MpnTestSpec[] = [
 const lotTest = (
   id: string, name: string, status: TestProcessStatus, o: Partial<LotTest> & { hist?: [string, string, string][] } = {},
 ): LotTest => ({
-  id, name, standard: o.standard, source: o.source ?? "AUTO_PO", status,
+  id, name, standard: o.standard, source: o.source ?? "AUTO_BOOKING", status,
   acceptQty: o.acceptQty, rejectQty: o.rejectQty, updatedAt: o.updatedAt,
   requirementId: o.requirementId,
   history: (o.hist ?? []).map(([at, by, note], i) => ({ id: `${id}-h${i}`, at, by, action: "STATUS", target: name, after: note.split("→")[1]?.trim(), note })),
@@ -633,7 +633,7 @@ const stg = (
 const WHL_AUTO = "WHL inbox (auto)";
 
 const LOT_A_STAGES: TestingStageEvent[] = [
-  stg("sg-a1", "TEST_REQUESTED", "2026-07-19 09:40", "A. Sharma", "Work order 352146 raised with WHL Shenzhen — quoted TAT 5 days."),
+  stg("sg-a1", "TEST_BOOKED", "2026-07-19 09:40", "A. Sharma", "Test slot booked with WHL Shenzhen — appointment WHL-BK-352146, work order 352146, quoted TAT 5 days."),
   stg("sg-a1b", "WHL_PAYMENT", "2026-07-19 14:05", "A. Sharma", "Testing fee paid — invoice WHL-INV-352146, USD 923 · ref UTR-7741930.", { manual: true }),
   stg("sg-a2", "SUPPLIER_DISPATCHING", "2026-07-19 15:10", "Supplier (relayed)", "DHL Express · AWB 4471-9920-11 · dispatched 2026-07-19 — supplier confirmed by mail."),
   stg("sg-a3", "COMPONENTS_RECEIVED", "2026-07-21 09:00", WHL_AUTO, "Receipt confirmation — WO 352146 / Lot LOT-A"),
@@ -644,7 +644,7 @@ const LOT_A_STAGES: TestingStageEvent[] = [
 ];
 
 const LOT_B_STAGES: TestingStageEvent[] = [
-  stg("sg-b1", "TEST_REQUESTED", "2026-07-21 10:15", "A. Sharma", "Work order 352147 raised with WHL Shenzhen — quoted TAT 6 days."),
+  stg("sg-b1", "TEST_BOOKED", "2026-07-21 10:15", "A. Sharma", "Test slot booked with WHL Shenzhen — appointment WHL-BK-352147, work order 352147, quoted TAT 6 days."),
   // advance terms: WHL held the lot until the transfer cleared, and its own payment
   // acknowledgement is what closed this stage — hence the mail reference, not a manual flag
   stg("sg-b1b", "WHL_PAYMENT", "2026-07-21 16:20", WHL_AUTO, "Advance fee settled — invoice WHL-INV-352147, USD 615 · ref UTR-7742118. Lot released from hold.", { sourceEmailId: "em-pay-b" }),
@@ -656,7 +656,7 @@ const LOT_B_STAGES: TestingStageEvent[] = [
 ];
 
 const LOT_C_STAGES: TestingStageEvent[] = [
-  stg("sg-c1", "TEST_REQUESTED", "2026-07-26 09:00", "A. Sharma", "Work order 352151 raised with WHL Hong Kong — quoted TAT 6 days."),
+  stg("sg-c1", "TEST_BOOKED", "2026-07-26 09:00", "A. Sharma", "Test slot booked with WHL Hong Kong — appointment WHL-BK-352151, work order 352151, quoted TAT 6 days."),
   // came in as the supplier's own dispatch advice on the lot's thread, not typed by us
   stg("sg-c2", "SUPPLIER_DISPATCHING", "2026-07-26 12:30", "Supplier (relayed)", "FedEx IP · AWB 7788-0021-45 · dispatched 2026-07-26 · ETA 2026-07-27.", { sourceEmailId: "em-dsp-c" }),
   stg("sg-c3", "COMPONENTS_RECEIVED", "2026-07-27 09:15", WHL_AUTO, "Receipt confirmation — WO 352151 / Lot LOT-C"),
