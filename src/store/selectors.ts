@@ -598,7 +598,17 @@ export function orderPhaseTimings(b: OrderBundle): PhaseTiming[] {
   const clientDelivery = outbound.find((s) => ["ARRIVED", "DELIVERED"].includes(s.status))?.deliveryDate;
   const readyToShip = inbound[0]?.pickupReadyDate ?? inbound[0]?.dispatchDate;
   const whlArrival = needsTesting ? lotStageEventAt(b, "COMPONENTS_RECEIVED", "min") : undefined;
-  const testingDoneAt = needsTesting
+  /*
+   * Testing is done when EVERY lot is off the bench, not when the latest report
+   * happens to have landed: `lotStageEventAt(…, "max")` only sees stages lots
+   * have already reached, so on a mixed order — one lot reported, one still
+   * running — it read the finished lot's timestamp and declared the whole phase
+   * complete, which then flagged "confirm the goods have been returned" while
+   * samples were still at the lab.
+   */
+  const allLotsOffBench = b.lots.length > 0
+    && b.lots.every((l) => stageIdx(lotStage(l)) >= stageIdx("TESTING_COMPLETED"));
+  const testingDoneAt = needsTesting && allLotsOffBench
     ? (lotStageEventAt(b, "REPORT_SHARED", "max") ?? lotStageEventAt(b, "TESTING_COMPLETED", "max"))
     : undefined;
 

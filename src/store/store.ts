@@ -699,6 +699,10 @@ interface Store {
   seedLogisticsDemo: (orderId: string) => void;
   /** Demo: strip this order's inbound flow back to the start, to run the whole journey by hand. */
   resetLogisticsFlow: (orderId: string) => void;
+  /** Demo: load a realistic mid-flight testing state — one lot passed and reported, one still on the bench. */
+  seedTestingDemo: (orderId: string) => void;
+  /** Demo: strip this order's testing back to the start, before any slot is booked. */
+  resetTestingFlow: (orderId: string) => void;
   /** File a thread email under its set of categories — several at once is the point; empty means Others. */
   setLogisticsEmailCategories: (orderId: string, itemId: string, categories: string[]) => void;
 
@@ -3028,6 +3032,235 @@ Please pre-file the entry so clearance starts before the goods land.`,
           const b = s.orders[orderId];
           if (!b) return;
           (b.logisticsEmailCategories ??= {})[itemId] = categories;
+        });
+      },
+
+      seedTestingDemo: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        /*
+         * Deliberately overwrites this order's testing state — that is what a
+         * demo loader is for. It stops one step short of done: the first lot is
+         * finished and PASSED, the second is still on the bench with its
+         * results open, so the last mile (sync the inbox, fetch the report, set
+         * the verdict) is walked by hand rather than read about.
+         */
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          const d = (offset: number) => { const x = new Date(); x.setDate(x.getDate() + offset); return x.toISOString().slice(0, 10); };
+          const at = (offset: number, time: string) => `${d(offset)} ${time}`;
+          const lab = "WHL Shenzhen";
+
+          /* Two MPNs off the order itself, so the demo talks about real lines.
+           * A single-line order just tests the one it has. */
+          const mpnA = b.lines[0]?.mpn ?? "STM32F407VGT6";
+          const mpnB = b.lines[1]?.mpn ?? mpnA;
+          const qtyA = b.lines[0]?.quantity ?? 300;
+          const qtyB = b.lines[1]?.quantity ?? 150;
+          const woA = "352901";
+          const woB = "352902";
+          const slotId = uid("slot");
+          const lotAId = uid("lot");
+          const lotBId = uid("lot");
+
+          const PLAN_A = ["External Visual Inspection", "X-Ray Inspection", "Decapsulation", "XRF Analysis"];
+          const PLAN_B = ["External Visual Inspection", "X-Ray Inspection", "Solderability"];
+          const req = (name: string) => ({ id: uid("req"), name, standard: "AS6081", source: "AUTO_BOOKING" as const });
+
+          // ---- the lab appointment everything hangs off ----
+          b.testSlots = [{
+            id: slotId, slotNo: "TS-2026-0044", lab, status: "CONFIRMED",
+            preferredDate: d(-12),
+            lines: [
+              { mpn: mpnA, qty: qtyA, sampleQty: 20, dateCode: "2325", tests: PLAN_A.map((name) => ({ name, standard: "AS6081" })) },
+              { mpn: mpnB, qty: qtyB, sampleQty: 15, dateCode: "2410", tests: PLAN_B.map((name) => ({ name, standard: "AS6081" })) },
+            ],
+            note: "Two date codes, same purchase order — please run both under one appointment.",
+            requestedAt: at(-14, "09:20"), requestedBy: ME,
+            confirmedAt: at(-13, "11:05"), appointmentNo: "WHL-APT-77120",
+            createdLotIds: [lotAId, lotBId],
+          }];
+
+          // ---- the test plan the lab confirmed, per MPN ----
+          const specs = [
+            { mpn: mpnA, tests: PLAN_A },
+            ...(mpnB !== mpnA ? [{ mpn: mpnB, tests: PLAN_B }] : []),
+          ];
+          b.mpnTests = specs.map((x) => ({
+            id: uid("spec"), mpn: x.mpn, autofill: "OK" as const,
+            sourceDoc: "WHL-APT-77120", parsedAt: at(-13, "11:06"), confidence: 0.94,
+            tests: x.tests.map(req),
+            audit: [auditRow({
+              by: `${lab} (confirmation)`, action: "AUTOFILL", target: x.mpn,
+              before: "-", after: `${x.tests.length} test(s) from WHL-APT-77120`,
+              note: "Confidence 94%.",
+            })],
+          }));
+
+          // ---- lot A: the whole journey, finished clean ----
+          const reportA: WhlReport = {
+            id: uid("rep"), reportNo: `${woA}.1`, revision: 1, reportDate: d(-3),
+            workOrderNo: woA, fileName: `WHL-${woA}-R1.pdf`, receivedAt: at(-3, "16:40"),
+            current: true, partNumber: mpnA, manufacturer: b.lines[0]?.make ?? "ST Microelectronics",
+            lotQty: qtyA, client: b.maskingEntity, clientPo: b.supplierPoNo ?? "PO Unknown",
+            conclusion: "ACCEPTABLE", anyFar: false,
+            processes: PLAN_A.map((name) => ({ name, result: "ACCEPTABLE" as const, acceptQty: 20, rejectQty: 0 })),
+            approvedBy: "L. Chen", approverTitle: "Laboratory Manager",
+            standards: ["AS6081"], riskClass: "ERAI Low Risk", msl: "MSL 3", packageType: "LQFP-100",
+            parseFlags: [], accessLog: [],
+          };
+
+          b.lots = [
+            {
+              id: lotAId, orderLineMpn: mpnA, lotCode: "LOT-D1", dateCode: "2325",
+              qty: qtyA, sampleQty: 20, testStatus: "PASS", lab, workOrderNo: woA,
+              reportNo: reportA.reportNo, tatDays: 6, testedAt: d(-3),
+              testSlotId: slotId, testSlotNo: "TS-2026-0044",
+              tests: PLAN_A.map((name) => ({
+                id: uid("lt"), name, standard: "AS6081", source: "AUTO_BOOKING" as const,
+                status: "PASSED" as const, acceptQty: 20, rejectQty: 0, updatedAt: at(-3, "16:40"),
+                history: [auditRow({ by: "WHL inbox (auto)", action: "STATUS", target: name, after: "PASSED" })],
+              })),
+              reports: [reportA],
+              /* The lab bills after issuing the report, so a settled fee puts the
+               * lot at WHL_PAYMENT — one stage short of the hand-off, which is
+               * left for the demo to walk. */
+              stage: "WHL_PAYMENT",
+              stageHistory: ([
+                ["TEST_BOOKED", -13, "11:05"], ["SUPPLIER_DISPATCHING", -11, "10:15"],
+                ["COMPONENTS_RECEIVED", -9, "09:40"], ["TESTING_IN_PROGRESS", -8, "12:00"],
+                ["TESTING_COMPLETED", -4, "17:20"], ["REPORT_SHARED", -3, "16:40"],
+                ["WHL_PAYMENT", -2, "10:25"],
+              ] as const).map(([stage, off, time]) => ({
+                id: uid("se"), stage, at: at(off, time), by: "WHL inbox (auto)",
+              })),
+              dispatch: {
+                courier: "DHL Express", awb: "4471-9955-02", dispatchedOn: d(-11), expectedArrival: d(-9),
+                note: "Samples drawn from the same date-code reel.", recordedBy: ME, recordedAt: at(-11, "10:15"),
+              },
+              /* Settled on credit: billed, sent to finance, paid — this leg is closed. */
+              labPayment: {
+                status: "PAID", requestedAt: at(-3, "17:00"),
+                sentToFinanceAt: at(-2, "09:40"), sentToFinanceBy: ME,
+                paidAt: at(-2, "10:25"), paidRef: "UTR-8814226",
+                invoice: {
+                  id: uid("inv"), invoiceNo: `WHL-INV-${woA}`, amount: 580, taxAmount: 35, currency: "USD",
+                  fileName: `WHL-INV-${woA}.pdf`, receivedAt: at(-3, "17:20"), dueDate: d(12),
+                  terms: "CREDIT", creditDays: 15, ratePerProcess: 145, processCount: 4,
+                  note: `4 process(es) billed against WO ${woA} at USD 145 each.`,
+                  source: "MAIL", accessLog: [],
+                },
+              },
+            },
+            /* ---- lot B: still on the bench — this is the one left to finish ---- */
+            {
+              id: lotBId, orderLineMpn: mpnB, lotCode: "LOT-D2", dateCode: "2410",
+              qty: qtyB, sampleQty: 15, testStatus: "PENDING", lab, workOrderNo: woB,
+              testSlotId: slotId, testSlotNo: "TS-2026-0044",
+              tests: PLAN_B.map((name, i) => ({
+                id: uid("lt"), name, standard: "AS6081", source: "AUTO_BOOKING" as const,
+                // first process done, the rest still running
+                status: (i === 0 ? "PASSED" : "IN_PROGRESS") as "PASSED" | "IN_PROGRESS",
+                acceptQty: i === 0 ? 15 : undefined, rejectQty: i === 0 ? 0 : undefined,
+                updatedAt: at(-2, "15:10"),
+                history: [auditRow({ by: "WHL inbox (auto)", action: "STATUS", target: name, after: i === 0 ? "PASSED" : "IN_PROGRESS" })],
+              })),
+              stage: "TESTING_IN_PROGRESS",
+              stageHistory: ([
+                ["TEST_BOOKED", -13, "11:05"], ["SUPPLIER_DISPATCHING", -11, "10:20"],
+                ["COMPONENTS_RECEIVED", -9, "09:40"], ["TESTING_IN_PROGRESS", -2, "15:10"],
+              ] as const).map(([stage, off, time]) => ({
+                id: uid("se"), stage, at: at(off, time), by: "WHL inbox (auto)",
+              })),
+              dispatch: {
+                courier: "DHL Express", awb: "4471-9955-02", dispatchedOn: d(-11), expectedArrival: d(-9),
+                recordedBy: ME, recordedAt: at(-11, "10:20"),
+              },
+              /* Billed on credit and still owed — money the desk can see without it
+               * blocking the bench, which is the common real case. */
+              /* Not billed yet — the lab invoices once it issues the report, and
+               * this lot's report is still to come. */
+              labPayment: { status: "NOT_REQUESTED" },
+            },
+          ];
+
+          // ---- the WHL thread, as it would actually read ----
+          const mail = (
+            x: { dir: "OUT" | "IN"; kind: LabEmail["kind"]; subject: string; body: string; off: number; time: string;
+                 lotId?: string; lotCode?: string; wo?: string; status: LabEmail["status"]; by: string; att?: string[]; note?: string },
+          ): LabEmail => ({
+            id: uid("lm"), direction: x.dir, lotId: x.lotId, lotCode: x.lotCode, workOrderNo: x.wo,
+            subject: x.subject, body: x.body, at: at(x.off, x.time), by: x.by,
+            status: x.status, kind: x.kind, attachments: x.att, matchNote: x.note,
+          });
+
+          b.labEmails = [
+            mail({ dir: "OUT", kind: "BOOKING_REQUEST", off: -14, time: "09:20", by: ME, status: "SENT",
+              subject: `Test slot request — ${b.orderNo} (2 date codes)`,
+              body: `Please confirm an appointment for two lots against ${b.supplierPoNo ?? b.orderNo}.\n\n· ${mpnA} — ${qtyA} pcs, date code 2325\n· ${mpnB} — ${qtyB} pcs, date code 2410\n\nStandard AS6081 screening on both.` }),
+            mail({ dir: "IN", kind: "BOOKING_CONFIRMED", off: -13, time: "11:05", by: "WHL Bookings", status: "UPDATE_RECEIVED",
+              subject: "Appointment confirmed — WHL-APT-77120",
+              body: `Confirmed for ${d(-9)}. Work orders ${woA} and ${woB} raised. Please dispatch samples to WHL Shenzhen quoting the appointment number.`,
+              att: ["WHL-APT-77120.pdf"] }),
+            mail({ dir: "IN", kind: "DISPATCH", off: -11, time: "10:15", by: "Supplier (relayed)", status: "UPDATE_RECEIVED",
+              subject: "Samples dispatched — AWB 4471-9955-02",
+              body: "Both lots handed to DHL today, one waybill. Expected at the lab in two days." }),
+            mail({ dir: "IN", kind: "INVOICE", off: -3, time: "17:20", by: "WHL Accounts", status: "UPDATE_RECEIVED",
+              lotId: lotAId, lotCode: "LOT-D1", wo: woA,
+              subject: `Testing invoice — WO ${woA}`,
+              body: "Invoice for the completed work order attached, 15-day credit as agreed. The second lot will be billed on completion.",
+              att: [`WHL-INV-${woA}.pdf`] }),
+            mail({ dir: "IN", kind: "REPORT", off: -3, time: "16:40", by: "WHL Reports", status: "REPORT_DELIVERED",
+              lotId: lotAId, lotCode: "LOT-D1", wo: woA,
+              subject: `Report ${woA}.1 — ${mpnA}`,
+              body: "All four processes acceptable. Report attached; originals follow.",
+              att: [`WHL-${woA}-R1.pdf`] }),
+            mail({ dir: "IN", kind: "STATUS_UPDATE", off: -2, time: "15:10", by: "WHL Reports", status: "UPDATE_RECEIVED",
+              lotId: lotBId, lotCode: "LOT-D2", wo: woB,
+              subject: `Progress — WO ${woB}`,
+              body: "Visual inspection acceptable. X-ray and solderability running; report expected in two working days." }),
+            /* One inbound nobody could file — the manual-match queue needs a live
+             * example or the feature reads as decoration. */
+            mail({ dir: "IN", kind: "STATUS_UPDATE", off: -1, time: "09:30", by: "WHL Reports", status: "UPDATE_RECEIVED",
+              subject: "Re: sample query — date code clarification",
+              body: "Could you confirm which reel the second date code was drawn from? The packing note is ambiguous.",
+              note: "No work order or lot code quoted in the subject or body." }),
+          ];
+
+          b.events.unshift({
+            id: uid("ev"), eventType: "DEMO_SEEDED",
+            message: "Testing demo flow loaded — LOT-D1 passed and reported, LOT-D2 still on the bench",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Testing demo flow loaded", {
+          description: "LOT-D1 is through and passed. LOT-D2 is on the bench — sync the WHL inbox, fetch its report and set the verdict to finish.",
+        });
+      },
+
+      resetTestingFlow: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          /* Back to before anything was booked. The test plan goes too — the
+           * lab's confirmation is what fills it, so booking a slot rebuilds it. */
+          b.lots = [];
+          b.testSlots = [];
+          b.labEmails = [];
+          b.mpnTests = [];
+          const gone = new Set(["DEMO_SEEDED", "TESTING_RESET"]);
+          b.events = b.events.filter((e) => !gone.has(e.eventType));
+          b.events.unshift({
+            id: uid("ev"), eventType: "TESTING_RESET",
+            message: "Testing reset to the start for a demo run",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Testing reset", {
+          description: "Back to the start: book a test slot with the lab, dispatch samples, track the bench, then reports and verdicts.",
         });
       },
 
