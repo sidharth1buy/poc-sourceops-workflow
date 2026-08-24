@@ -26,11 +26,11 @@ import {
 } from "@/integrations/lab-whl";
 import { extractLabInvoice, extractBookingAppointment } from "@/integrations/doc-extract";
 import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx, LAB_TERMS_LABEL } from "@/data/enums";
-import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure } from "@/integrations/escrow-agent";
+import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure, DEMO_ESCROW_BANK_ACCOUNT } from "@/integrations/escrow-agent";
 import { bankInitiateTransfer, bankGetTransferStatus } from "@/integrations/banking";
 import { generateIrn } from "@/integrations/einvoice-irp";
 import { sendPartyNotification } from "@/integrations/notify";
-import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose } from "@/types";
+import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose, EmailDirection } from "@/types";
 // Real escrow-agents backend (Python/FastAPI/Postgres/Ollama) — see src/lib/escrow-api.ts.
 // Everything escrow-related below calls this instead of simulating state locally; the PO/PI
 // fetch, payment-closure fetch, and payment-closure upload below stay on the old in-memory mock
@@ -703,6 +703,10 @@ interface Store {
   seedTestingDemo: (orderId: string) => void;
   /** Demo: strip this order's testing back to the start, before any slot is booked. */
   resetTestingFlow: (orderId: string) => void;
+  /** Demo: load a realistic mid-flight escrow — funded, goods in, inspection open, release left to instruct. */
+  seedEscrowDemo: (orderId: string) => void;
+  /** Demo: strip this order's escrow back to Draft, before anything was created on HKin. */
+  resetEscrowFlow: (orderId: string) => void;
   /** File a thread email under its set of categories — several at once is the point; empty means Others. */
   setLogisticsEmailCategories: (orderId: string, itemId: string, categories: string[]) => void;
 
@@ -3236,6 +3240,186 @@ Please pre-file the entry so clearance starts before the goods land.`,
         });
         toast.success("Testing demo flow loaded", {
           description: "LOT-D1 is through and passed. LOT-D2 is on the bench — sync the WHL inbox, fetch its report and set the verdict to finish.",
+        });
+      },
+
+      seedEscrowDemo: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        if (!b0.escrow) { toast.error("This order has no escrow — only escrow-mode orders can run this demo"); return; }
+        /*
+         * Deliberately overwrites this order's escrow — that is what a demo
+         * loader is for. It stops one step short of done: the money is in, the
+         * goods are in, testing passed and the first tranche is released, so
+         * the last release instruction is walked by hand rather than read about.
+         */
+        set((s) => {
+          const b = s.orders[orderId];
+          const e = b?.escrow;
+          if (!b || !e) return;
+          const d = (offset: number) => { const x = new Date(); x.setDate(x.getDate() + offset); return x.toISOString().slice(0, 10); };
+          const at = (offset: number, time: string) => `${d(offset)} ${time}`;
+
+          const conditions: EscrowConditions = {
+            forwarder: "DHL",
+            forwarderAccountNo: "DHL-ACC-88213 (demo)",
+            shipWithinDays: "7 business days",
+            inspectionPeriod: "5 business days",
+            feeSharingLabel: "100% Buyer / 0% Seller",
+            returnCondition: "7 business days, shipping fees to Seller",
+            releaseMilestones: [
+              { percent: 30, trigger: "On shipment to WHL for testing" },
+              { percent: 70, trigger: "On WHL PASS report" },
+            ],
+          };
+          const feeToBuyer = Math.round(e.poAmount * 0.00856);
+          const wiring = Math.round(e.poAmount * 0.0057);
+          const invoiceNo = `AE${d(-18).replace(/-/g, "").slice(2, 6)}-DEMO`;
+          const swift = `SWIFT${d(-14).replace(/-/g, "")}HK`;
+
+          e.status = "RECIPIENT_INSPECTION";
+          e.cancelledAt = undefined;
+          e.applicationRejectedAt = undefined;
+          e.hkinAccountStatus = "CONFIRMED";
+          e.hkinRpaStartedAt = at(-21, "09:10");
+          e.hkinCsContactName = "Miffy Chen";
+          e.hkinCsContactEmail = "miffy.chen@hkin.demo";
+          e.agreedFeeToBuyer = feeToBuyer;
+          e.agreedConditions = conditions;
+          e.invoice = {
+            invoiceNo,
+            receivedAt: at(-17, "11:20"),
+            fees: { poTotal: e.poAmount, feeToBuyer, wiringFeeToBuyer: wiring, feeToSeller: 0, wiringFeeToSeller: 0 },
+            conditions,
+            bankAccount: DEMO_ESCROW_BANK_ACCOUNT,
+          };
+
+          // the SC → Finance → HKin payment chain, all the way through
+          e.paymentInstructedAt = at(-16, "10:05");
+          e.financeConfirmedAt = at(-15, "16:40");
+          e.financeSwiftReference = swift;
+          e.paymentSentToHkinAt = at(-15, "17:15");
+          e.fundedAt = at(-14, "09:30");
+
+          // goods in, inspection window running, testing already back clean
+          e.goodsReceivedAt = at(-3, "14:20");
+          e.inspectionDeadline = d(2);
+          e.whlVerdict = "PASS";
+          e.whlVerdictAt = at(-2, "12:00");
+          e.whlRawConclusion = "Acceptable";
+          e.whlWorkOrder = "352901";
+          e.whlReportRef = "352901.1";
+          e.refundRequestedAt = undefined;
+          e.refundInstructedAt = undefined;
+          e.rmaDetails = undefined;
+          e.goodsReturnTracking = undefined;
+          e.goodsReturnedAt = undefined;
+          e.paymentClosure = undefined;
+
+          /* First tranche released on shipment; the second — the PASS tranche —
+           * is deliberately left for the demo to instruct. */
+          e.milestoneReleases = [{ index: 0, instructedAt: at(-6, "10:00"), confirmedAt: at(-6, "15:30") }];
+
+          const mail = (x: { dir: "SENT" | "RECEIVED"; subject: string; from: string; to?: string; snippet: string; off: number; time: string; att?: string }) => ({
+            id: uid("em"), direction: x.dir as EmailDirection, subject: x.subject, from: x.from, to: x.to,
+            snippet: x.snippet, receivedAt: at(x.off, x.time), attachmentFileName: x.att,
+          });
+          const seller = e.sellerContact.company;
+          e.agentEmails = [
+            mail({ dir: "SENT", off: -21, time: "09:30", from: e.buyerContact.email, to: e.sellerContact.email,
+              subject: `Escrow order raised — ${b.orderNo}`,
+              snippet: `Escrow order created on HKin for ${money(e.poAmount, e.currency)}. Please review the terms and confirm as seller.` }),
+            mail({ dir: "RECEIVED", off: -19, time: "08:45", from: e.sellerContact.email,
+              subject: "Seller confirmation received",
+              snippet: `${seller} accepted the escrow terms. HKin has moved the order to Seller Confirmed.` }),
+            mail({ dir: "RECEIVED", off: -17, time: "11:20", from: "billing@hkin.demo",
+              subject: `Escrow fee invoice ${invoiceNo}`,
+              snippet: `Fee ${money(feeToBuyer, e.currency)} plus wiring ${money(wiring, e.currency)}, 100% to buyer. Bank details attached.`,
+              att: `${invoiceNo}.pdf` }),
+            mail({ dir: "SENT", off: -16, time: "10:05", from: e.buyerContact.email, to: "finance@1buy.ai",
+              subject: `Payment instruction — ${b.orderNo} escrow`,
+              snippet: `Please wire ${money(e.poAmount + feeToBuyer + wiring, e.currency)} to the HKin escrow account against ${invoiceNo}.` }),
+            mail({ dir: "RECEIVED", off: -15, time: "16:40", from: "finance@1buy.ai",
+              subject: "Payment made — SWIFT reference",
+              snippet: `Wire sent. SWIFT reference ${swift}. Please pass it to HKin.` }),
+            mail({ dir: "SENT", off: -15, time: "17:15", from: e.buyerContact.email, to: "miffy.chen@hkin.demo",
+              subject: `Payment confirmation — ${b.orderNo}`,
+              snippet: `Payment made under SWIFT ${swift}. Please confirm receipt and open the shipping window.` }),
+            mail({ dir: "RECEIVED", off: -14, time: "09:30", from: "miffy.chen@hkin.demo",
+              subject: "Escrow payment received",
+              snippet: "Funds received and held in escrow. Seller has been notified to ship within 7 business days." }),
+            mail({ dir: "RECEIVED", off: -8, time: "10:10", from: e.sellerContact.email,
+              subject: "Goods shipped to the test lab",
+              snippet: "Consignment despatched to WHL Shenzhen for testing as agreed." }),
+            mail({ dir: "SENT", off: -6, time: "10:00", from: e.buyerContact.email, to: "miffy.chen@hkin.demo",
+              subject: `Release instruction — tranche 1 of 2 (${b.orderNo})`,
+              snippet: "Shipment milestone met. Please release 30% to the seller." }),
+            mail({ dir: "RECEIVED", off: -6, time: "15:30", from: "miffy.chen@hkin.demo",
+              subject: "Tranche 1 released",
+              snippet: "30% released to the seller against the shipment milestone." }),
+            mail({ dir: "RECEIVED", off: -3, time: "14:20", from: "miffy.chen@hkin.demo",
+              subject: "Reminder of inspection period",
+              snippet: `Goods received. Inspection closes ${d(2)} — silence past the deadline is treated as acceptance.` }),
+          ];
+
+          b.events.unshift({
+            id: uid("ev"), eventType: "DEMO_SEEDED",
+            message: `Escrow demo flow loaded — funded, goods in, tranche 1 released, inspection closes ${d(2)}`,
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Escrow demo flow loaded", {
+          description: "Funded, goods received, testing passed and tranche 1 released. Instruct the final release to finish — the inspection clock is running.",
+        });
+      },
+
+      resetEscrowFlow: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        if (!b0.escrow) { toast.error("This order has no escrow to reset"); return; }
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          const b = s.orders[orderId];
+          if (!b || !e) return;
+          /* Back to Draft — before anything was created on HKin. The agreed
+           * terms survive, because those were settled when the PO was drafted,
+           * not by anything the escrow flow does. */
+          e.status = "DRAFT";
+          e.invoice = undefined;
+          e.paymentClosure = undefined;
+          e.agentEmails = [];
+          e.milestoneReleases = [];
+          e.paymentInstructedAt = undefined;
+          e.financeConfirmedAt = undefined;
+          e.financeSwiftReference = undefined;
+          e.paymentSentToHkinAt = undefined;
+          e.fundedAt = undefined;
+          e.goodsReceivedAt = undefined;
+          e.whlVerdict = undefined;
+          e.whlVerdictAt = undefined;
+          e.whlReportRef = undefined;
+          e.whlWorkOrder = undefined;
+          e.whlRawConclusion = undefined;
+          e.refundRequestedAt = undefined;
+          e.refundInstructedAt = undefined;
+          e.rmaDetails = undefined;
+          e.goodsReturnTracking = undefined;
+          e.goodsReturnedAt = undefined;
+          e.inspectionDeadline = undefined;
+          e.cancelledAt = undefined;
+          e.applicationRejectedAt = undefined;
+          e.hkinRpaStartedAt = undefined;
+          e.hkinAccountStatus = "NOT_ASKED";
+          const gone = new Set(["DEMO_SEEDED", "ESCROW_RESET"]);
+          b.events = b.events.filter((x) => !gone.has(x.eventType));
+          b.events.unshift({
+            id: uid("ev"), eventType: "ESCROW_RESET",
+            message: "Escrow reset to Draft for a demo run",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Escrow reset to Draft", {
+          description: "Back to the start: create the order on HKin, send it to the seller, then invoice, payment, shipping, inspection and release.",
         });
       },
 

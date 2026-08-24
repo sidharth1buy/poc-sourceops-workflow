@@ -369,7 +369,7 @@ function seedSteps(o: Order): Seed[] {
   // escrow funds buyer money up-front (collect-before-pay baked in); non-escrow needs an explicit collect gate first
   if (!escrow) s.push({ phase: "PAYMENT", name: "Collect advance from client", owner: "Finance", isGate: true });
   s.push(escrow
-    ? { phase: "PAYMENT", name: "Escrow: T/T payment received", owner: "SC", isGate: true }
+    ? { phase: "PAYMENT", name: "Escrow: escrow payment received", owner: "SC", isGate: true }
     : { phase: "PAYMENT", name: `Pay supplier — ${o.paymentMode.toLowerCase()}`, owner: "Finance", isGate: true });
   if (testing) {
     const whl = testingModeOf(o) === "WHL";
@@ -829,7 +829,7 @@ const HERO_ESCROW: Escrow = {
     { id: "ea-hkinpay", direction: "SENT", subject: "Payment sent — ORD-2026-000148", from: "finance@1buy.ai", to: "billing@hkin-escrow.example",
       snippet: "We've remitted the T/T per invoice AE2607-1188 — please confirm receipt.", receivedAt: "2026-07-20" },
     { id: "ea-payconf", direction: "RECEIVED", subject: "Payment received — ORD-2026-000148", from: "billing@hkin-escrow.example",
-      snippet: "HKin confirms the T/T payment has been received into escrow.", receivedAt: "2026-07-20" },
+      snippet: "HKin confirms the escrow payment has been received.", receivedAt: "2026-07-20" },
     { id: "ea-shipnotice", direction: "RECEIVED", subject: "Shipment dispatched — ORD-2026-000148", from: "sales@shenzhenmicro.example",
       snippet: "Supplier confirms goods have been dispatched; AWB attached.", receivedAt: "2026-07-23" },
     { id: "ea-goodsrecv", direction: "RECEIVED", subject: "Goods received — ORD-2026-000148", from: "labs@whl-labs.example",

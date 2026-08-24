@@ -419,7 +419,7 @@ function DocRow({ d }: { d: DocRowState }) {
 /**
  * The escrow paper trail's own status — separate from Details (which is reference info you set
  * once and rarely revisit). PO/PI are already on file by the time an order reaches escrow; the
- * HKin invoice's arrival is tracked here too even though the email itself lives on Correspondence;
+ * HKin invoice's arrival is tracked here too even though the email itself lives on Communication;
  * the WHL report is pulled from each lot's own current report, not the flat documents log, since
  * that's the real source of truth for revisions. No Payment Closure row — that step is just a
  * reference number (EscrowPaymentClosure.documentNo), not an actual document.
@@ -440,7 +440,7 @@ function DocumentsPanel({ b }: { b: OrderBundle }) {
       : { label: "Proforma invoice (PI)", status: "warn", statusLabel: "Awaiting" },
     e.invoice
       ? { label: "HKin escrow invoice", status: "ok", statusLabel: "Received", fileName: invoiceDoc?.fileName, ref: e.invoice.invoiceNo, date: e.invoice.receivedAt }
-      : { label: "HKin escrow invoice", status: "warn", statusLabel: "Awaiting — arrives by mail, see Correspondence" },
+      : { label: "HKin escrow invoice", status: "warn", statusLabel: "Awaiting — arrives by mail, see Communication" },
   ];
 
   return (
@@ -491,7 +491,7 @@ function AgentInboxPanel({ b }: { b: OrderBundle }) {
     { key: "when", header: "When", align: "right", render: (m) => <span className="text-xs tnum">{m.receivedAt}</span> },
   ];
   return (
-    <Panel title="Email log — every message sent or received on this order">
+    <Panel title="Communication — every message sent or received on this order">
       <DataTable columns={cols} rows={b.escrow!.agentEmails} empty="No emails yet." />
     </Panel>
   );
@@ -850,7 +850,7 @@ function SendEscrowEmailModal({
             {selected.decisionKey === "acceptAll" && (
               <>
                 <Labeled label="Amount accepted"><Input value={money(e.poAmount, e.currency)} disabled /></Labeled>
-                <p className="text-sm text-muted-foreground">Records the buyer&apos;s decision to accept the goods in full (real portal: Accept All) and logs it to Correspondence.</p>
+                <p className="text-sm text-muted-foreground">Records the buyer&apos;s decision to accept the goods in full (real portal: Accept All) and logs it to Communication.</p>
               </>
             )}
           </>
@@ -872,13 +872,13 @@ const NEXT_STEP_HINT: Record<EscrowOrderStatus, string> = {
   RELEASED_TO_SELLER: "Escrow complete.",
 };
 
-// Four tabs, one per mental mode: what needs doing now, the correspondence trail (which used
+// Four tabs, one per mental mode: what needs doing now, the communication trail (which used
 // to sit dead last after everything else and cost a full scroll to reach), read-once reference
 // info that's rarely touched after the order is set up, and the escrow paper trail's own status.
-type EscrowTabKey = "action" | "correspondence" | "details" | "documents";
+type EscrowTabKey = "action" | "communication" | "details" | "documents";
 const ESCROW_TABS: { id: EscrowTabKey; label: string }[] = [
   { id: "action", label: "Action" },
-  { id: "correspondence", label: "Correspondence" },
+  { id: "communication", label: "Communication" },
   { id: "details", label: "Details" },
   { id: "documents", label: "Documents" },
 ];
@@ -1021,9 +1021,9 @@ export function EscrowTab({
         </>
       )}
 
-      {/* Correspondence — the full email trail, on its own tab instead of buried at the bottom
+      {/* Communication — the full email trail, on its own tab instead of buried at the bottom
           of everything else (used to cost a full-page scroll to reach). */}
-      {tab === "correspondence" && <AgentInboxPanel b={b} />}
+      {tab === "communication" && <AgentInboxPanel b={b} />}
 
       {/* Details — read-once-then-rarely-touched reference info (PO/contacts/invoice), not
           something acted on every visit. */}
@@ -1040,7 +1040,7 @@ export function EscrowTab({
       )}
 
       {/* Documents — the escrow paper trail's own status, separate from Details' reference info:
-          PO/PI are already on file from order setup, the HKin invoice arrives by mail (Correspondence
+          PO/PI are already on file from order setup, the HKin invoice arrives by mail (Communication
           tracks that separately), and the WHL report is the lab's own deliverable. No Payment
           Closure row — that step has no associated document, just a reference number. */}
       {tab === "documents" && <DocumentsPanel b={b} />}

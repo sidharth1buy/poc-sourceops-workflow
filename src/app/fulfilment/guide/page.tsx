@@ -11,7 +11,7 @@ const PHASES: {
     { name: "Order received for fulfilment (already approved, PI in hand)", owner: "SC", cond: "PO review, sending the PO & supplier ACK+PI are done on the upstream sourcing platform — this console is fulfilment-only. Upload the confirmed PI to the order." },
   ] },
   { phase: "Payment", tone: "warn", steps: [
-    { name: "Escrow: T/T payment received", owner: "SC", gate: "escrow must reach T/T Payment Received", cond: "when payment = Escrow / LC" },
+    { name: "Escrow: escrow payment received", owner: "SC", gate: "escrow must reach Escrow payment received", cond: "when payment = Escrow / LC" },
     { name: "Pay supplier (advance / credit)", owner: "Finance", gate: "supplier payment INITIATED / PAID", cond: "when payment = Advance / Credit" },
   ] },
   { phase: "Testing", tone: "info", steps: [
@@ -35,7 +35,7 @@ const PHASES: {
 ];
 
 const BRANCHES = [
-  { when: "Payment = Escrow / LC", then: "An escrow order appears on its own 8-state track (Draft → … → Released to Seller). A gate holds the seller's money until T/T payment is received and, later, release." },
+  { when: "Payment = Escrow / LC", then: "An escrow order appears on its own 8-state track (Draft → … → Released to Seller). A gate holds the seller's money until the escrow payment is received and, later, release." },
   { when: "Payment = Advance / Credit", then: "No escrow. Supplier paid directly (up front, or on net-credit terms later). Gate = payment initiated." },
   { when: "Testing = None", then: "Testing and its gate are skipped entirely; the order goes straight from payment to logistics." },
   { when: "Testing = Sample / WHL", then: "A testing gate is inserted — nothing dispatches until a lot PASSES." },
@@ -54,7 +54,7 @@ const OUTCOMES = [
 // Worked end-to-end flows (🔒 = gate). Mirrors seedSteps ordering for the three common shapes.
 const SCENARIOS: { title: string; when: string; steps: { name: string; gate?: boolean }[] }[] = [
   { title: "International · Escrow · WHL lab", when: "payment = Escrow · testing = WHL · route = International", steps: [
-    { name: "Order received" }, { name: "Escrow: T/T received", gate: true }, { name: "WHL test → PASS", gate: true },
+    { name: "Order received" }, { name: "Escrow: payment received", gate: true }, { name: "WHL test → PASS", gate: true },
     { name: "Release escrow", gate: true }, { name: "Ship to India", gate: true }, { name: "BOE in ICEGATE", gate: true },
     { name: "Relabel to 1Buy" }, { name: "e-Invoice + dispatch", gate: true }, { name: "Proof of delivery" }, { name: "Close" },
   ] },
@@ -84,7 +84,7 @@ const STORY = [
   { n: 2, icon: "🏭", title: "We buy from a supplier", plain: "We place our own order with a supplier who has the parts — neither side deals with the other, we sit in the middle.", term: "Our PO → Seller PI" },
   { n: 3, icon: "🔒", title: "The money is held safely", plain: "The buyer's payment goes into escrow — a neutral holding account — so nobody loses out if something goes wrong.", term: "Escrow" },
   { n: 4, icon: "🧪", title: "The parts are quality-checked", plain: "An independent lab tests a sample to confirm the parts are genuine and good.", term: "WHL testing" },
-  { n: 5, icon: "💸", title: "The supplier is paid once goods are accepted", plain: "The escrow order works through its own state machine — sent for confirmation, invoiced, T/T received, inspected — before the held money is released to the supplier.", term: "Released to Seller" },
+  { n: 5, icon: "💸", title: "The supplier is paid once goods are accepted", plain: "The escrow order works through its own state machine — sent for confirmation, invoiced, escrow payment received, inspected — before the held money is released to the supplier.", term: "Released to Seller" },
   { n: 6, icon: "🚢", title: "Goods travel & clear customs", plain: "The supplier ships to us; for imports the goods clear customs (duty + paperwork).", term: "Shipment + BOE" },
   { n: 7, icon: "🏷️", title: "We receive & relabel", plain: "Parts arrive at our warehouse; we check them and relabel them under 1Buy before sending on.", term: "GRN + relabel" },
   { n: 8, icon: "📦", title: "We deliver to the customer", plain: "We ship to the client with our invoice, capture proof of delivery, and close the deal.", term: "Dispatch + PoD" },

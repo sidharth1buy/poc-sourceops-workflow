@@ -254,9 +254,9 @@ function MailPanel({ b, workspace }: { b: OrderBundle; workspace: string }) {
   const lotCode = (m: LabEmail) => m.lotCode ?? b.lots.find((l) => l.id === m.lotId)?.lotCode;
 
   return (
-    <Panel title="WHL correspondence"
+    <Panel title="WHL communication"
       actions={<Link href={workspace} className="text-xs font-medium text-primary hover:underline">compose / sync in the workspace →</Link>}>
-      {thread.length === 0 ? <Empty text="No correspondence with WHL yet." /> : (
+      {thread.length === 0 ? <Empty text="No communication with WHL yet." /> : (
         <>
           <ol className="space-y-3">
             {visible.map((m) => (

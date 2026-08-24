@@ -119,7 +119,7 @@ export function gateReason(b: OrderBundle, step: JourneyStep): string | null {
   if (step.phase === "PAYMENT") {
     if (b.escrow) {
       if (b.escrow.cancelledAt) return "Escrow order was cancelled (see the Escrow tab).";
-      return escrowStatusIndex(b.escrow.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") ? null : "Escrow T/T payment not received yet (see the Escrow tab).";
+      return escrowStatusIndex(b.escrow.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") ? null : "Escrow payment not received yet (see the Escrow tab).";
     }
     return b.payments.some((p) => p.direction === "1BUY_TO_SUPPLIER" && (p.status === "INITIATED" || p.status === "PAID")) ? null : "Supplier payment not initiated yet.";
   }
