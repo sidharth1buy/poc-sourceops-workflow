@@ -707,6 +707,14 @@ interface Store {
   seedEscrowDemo: (orderId: string) => void;
   /** Demo: strip this order's escrow back to Draft, before anything was created on HKin. */
   resetEscrowFlow: (orderId: string) => void;
+
+  // ---- escrow communication: free-form mail alongside the state machine ----
+  /** Send an ad-hoc message on the escrow thread. Never moves escrow status — the state machine owns that. */
+  sendEscrowMessage: (orderId: string, m: { toEmail: string; subject: string; body: string; cc?: string; bcc?: string; categories?: string[]; threadId?: string }) => void;
+  /** Poll for replies to ad-hoc mail nobody has answered yet. Distinct from checkEscrowInbox, which advances the flow. */
+  checkEscrowReplies: (orderId: string) => void;
+  /** File an escrow email under its set of categories — several at once; empty means Others. */
+  setEscrowEmailCategories: (orderId: string, emailId: string, categories: string[]) => void;
   /** File a thread email under its set of categories — several at once is the point; empty means Others. */
   setLogisticsEmailCategories: (orderId: string, itemId: string, categories: string[]) => void;
 
@@ -3370,6 +3378,71 @@ Please pre-file the entry so clearance starts before the goods land.`,
         });
         toast.success("Escrow demo flow loaded", {
           description: "Funded, goods received, testing passed and tranche 1 released. Instruct the final release to finish — the inspection clock is running.",
+        });
+      },
+
+      sendEscrowMessage: (orderId, m) => {
+        const b0 = get().orders[orderId];
+        if (!b0?.escrow) return;
+        if (!m.toEmail.trim()) { toast.error("Type the recipient's email address"); return; }
+        if (!m.subject.trim() || !m.body.trim()) { toast.error("A subject and a message are both needed"); return; }
+        const id = uid("em");
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          if (!e) return;
+          /*
+           * Ad-hoc mail is a record, not a trigger: it never touches
+           * `status`. Everything that moves the escrow forward still goes
+           * through sendEscrowEmail / checkEscrowInbox.
+           */
+          e.agentEmails.unshift({
+            id, threadId: m.threadId, direction: "SENT",
+            subject: m.subject.trim(), from: e.buyerContact.email, to: m.toEmail.trim(),
+            cc: m.cc?.trim() || undefined, bcc: m.bcc?.trim() || undefined,
+            snippet: m.body.trim(), receivedAt: stamp(),
+          });
+          if (m.categories?.length) (e.emailCategories ??= {})[id] = m.categories;
+        });
+        toast.success(m.threadId ? "Reply sent — added to the chain" : "Sent", { description: m.toEmail.trim() });
+      },
+
+      checkEscrowReplies: (orderId) => {
+        const b = get().orders[orderId];
+        const e = b?.escrow;
+        if (!b || !e) return;
+        /*
+         * A party owes a reply when our newest mail to them is newer than
+         * their newest to us. Only those are answered — an inbox that invents
+         * unprompted mail would drown the real thread.
+         */
+        const byParty = new Map<string, { threadId: string; subject: string; to: string; way: string }>();
+        for (const m of [...e.agentEmails].sort((x, y) => (x.receivedAt || "").localeCompare(y.receivedAt || ""))) {
+          const who = m.direction === "SENT" ? (m.to ?? "") : m.from;
+          if (!who) continue;
+          byParty.set(who, { threadId: m.threadId ?? m.id, subject: m.subject, to: who, way: m.direction });
+        }
+        const pending = [...byParty.values()].filter((x) => x.way === "SENT");
+        if (pending.length === 0) { toast("Nobody owes this thread a reply — nothing to poll for"); return; }
+        set((s) => {
+          const ee = s.orders[orderId]?.escrow;
+          if (!ee) return;
+          for (const p of pending) {
+            ee.agentEmails.unshift({
+              id: uid("em"), threadId: p.threadId, direction: "RECEIVED",
+              subject: p.subject.startsWith("Re: ") ? p.subject : `Re: ${p.subject}`,
+              from: p.to, snippet: "Noted, thank you — we will come back to you shortly.",
+              receivedAt: stamp(),
+            });
+          }
+        });
+        toast.success(`${pending.length} repl${pending.length === 1 ? "y" : "ies"} received`);
+      },
+
+      setEscrowEmailCategories: (orderId, emailId, categories) => {
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          if (!e) return;
+          (e.emailCategories ??= {})[emailId] = categories;
         });
       },
 

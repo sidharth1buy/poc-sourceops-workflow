@@ -2,15 +2,15 @@
 
 import { useState, type ReactNode } from "react";
 import { Upload, Check, Lock, Ban, Send, Inbox, PlayCircle, Mail } from "lucide-react";
-import type { OrderBundle, EscrowOrderStatus, EscrowAgentEmail, EscrowContact, EscrowSendPurpose } from "@/types";
+import type { OrderBundle, EscrowOrderStatus, EscrowContact, EscrowSendPurpose } from "@/types";
 import { ESCROW_STATUS_ORDER, prettyStatus, HKIN_EMAIL, FINANCE_EMAIL } from "@/data/enums";
 import { Panel, Field, DataTable, StatusPill, Pill, Button, Notice, FormTabBar, type Col } from "@/components/ui/primitives";
+import { EscrowCommunication } from "@/components/order/escrow-communication";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Textarea, Select } from "@/components/ui/form";
 import { money, qtyfmt, cn } from "@/lib/utils";
 import { useStore, type EscrowEmailDraft } from "@/store/store";
 import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet, orderPhaseTimings, currentReport } from "@/store/selectors";
-import { ESCROW_API_BASE } from "@/lib/escrow-api";
 
 type Compose = (purpose: EscrowSendPurpose, milestoneIndex?: number) => void;
 
@@ -463,42 +463,6 @@ function DocumentsPanel({ b }: { b: OrderBundle }) {
   );
 }
 
-function AgentInboxPanel({ b }: { b: OrderBundle }) {
-  const cols: Col<EscrowAgentEmail>[] = [
-    { key: "dir", header: "", render: (m) => <Pill tone={m.direction === "SENT" ? "info" : "neutral"}>{m.direction}</Pill> },
-    { key: "subj", header: "Subject", render: (m) => <span className="text-sm">{m.subject}</span> },
-    { key: "snippet", header: "Snippet", render: (m) => <span className="text-xs text-muted-foreground">{m.snippet}</span> },
-    {
-      key: "from", header: "From / To",
-      render: (m) => (
-        <span className="font-mono text-xs text-muted-foreground">
-          {m.direction === "SENT" ? m.to : m.from}
-          {m.direction === "SENT" && m.cc && <><br /><span className="text-faint">cc: {m.cc}</span></>}
-        </span>
-      ),
-    },
-    {
-      key: "att", header: "Attachment",
-      render: (m) => m.attachmentUrl ? (
-        <a href={`${ESCROW_API_BASE}${m.attachmentUrl}`} target="_blank" rel="noopener noreferrer"
-           className="font-mono text-xs text-primary underline underline-offset-2">
-          {m.attachmentFileName ?? "view"}
-        </a>
-      ) : (
-        <span className="font-mono text-xs">{m.attachmentFileName ?? "—"}</span>
-      ),
-    },
-    { key: "when", header: "When", align: "right", render: (m) => <span className="text-xs tnum">{m.receivedAt}</span> },
-  ];
-  return (
-    <Panel title="Communication — every message sent or received on this order">
-      <DataTable columns={cols} rows={b.escrow!.agentEmails} empty="No emails yet." />
-    </Panel>
-  );
-}
-
-// Every SENT email opens here first — nothing dispatches on a single click. SC reviews (and can
-// edit) the draft, then explicitly hits Send.
 function ComposeEmailModal({
   purpose, draft, onClose, onSend,
 }: { purpose: EscrowSendPurpose; draft: EscrowEmailDraft; onClose: () => void; onSend: (purpose: EscrowSendPurpose, draft: EscrowEmailDraft) => void }) {
@@ -1023,7 +987,7 @@ export function EscrowTab({
 
       {/* Communication — the full email trail, on its own tab instead of buried at the bottom
           of everything else (used to cost a full-page scroll to reach). */}
-      {tab === "communication" && <AgentInboxPanel b={b} />}
+      {tab === "communication" && <EscrowCommunication b={b} />}
 
       {/* Details — read-once-then-rarely-touched reference info (PO/contacts/invoice), not
           something acted on every visit. */}
