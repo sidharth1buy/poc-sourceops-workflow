@@ -577,10 +577,17 @@ export type WhlVerdict = "PASS" | "FAIL";
 export interface EscrowAgentEmail {
   id: string;
   direction: EmailDirection;
+  /**
+   * The chain this email belongs to: the ROOT email's id. Absent on a root
+   * (its own id is the chain). Replies — ours and theirs — carry the root's
+   * id, which is what makes a conversation one thread instead of a pile.
+   */
+  threadId?: string;
   subject: string;
   from: string;
   to?: string; // mainly for SENT emails
   cc?: string; // mainly for SENT emails
+  bcc?: string; // mainly for SENT emails
   snippet: string;
   receivedAt: string; // "occurred at" — applies to both directions
   attachmentFileName?: string;
@@ -648,6 +655,12 @@ export interface Escrow {
   milestoneReleases: MilestoneRelease[]; // one entry per instructed tranche — see MilestoneRelease
 
   agentEmails: EscrowAgentEmail[];
+  /**
+   * Manual categories filed on an email, by email id — an email can sit under
+   * SEVERAL filters at once (HKin's invoice mail under both HKin and Finance).
+   * Defaults to the party it is with; an empty filing means Others.
+   */
+  emailCategories?: Record<string, string[]>;
   cancelledAt?: string; // buyer/seller can cancel any time before RELEASED_TO_SELLER (real HKin allows this even after T/T — confirmed against a real cancelled order)
   // Set when the HKin order-creation RPA (hkin-rpa, via escrow-agents'
   // /create-on-hkin) was launched — it fills HKin's real form and stops for

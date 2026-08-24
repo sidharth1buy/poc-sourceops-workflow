@@ -1,72 +1,96 @@
 "use client";
 
-import Link from "next/link";
+// THE ESCROW QUEUE — every escrow order, worst first.
+//
+// Rebuilt to read like the Logistics and Testing queues: one paginated table
+// sorted by what is actually at stake, pressure chips as the filter row, one
+// search box, and a whole row that opens the order. The old three-dropdown
+// filter panel (order no. / supplier / status) is gone — it asked the reader
+// to know what they were looking for before it would show them anything,
+// which is backwards for a board whose job is to say what needs doing today.
+
 import { useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Search } from "lucide-react";
 import { useStore } from "@/store/store";
-import { allEscrow, orderPhaseTimings } from "@/store/selectors";
+import {
+  escrowView, sortEscrowQueue,
+  ESCROW_PRESSURE_META, ESCROW_PRESSURE_ORDER,
+  type EscrowPressure, type EscrowView,
+} from "@/lib/escrow-queue";
+import type { OrderBundle } from "@/types";
 import { Panel, Pill, StatusPill, DataTable, PageHeader, Pagination, RoleLocked, type Col } from "@/components/ui/primitives";
-import { prettyStatus } from "@/data/enums";
+import { Input } from "@/components/ui/form";
 import { money, cn } from "@/lib/utils";
 import { useRole } from "@/lib/role";
 import { useEscrowMockMode } from "@/lib/escrow-mode";
 
-const STATUS_FILTERS = [
-  "All", "DRAFT", "SENT_FOR_SELLER_CONFIRMATION", "SELLER_CONFIRMED", "ESCROW_FEE_INVOICED",
-  "TT_PAYMENT_RECEIVED", "GOODS_SHIPPED", "RECIPIENT_INSPECTION", "RELEASED_TO_SELLER", "Cancelled",
-] as const;
 const PAGE_SIZE = 10;
-const filterInput = "rounded-lg border bg-card px-3 py-1.5 text-sm outline-none focus:border-primary";
-const filterLabel = "text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
+
+interface Row { b: OrderBundle; view: EscrowView }
 
 export default function EscrowBoardPage() {
+  const router = useRouter();
   const orders = useStore((s) => s.orders);
   const { canAccessEscrow } = useRole();
   const escrowMock = useEscrowMockMode();
-  const all = allEscrow(orders).map((r) => ({
-    ...r, funding: orderPhaseTimings(orders[r.orderId]).find((p) => p.phase === "FUNDING"),
-  }));
-  const title = <span className="inline-flex items-center gap-2">Escrow board{escrowMock && <Pill tone="warn">Mock mode</Pill>}</span>;
 
-  // Stable option list regardless of other active filters, so the dropdown
-  // doesn't reshuffle/narrow as the operator filters — computed off every
-  // escrow order, not the currently-filtered set.
-  const suppliers = useMemo(() => Array.from(new Set(all.map((r) => r.e.sellerContact.company))).sort(), [all]);
-
-  const [orderNo, setOrderNo] = useState("");
-  const [supplier, setSupplier] = useState("All");
-  const [status, setStatus] = useState<string>("All");
+  const [q, setQ] = useState("");
+  const [pressure, setPressure] = useState<EscrowPressure | "ALL">("ALL");
   const [page, setPage] = useState(1);
-  const hasFilters = orderNo !== "" || supplier !== "All" || status !== "All";
+
+  const rows = useMemo<Row[]>(() => {
+    const all = Object.values(orders)
+      .map((b) => ({ b, view: escrowView(b) }))
+      .filter((r): r is Row => r.view !== null);
+    return sortEscrowQueue(all);
+  }, [orders]);
+
+  const counts = useMemo(() => {
+    const c: Record<EscrowPressure, number> = { REFUND: 0, INSPECTION: 0, FUNDING: 0, IN_FLIGHT: 0, RELEASED: 0 };
+    for (const r of rows) c[r.view.pressure]++;
+    return c;
+  }, [rows]);
 
   const filtered = useMemo(() => {
-    const q = orderNo.trim().toLowerCase();
-    return all
-      .filter((r) => {
-        const okOrderNo = q === "" || r.orderNo.toLowerCase().includes(q);
-        const okSupplier = supplier === "All" || r.e.sellerContact.company === supplier;
-        const okStatus = status === "All"
-          || (status === "Cancelled" ? !!r.e.cancelledAt : !r.e.cancelledAt && r.e.status === status);
-        return okOrderNo && okSupplier && okStatus;
-      })
-      // Stalled-on-our-side orders first — that's the one thing on this board that actively
-      // needs a human today, regardless of what else the filters/sort would otherwise surface.
-      .sort((a, b) => (a.funding?.atRisk ? 0 : 1) - (b.funding?.atRisk ? 0 : 1));
-  }, [all, orderNo, supplier, status]);
+    const needle = q.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (pressure !== "ALL" && r.view.pressure !== pressure) return false;
+      if (!needle) return true;
+      const e = r.b.escrow!;
+      const hay = `${r.b.orderNo} ${e.buyerContact.company} ${e.sellerContact.company} ${e.invoice?.invoiceNo ?? ""}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [rows, q, pressure]);
 
-  // Clamp instead of trusting `page` directly — a filter change can leave it
-  // pointing past the new (shorter) result set.
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const pageSafe = Math.min(page, totalPages);
-  const rows = filtered.slice((pageSafe - 1) * PAGE_SIZE, pageSafe * PAGE_SIZE);
+  const safePage = Math.min(page, totalPages);
+  const pageRows = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const cols: Col<(typeof rows)[number]>[] = [
-    { key: "no", header: "Order", render: (r) => <Link href={`/fulfilment/escrow/${r.orderId}`} className="font-mono text-xs text-primary hover:underline">{r.orderNo}</Link> },
-    { key: "buyer", header: "Buyer", render: (r) => r.e.buyerContact.company },
-    { key: "seller", header: "Seller", render: (r) => r.e.sellerContact.company },
-    { key: "inv", header: "Invoice no.", render: (r) => <span className="font-mono text-xs">{r.e.invoice?.invoiceNo ?? "—"}</span> },
-    { key: "amt", header: "PO amount", align: "right", render: (r) => money(r.e.poAmount, r.e.currency) },
-    { key: "status", header: "Status", render: (r) => r.e.cancelledAt ? <Pill tone="bad">Cancelled</Pill> : <StatusPill status={r.e.status} /> },
-    { key: "risk", header: "", align: "right", render: (r) => r.funding?.atRisk ? <Pill tone="bad" title={r.funding.atRisk.reason}>action needed</Pill> : null },
+  /*
+   * The board's original columns, deliberately kept: buyer, seller, invoice no.
+   * and PO amount are what an escrow desk identifies an order by. Only the
+   * surrounding structure changed (pressure chips, search, worst-first sort,
+   * whole-row click) — not what the table reports.
+   */
+  const columns: Col<Row>[] = [
+    { key: "no", header: "Order", render: (r) => <span className="font-mono text-xs font-semibold">{r.b.orderNo}</span> },
+    { key: "buyer", header: "Buyer", render: (r) => r.b.escrow!.buyerContact.company },
+    { key: "seller", header: "Seller", render: (r) => r.b.escrow!.sellerContact.company },
+    { key: "inv", header: "Invoice no.", render: (r) => <span className="font-mono text-xs">{r.b.escrow!.invoice?.invoiceNo ?? "—"}</span> },
+    { key: "amt", header: "PO amount", align: "right", render: (r) => money(r.view.poAmount, r.view.currency) },
+    {
+      key: "status", header: "Status",
+      render: (r) => (r.view.cancelled ? <Pill tone="bad">Cancelled</Pill> : <StatusPill status={r.view.status} />),
+    },
+    {
+      key: "risk", header: "", align: "right",
+      render: (r) => (
+        r.view.feeMismatch ? <Pill tone="bad" title="Invoice fee does not match what was agreed at PO time">fee mismatch</Pill>
+          : r.view.atRisk ? <Pill tone="bad" title={r.view.atRisk.reason}>action needed</Pill>
+          : null
+      ),
+    },
   ];
 
   if (!canAccessEscrow) {
@@ -79,42 +103,77 @@ export default function EscrowBoardPage() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <PageHeader
-        title={title}
-        description="Every order's escrow order across the 8-state HKin-modelled flow (Draft → Released to Seller). All actions — advance, invoice, accept/reject, release, refund — live here on each order's detail page."
+        title={<span className="inline-flex items-center gap-2">Escrow — orders{escrowMock && <Pill tone="warn">Mock mode</Pill>}</span>}
+        description="Worst first: money that has to come back sits at the top, then orders whose inspection clock is running, so the next thing to pick up is always the first row. Click a row to work the order."
       />
+
       <Panel>
-        <div className="mb-3 flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1">
-            <span className={filterLabel}>Order no.</span>
-            <input value={orderNo} onChange={(e) => { setOrderNo(e.target.value); setPage(1); }} placeholder="ORD-2026-…"
-              className={cn(filterInput, "w-40")} />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={filterLabel}>Supplier</span>
-            <select value={supplier} onChange={(e) => { setSupplier(e.target.value); setPage(1); }} className={cn(filterInput, "w-48")}>
-              <option value="All">All suppliers</option>
-              {suppliers.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className={filterLabel}>Status</span>
-            <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }} className={cn(filterInput, "w-56")}>
-              {STATUS_FILTERS.map((s) => <option key={s} value={s}>{s === "All" || s === "Cancelled" ? s : prettyStatus(s)}</option>)}
-            </select>
-          </label>
-          {hasFilters && (
-            <button type="button" onClick={() => { setOrderNo(""); setSupplier("All"); setStatus("All"); setPage(1); }}
-              className="rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground">
-              Clear filters
-            </button>
-          )}
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <FilterChip label="All" count={rows.length} active={pressure === "ALL"} onClick={() => { setPressure("ALL"); setPage(1); }} />
+          {ESCROW_PRESSURE_ORDER.map((p) => (
+            <FilterChip
+              key={p}
+              label={ESCROW_PRESSURE_META[p].label}
+              title={ESCROW_PRESSURE_META[p].what}
+              count={counts[p]}
+              tone={ESCROW_PRESSURE_META[p].tone}
+              active={pressure === p}
+              onClick={() => { setPressure(pressure === p ? "ALL" : p); setPage(1); }}
+            />
+          ))}
+          <div className="relative ml-auto">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setPage(1); }}
+              placeholder="Order, seller, invoice no.…"
+              className="w-64 pl-8"
+            />
+          </div>
         </div>
-        <DataTable columns={cols} rows={rows} empty="No escrow orders match these filters." rowAccent={(r) => r.funding?.atRisk ? "bad" : undefined} />
-        <Pagination page={pageSafe} totalPages={totalPages} onChange={setPage} />
+
+        <DataTable<Row>
+          columns={columns}
+          rows={pageRows}
+          empty={q || pressure !== "ALL" ? "Nothing matches that filter." : "No escrow orders yet."}
+          onRowClick={(r) => router.push(`/fulfilment/escrow/${r.b.id}`)}
+          rowAccent={(r) => (r.view.pressure === "REFUND" ? "bad" : r.view.atRisk || r.view.feeMismatch ? "warn" : undefined)}
+          rowMuted={(r) => r.view.pressure === "RELEASED"}
+        />
+
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-muted-foreground">
+            {filtered.length} escrow order{filtered.length === 1 ? "" : "s"}
+            {filtered.length > PAGE_SIZE ? ` · showing ${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(safePage * PAGE_SIZE, filtered.length)}` : ""}
+          </p>
+          <Pagination page={safePage} totalPages={totalPages} onChange={setPage} />
+        </div>
       </Panel>
-      <p className="text-xs text-faint">{filtered.length} of {all.length} escrow order{all.length === 1 ? "" : "s"}{hasFilters ? " match the current filters" : ""}.</p>
     </div>
+  );
+}
+
+function FilterChip({
+  label, count, active, onClick, tone, title,
+}: { label: string; count: number; active: boolean; onClick: () => void; tone?: string; title?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition",
+        active ? "border-primary bg-accent-soft text-primary" : "bg-card text-muted-foreground hover:bg-muted",
+      )}
+    >
+      {label}
+      <span className={cn(
+        "rounded-full px-1.5 text-[10px] font-semibold",
+        tone === "bad" && count > 0 ? "bg-bad-bg text-bad" : tone === "warn" && count > 0 ? "bg-warn-bg text-warn" : "bg-muted text-muted-foreground",
+      )}>
+        {count}
+      </span>
+    </button>
   );
 }

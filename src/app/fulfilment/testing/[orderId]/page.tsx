@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, RotateCcw, Sparkles } from "lucide-react";
 import { useStore } from "@/store/store";
-import { PageHeader, Panel, Pill, StatusPill, RoleLocked } from "@/components/ui/primitives";
+import { Button, PageHeader, Panel, Pill, StatusPill, RoleLocked } from "@/components/ui/primitives";
 import { TestingTab } from "@/components/order/testing-tab";
 import { AddLotModal } from "@/components/order/modals";
 import { useRole } from "@/lib/role";
@@ -23,6 +23,8 @@ export default function OrderTestingWorkspacePage() {
   const b = useStore((s) => s.orders[orderId]);
   const [addLot, setAddLot] = useState(false);
   const { canAccessTesting } = useRole();
+  const seedTestingDemo = useStore((s) => s.seedTestingDemo);
+  const resetTestingFlow = useStore((s) => s.resetTestingFlow);
 
   if (!canAccessTesting) {
     return (
@@ -53,9 +55,21 @@ export default function OrderTestingWorkspacePage() {
 
   return (
     <div className="space-y-5">
-      <Link href="/fulfilment/testing" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-4 w-4" /> Testing
-      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link href="/fulfilment/testing" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Testing
+        </Link>
+        {/* Demo controls: load a realistic mid-flight state to read end to end,
+            or strip back to the start and book the slot by hand. */}
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => seedTestingDemo(orderId)} title="Load a realistic mid-flight testing state onto this order — appointment confirmed, samples dispatched, one lot passed and reported, one still on the bench with its verdict to set.">
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Load demo flow
+          </Button>
+          <Button variant="ghost" onClick={() => resetTestingFlow(orderId)} title="Strip this order's testing back to before anything was booked, to run the whole flow step by step.">
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Reset flow
+          </Button>
+        </div>
+      </div>
 
       <PageHeader
         title={<span className="flex flex-wrap items-center gap-2">

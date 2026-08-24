@@ -26,11 +26,11 @@ import {
 } from "@/integrations/lab-whl";
 import { extractLabInvoice, extractBookingAppointment } from "@/integrations/doc-extract";
 import { WHL_CONTACT, whlTemplate, WHL_EMAIL_TEMPLATES, TESTING_STAGE_META, stageIdx, LAB_TERMS_LABEL } from "@/data/enums";
-import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure } from "@/integrations/escrow-agent";
+import { escrowAgentFetchPoPi, escrowAgentFetchPaymentClosure, DEMO_ESCROW_BANK_ACCOUNT } from "@/integrations/escrow-agent";
 import { bankInitiateTransfer, bankGetTransferStatus } from "@/integrations/banking";
 import { generateIrn } from "@/integrations/einvoice-irp";
 import { sendPartyNotification } from "@/integrations/notify";
-import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose } from "@/types";
+import type { EscrowFeeBreakdown, EscrowConditions, EscrowContact, Escrow, WhlVerdict, EscrowSendPurpose, EmailDirection } from "@/types";
 // Real escrow-agents backend (Python/FastAPI/Postgres/Ollama) — see src/lib/escrow-api.ts.
 // Everything escrow-related below calls this instead of simulating state locally; the PO/PI
 // fetch, payment-closure fetch, and payment-closure upload below stay on the old in-memory mock
@@ -699,6 +699,22 @@ interface Store {
   seedLogisticsDemo: (orderId: string) => void;
   /** Demo: strip this order's inbound flow back to the start, to run the whole journey by hand. */
   resetLogisticsFlow: (orderId: string) => void;
+  /** Demo: load a realistic mid-flight testing state — one lot passed and reported, one still on the bench. */
+  seedTestingDemo: (orderId: string) => void;
+  /** Demo: strip this order's testing back to the start, before any slot is booked. */
+  resetTestingFlow: (orderId: string) => void;
+  /** Demo: load a realistic mid-flight escrow — funded, goods in, inspection open, release left to instruct. */
+  seedEscrowDemo: (orderId: string) => void;
+  /** Demo: strip this order's escrow back to Draft, before anything was created on HKin. */
+  resetEscrowFlow: (orderId: string) => void;
+
+  // ---- escrow communication: free-form mail alongside the state machine ----
+  /** Send an ad-hoc message on the escrow thread. Never moves escrow status — the state machine owns that. */
+  sendEscrowMessage: (orderId: string, m: { toEmail: string; subject: string; body: string; cc?: string; bcc?: string; categories?: string[]; threadId?: string }) => void;
+  /** Poll for replies to ad-hoc mail nobody has answered yet. Distinct from checkEscrowInbox, which advances the flow. */
+  checkEscrowReplies: (orderId: string) => void;
+  /** File an escrow email under its set of categories — several at once; empty means Others. */
+  setEscrowEmailCategories: (orderId: string, emailId: string, categories: string[]) => void;
   /** File a thread email under its set of categories — several at once is the point; empty means Others. */
   setLogisticsEmailCategories: (orderId: string, itemId: string, categories: string[]) => void;
 
@@ -3028,6 +3044,480 @@ Please pre-file the entry so clearance starts before the goods land.`,
           const b = s.orders[orderId];
           if (!b) return;
           (b.logisticsEmailCategories ??= {})[itemId] = categories;
+        });
+      },
+
+      seedTestingDemo: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        /*
+         * Deliberately overwrites this order's testing state — that is what a
+         * demo loader is for. It stops one step short of done: the first lot is
+         * finished and PASSED, the second is still on the bench with its
+         * results open, so the last mile (sync the inbox, fetch the report, set
+         * the verdict) is walked by hand rather than read about.
+         */
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          const d = (offset: number) => { const x = new Date(); x.setDate(x.getDate() + offset); return x.toISOString().slice(0, 10); };
+          const at = (offset: number, time: string) => `${d(offset)} ${time}`;
+          const lab = "WHL Shenzhen";
+
+          /* Two MPNs off the order itself, so the demo talks about real lines.
+           * A single-line order just tests the one it has. */
+          const mpnA = b.lines[0]?.mpn ?? "STM32F407VGT6";
+          const mpnB = b.lines[1]?.mpn ?? mpnA;
+          const qtyA = b.lines[0]?.quantity ?? 300;
+          const qtyB = b.lines[1]?.quantity ?? 150;
+          const woA = "352901";
+          const woB = "352902";
+          const slotId = uid("slot");
+          const lotAId = uid("lot");
+          const lotBId = uid("lot");
+
+          const PLAN_A = ["External Visual Inspection", "X-Ray Inspection", "Decapsulation", "XRF Analysis"];
+          const PLAN_B = ["External Visual Inspection", "X-Ray Inspection", "Solderability"];
+          const req = (name: string) => ({ id: uid("req"), name, standard: "AS6081", source: "AUTO_BOOKING" as const });
+
+          // ---- the lab appointment everything hangs off ----
+          b.testSlots = [{
+            id: slotId, slotNo: "TS-2026-0044", lab, status: "CONFIRMED",
+            preferredDate: d(-12),
+            lines: [
+              { mpn: mpnA, qty: qtyA, sampleQty: 20, dateCode: "2325", tests: PLAN_A.map((name) => ({ name, standard: "AS6081" })) },
+              { mpn: mpnB, qty: qtyB, sampleQty: 15, dateCode: "2410", tests: PLAN_B.map((name) => ({ name, standard: "AS6081" })) },
+            ],
+            note: "Two date codes, same purchase order — please run both under one appointment.",
+            requestedAt: at(-14, "09:20"), requestedBy: ME,
+            confirmedAt: at(-13, "11:05"), appointmentNo: "WHL-APT-77120",
+            createdLotIds: [lotAId, lotBId],
+          }];
+
+          // ---- the test plan the lab confirmed, per MPN ----
+          const specs = [
+            { mpn: mpnA, tests: PLAN_A },
+            ...(mpnB !== mpnA ? [{ mpn: mpnB, tests: PLAN_B }] : []),
+          ];
+          b.mpnTests = specs.map((x) => ({
+            id: uid("spec"), mpn: x.mpn, autofill: "OK" as const,
+            sourceDoc: "WHL-APT-77120", parsedAt: at(-13, "11:06"), confidence: 0.94,
+            tests: x.tests.map(req),
+            audit: [auditRow({
+              by: `${lab} (confirmation)`, action: "AUTOFILL", target: x.mpn,
+              before: "-", after: `${x.tests.length} test(s) from WHL-APT-77120`,
+              note: "Confidence 94%.",
+            })],
+          }));
+
+          // ---- lot A: the whole journey, finished clean ----
+          const reportA: WhlReport = {
+            id: uid("rep"), reportNo: `${woA}.1`, revision: 1, reportDate: d(-3),
+            workOrderNo: woA, fileName: `WHL-${woA}-R1.pdf`, receivedAt: at(-3, "16:40"),
+            current: true, partNumber: mpnA, manufacturer: b.lines[0]?.make ?? "ST Microelectronics",
+            lotQty: qtyA, client: b.maskingEntity, clientPo: b.supplierPoNo ?? "PO Unknown",
+            conclusion: "ACCEPTABLE", anyFar: false,
+            processes: PLAN_A.map((name) => ({ name, result: "ACCEPTABLE" as const, acceptQty: 20, rejectQty: 0 })),
+            approvedBy: "L. Chen", approverTitle: "Laboratory Manager",
+            standards: ["AS6081"], riskClass: "ERAI Low Risk", msl: "MSL 3", packageType: "LQFP-100",
+            parseFlags: [], accessLog: [],
+          };
+
+          b.lots = [
+            {
+              id: lotAId, orderLineMpn: mpnA, lotCode: "LOT-D1", dateCode: "2325",
+              qty: qtyA, sampleQty: 20, testStatus: "PASS", lab, workOrderNo: woA,
+              reportNo: reportA.reportNo, tatDays: 6, testedAt: d(-3),
+              testSlotId: slotId, testSlotNo: "TS-2026-0044",
+              tests: PLAN_A.map((name) => ({
+                id: uid("lt"), name, standard: "AS6081", source: "AUTO_BOOKING" as const,
+                status: "PASSED" as const, acceptQty: 20, rejectQty: 0, updatedAt: at(-3, "16:40"),
+                history: [auditRow({ by: "WHL inbox (auto)", action: "STATUS", target: name, after: "PASSED" })],
+              })),
+              reports: [reportA],
+              /* The lab bills after issuing the report, so a settled fee puts the
+               * lot at WHL_PAYMENT — one stage short of the hand-off, which is
+               * left for the demo to walk. */
+              stage: "WHL_PAYMENT",
+              stageHistory: ([
+                ["TEST_BOOKED", -13, "11:05"], ["SUPPLIER_DISPATCHING", -11, "10:15"],
+                ["COMPONENTS_RECEIVED", -9, "09:40"], ["TESTING_IN_PROGRESS", -8, "12:00"],
+                ["TESTING_COMPLETED", -4, "17:20"], ["REPORT_SHARED", -3, "16:40"],
+                ["WHL_PAYMENT", -2, "10:25"],
+              ] as const).map(([stage, off, time]) => ({
+                id: uid("se"), stage, at: at(off, time), by: "WHL inbox (auto)",
+              })),
+              dispatch: {
+                courier: "DHL Express", awb: "4471-9955-02", dispatchedOn: d(-11), expectedArrival: d(-9),
+                note: "Samples drawn from the same date-code reel.", recordedBy: ME, recordedAt: at(-11, "10:15"),
+              },
+              /* Settled on credit: billed, sent to finance, paid — this leg is closed. */
+              labPayment: {
+                status: "PAID", requestedAt: at(-3, "17:00"),
+                sentToFinanceAt: at(-2, "09:40"), sentToFinanceBy: ME,
+                paidAt: at(-2, "10:25"), paidRef: "UTR-8814226",
+                invoice: {
+                  id: uid("inv"), invoiceNo: `WHL-INV-${woA}`, amount: 580, taxAmount: 35, currency: "USD",
+                  fileName: `WHL-INV-${woA}.pdf`, receivedAt: at(-3, "17:20"), dueDate: d(12),
+                  terms: "CREDIT", creditDays: 15, ratePerProcess: 145, processCount: 4,
+                  note: `4 process(es) billed against WO ${woA} at USD 145 each.`,
+                  source: "MAIL", accessLog: [],
+                },
+              },
+            },
+            /* ---- lot B: still on the bench — this is the one left to finish ---- */
+            {
+              id: lotBId, orderLineMpn: mpnB, lotCode: "LOT-D2", dateCode: "2410",
+              qty: qtyB, sampleQty: 15, testStatus: "PENDING", lab, workOrderNo: woB,
+              testSlotId: slotId, testSlotNo: "TS-2026-0044",
+              tests: PLAN_B.map((name, i) => ({
+                id: uid("lt"), name, standard: "AS6081", source: "AUTO_BOOKING" as const,
+                // first process done, the rest still running
+                status: (i === 0 ? "PASSED" : "IN_PROGRESS") as "PASSED" | "IN_PROGRESS",
+                acceptQty: i === 0 ? 15 : undefined, rejectQty: i === 0 ? 0 : undefined,
+                updatedAt: at(-2, "15:10"),
+                history: [auditRow({ by: "WHL inbox (auto)", action: "STATUS", target: name, after: i === 0 ? "PASSED" : "IN_PROGRESS" })],
+              })),
+              stage: "TESTING_IN_PROGRESS",
+              stageHistory: ([
+                ["TEST_BOOKED", -13, "11:05"], ["SUPPLIER_DISPATCHING", -11, "10:20"],
+                ["COMPONENTS_RECEIVED", -9, "09:40"], ["TESTING_IN_PROGRESS", -2, "15:10"],
+              ] as const).map(([stage, off, time]) => ({
+                id: uid("se"), stage, at: at(off, time), by: "WHL inbox (auto)",
+              })),
+              dispatch: {
+                courier: "DHL Express", awb: "4471-9955-02", dispatchedOn: d(-11), expectedArrival: d(-9),
+                recordedBy: ME, recordedAt: at(-11, "10:20"),
+              },
+              /* Billed on credit and still owed — money the desk can see without it
+               * blocking the bench, which is the common real case. */
+              /* Not billed yet — the lab invoices once it issues the report, and
+               * this lot's report is still to come. */
+              labPayment: { status: "NOT_REQUESTED" },
+            },
+          ];
+
+          // ---- the WHL thread, as it would actually read ----
+          const mail = (
+            x: { dir: "OUT" | "IN"; kind: LabEmail["kind"]; subject: string; body: string; off: number; time: string;
+                 lotId?: string; lotCode?: string; wo?: string; status: LabEmail["status"]; by: string; att?: string[]; note?: string },
+          ): LabEmail => ({
+            id: uid("lm"), direction: x.dir, lotId: x.lotId, lotCode: x.lotCode, workOrderNo: x.wo,
+            subject: x.subject, body: x.body, at: at(x.off, x.time), by: x.by,
+            status: x.status, kind: x.kind, attachments: x.att, matchNote: x.note,
+          });
+
+          b.labEmails = [
+            mail({ dir: "OUT", kind: "BOOKING_REQUEST", off: -14, time: "09:20", by: ME, status: "SENT",
+              subject: `Test slot request — ${b.orderNo} (2 date codes)`,
+              body: `Please confirm an appointment for two lots against ${b.supplierPoNo ?? b.orderNo}.\n\n· ${mpnA} — ${qtyA} pcs, date code 2325\n· ${mpnB} — ${qtyB} pcs, date code 2410\n\nStandard AS6081 screening on both.` }),
+            mail({ dir: "IN", kind: "BOOKING_CONFIRMED", off: -13, time: "11:05", by: "WHL Bookings", status: "UPDATE_RECEIVED",
+              subject: "Appointment confirmed — WHL-APT-77120",
+              body: `Confirmed for ${d(-9)}. Work orders ${woA} and ${woB} raised. Please dispatch samples to WHL Shenzhen quoting the appointment number.`,
+              att: ["WHL-APT-77120.pdf"] }),
+            mail({ dir: "IN", kind: "DISPATCH", off: -11, time: "10:15", by: "Supplier (relayed)", status: "UPDATE_RECEIVED",
+              subject: "Samples dispatched — AWB 4471-9955-02",
+              body: "Both lots handed to DHL today, one waybill. Expected at the lab in two days." }),
+            mail({ dir: "IN", kind: "INVOICE", off: -3, time: "17:20", by: "WHL Accounts", status: "UPDATE_RECEIVED",
+              lotId: lotAId, lotCode: "LOT-D1", wo: woA,
+              subject: `Testing invoice — WO ${woA}`,
+              body: "Invoice for the completed work order attached, 15-day credit as agreed. The second lot will be billed on completion.",
+              att: [`WHL-INV-${woA}.pdf`] }),
+            mail({ dir: "IN", kind: "REPORT", off: -3, time: "16:40", by: "WHL Reports", status: "REPORT_DELIVERED",
+              lotId: lotAId, lotCode: "LOT-D1", wo: woA,
+              subject: `Report ${woA}.1 — ${mpnA}`,
+              body: "All four processes acceptable. Report attached; originals follow.",
+              att: [`WHL-${woA}-R1.pdf`] }),
+            mail({ dir: "IN", kind: "STATUS_UPDATE", off: -2, time: "15:10", by: "WHL Reports", status: "UPDATE_RECEIVED",
+              lotId: lotBId, lotCode: "LOT-D2", wo: woB,
+              subject: `Progress — WO ${woB}`,
+              body: "Visual inspection acceptable. X-ray and solderability running; report expected in two working days." }),
+            /* One inbound nobody could file — the manual-match queue needs a live
+             * example or the feature reads as decoration. */
+            mail({ dir: "IN", kind: "STATUS_UPDATE", off: -1, time: "09:30", by: "WHL Reports", status: "UPDATE_RECEIVED",
+              subject: "Re: sample query — date code clarification",
+              body: "Could you confirm which reel the second date code was drawn from? The packing note is ambiguous.",
+              note: "No work order or lot code quoted in the subject or body." }),
+          ];
+
+          b.events.unshift({
+            id: uid("ev"), eventType: "DEMO_SEEDED",
+            message: "Testing demo flow loaded — LOT-D1 passed and reported, LOT-D2 still on the bench",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Testing demo flow loaded", {
+          description: "LOT-D1 is through and passed. LOT-D2 is on the bench — sync the WHL inbox, fetch its report and set the verdict to finish.",
+        });
+      },
+
+      seedEscrowDemo: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        if (!b0.escrow) { toast.error("This order has no escrow — only escrow-mode orders can run this demo"); return; }
+        /*
+         * Deliberately overwrites this order's escrow — that is what a demo
+         * loader is for. It stops one step short of done: the money is in, the
+         * goods are in, testing passed and the first tranche is released, so
+         * the last release instruction is walked by hand rather than read about.
+         */
+        set((s) => {
+          const b = s.orders[orderId];
+          const e = b?.escrow;
+          if (!b || !e) return;
+          const d = (offset: number) => { const x = new Date(); x.setDate(x.getDate() + offset); return x.toISOString().slice(0, 10); };
+          const at = (offset: number, time: string) => `${d(offset)} ${time}`;
+
+          const conditions: EscrowConditions = {
+            forwarder: "DHL",
+            forwarderAccountNo: "DHL-ACC-88213 (demo)",
+            shipWithinDays: "7 business days",
+            inspectionPeriod: "5 business days",
+            feeSharingLabel: "100% Buyer / 0% Seller",
+            returnCondition: "7 business days, shipping fees to Seller",
+            releaseMilestones: [
+              { percent: 30, trigger: "On shipment to WHL for testing" },
+              { percent: 70, trigger: "On WHL PASS report" },
+            ],
+          };
+          const feeToBuyer = Math.round(e.poAmount * 0.00856);
+          const wiring = Math.round(e.poAmount * 0.0057);
+          const invoiceNo = `AE${d(-18).replace(/-/g, "").slice(2, 6)}-DEMO`;
+          const swift = `SWIFT${d(-14).replace(/-/g, "")}HK`;
+
+          e.status = "RECIPIENT_INSPECTION";
+          e.cancelledAt = undefined;
+          e.applicationRejectedAt = undefined;
+          e.hkinAccountStatus = "CONFIRMED";
+          e.hkinRpaStartedAt = at(-21, "09:10");
+          e.hkinCsContactName = "Miffy Chen";
+          e.hkinCsContactEmail = "miffy.chen@hkin.demo";
+          e.agreedFeeToBuyer = feeToBuyer;
+          e.agreedConditions = conditions;
+          e.invoice = {
+            invoiceNo,
+            receivedAt: at(-17, "11:20"),
+            fees: { poTotal: e.poAmount, feeToBuyer, wiringFeeToBuyer: wiring, feeToSeller: 0, wiringFeeToSeller: 0 },
+            conditions,
+            bankAccount: DEMO_ESCROW_BANK_ACCOUNT,
+          };
+
+          // the SC → Finance → HKin payment chain, all the way through
+          e.paymentInstructedAt = at(-16, "10:05");
+          e.financeConfirmedAt = at(-15, "16:40");
+          e.financeSwiftReference = swift;
+          e.paymentSentToHkinAt = at(-15, "17:15");
+          e.fundedAt = at(-14, "09:30");
+
+          // goods in, inspection window running, testing already back clean
+          e.goodsReceivedAt = at(-3, "14:20");
+          e.inspectionDeadline = d(2);
+          e.whlVerdict = "PASS";
+          e.whlVerdictAt = at(-2, "12:00");
+          e.whlRawConclusion = "Acceptable";
+          e.whlWorkOrder = "352901";
+          e.whlReportRef = "352901.1";
+          e.refundRequestedAt = undefined;
+          e.refundInstructedAt = undefined;
+          e.rmaDetails = undefined;
+          e.goodsReturnTracking = undefined;
+          e.goodsReturnedAt = undefined;
+          e.paymentClosure = undefined;
+
+          /* First tranche released on shipment; the second — the PASS tranche —
+           * is deliberately left for the demo to instruct. */
+          e.milestoneReleases = [{ index: 0, instructedAt: at(-6, "10:00"), confirmedAt: at(-6, "15:30") }];
+
+          const mail = (x: { dir: "SENT" | "RECEIVED"; subject: string; from: string; to?: string; snippet: string; off: number; time: string; att?: string }) => ({
+            id: uid("em"), direction: x.dir as EmailDirection, subject: x.subject, from: x.from, to: x.to,
+            snippet: x.snippet, receivedAt: at(x.off, x.time), attachmentFileName: x.att,
+          });
+          const seller = e.sellerContact.company;
+          e.agentEmails = [
+            mail({ dir: "SENT", off: -21, time: "09:30", from: e.buyerContact.email, to: e.sellerContact.email,
+              subject: `Escrow order raised — ${b.orderNo}`,
+              snippet: `Escrow order created on HKin for ${money(e.poAmount, e.currency)}. Please review the terms and confirm as seller.` }),
+            mail({ dir: "RECEIVED", off: -19, time: "08:45", from: e.sellerContact.email,
+              subject: "Seller confirmation received",
+              snippet: `${seller} accepted the escrow terms. HKin has moved the order to Seller Confirmed.` }),
+            mail({ dir: "RECEIVED", off: -17, time: "11:20", from: "billing@hkin.demo",
+              subject: `Escrow fee invoice ${invoiceNo}`,
+              snippet: `Fee ${money(feeToBuyer, e.currency)} plus wiring ${money(wiring, e.currency)}, 100% to buyer. Bank details attached.`,
+              att: `${invoiceNo}.pdf` }),
+            mail({ dir: "SENT", off: -16, time: "10:05", from: e.buyerContact.email, to: "finance@1buy.ai",
+              subject: `Payment instruction — ${b.orderNo} escrow`,
+              snippet: `Please wire ${money(e.poAmount + feeToBuyer + wiring, e.currency)} to the HKin escrow account against ${invoiceNo}.` }),
+            mail({ dir: "RECEIVED", off: -15, time: "16:40", from: "finance@1buy.ai",
+              subject: "Payment made — SWIFT reference",
+              snippet: `Wire sent. SWIFT reference ${swift}. Please pass it to HKin.` }),
+            mail({ dir: "SENT", off: -15, time: "17:15", from: e.buyerContact.email, to: "miffy.chen@hkin.demo",
+              subject: `Payment confirmation — ${b.orderNo}`,
+              snippet: `Payment made under SWIFT ${swift}. Please confirm receipt and open the shipping window.` }),
+            mail({ dir: "RECEIVED", off: -14, time: "09:30", from: "miffy.chen@hkin.demo",
+              subject: "Escrow payment received",
+              snippet: "Funds received and held in escrow. Seller has been notified to ship within 7 business days." }),
+            mail({ dir: "RECEIVED", off: -8, time: "10:10", from: e.sellerContact.email,
+              subject: "Goods shipped to the test lab",
+              snippet: "Consignment despatched to WHL Shenzhen for testing as agreed." }),
+            mail({ dir: "SENT", off: -6, time: "10:00", from: e.buyerContact.email, to: "miffy.chen@hkin.demo",
+              subject: `Release instruction — tranche 1 of 2 (${b.orderNo})`,
+              snippet: "Shipment milestone met. Please release 30% to the seller." }),
+            mail({ dir: "RECEIVED", off: -6, time: "15:30", from: "miffy.chen@hkin.demo",
+              subject: "Tranche 1 released",
+              snippet: "30% released to the seller against the shipment milestone." }),
+            mail({ dir: "RECEIVED", off: -3, time: "14:20", from: "miffy.chen@hkin.demo",
+              subject: "Reminder of inspection period",
+              snippet: `Goods received. Inspection closes ${d(2)} — silence past the deadline is treated as acceptance.` }),
+          ];
+
+          b.events.unshift({
+            id: uid("ev"), eventType: "DEMO_SEEDED",
+            message: `Escrow demo flow loaded — funded, goods in, tranche 1 released, inspection closes ${d(2)}`,
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Escrow demo flow loaded", {
+          description: "Funded, goods received, testing passed and tranche 1 released. Instruct the final release to finish — the inspection clock is running.",
+        });
+      },
+
+      sendEscrowMessage: (orderId, m) => {
+        const b0 = get().orders[orderId];
+        if (!b0?.escrow) return;
+        if (!m.toEmail.trim()) { toast.error("Type the recipient's email address"); return; }
+        if (!m.subject.trim() || !m.body.trim()) { toast.error("A subject and a message are both needed"); return; }
+        const id = uid("em");
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          if (!e) return;
+          /*
+           * Ad-hoc mail is a record, not a trigger: it never touches
+           * `status`. Everything that moves the escrow forward still goes
+           * through sendEscrowEmail / checkEscrowInbox.
+           */
+          e.agentEmails.unshift({
+            id, threadId: m.threadId, direction: "SENT",
+            subject: m.subject.trim(), from: e.buyerContact.email, to: m.toEmail.trim(),
+            cc: m.cc?.trim() || undefined, bcc: m.bcc?.trim() || undefined,
+            snippet: m.body.trim(), receivedAt: stamp(),
+          });
+          if (m.categories?.length) (e.emailCategories ??= {})[id] = m.categories;
+        });
+        toast.success(m.threadId ? "Reply sent — added to the chain" : "Sent", { description: m.toEmail.trim() });
+      },
+
+      checkEscrowReplies: (orderId) => {
+        const b = get().orders[orderId];
+        const e = b?.escrow;
+        if (!b || !e) return;
+        /*
+         * A party owes a reply when our newest mail to them is newer than
+         * their newest to us. Only those are answered — an inbox that invents
+         * unprompted mail would drown the real thread.
+         */
+        const byParty = new Map<string, { threadId: string; subject: string; to: string; way: string }>();
+        for (const m of [...e.agentEmails].sort((x, y) => (x.receivedAt || "").localeCompare(y.receivedAt || ""))) {
+          const who = m.direction === "SENT" ? (m.to ?? "") : m.from;
+          if (!who) continue;
+          byParty.set(who, { threadId: m.threadId ?? m.id, subject: m.subject, to: who, way: m.direction });
+        }
+        const pending = [...byParty.values()].filter((x) => x.way === "SENT");
+        if (pending.length === 0) { toast("Nobody owes this thread a reply — nothing to poll for"); return; }
+        set((s) => {
+          const ee = s.orders[orderId]?.escrow;
+          if (!ee) return;
+          for (const p of pending) {
+            ee.agentEmails.unshift({
+              id: uid("em"), threadId: p.threadId, direction: "RECEIVED",
+              subject: p.subject.startsWith("Re: ") ? p.subject : `Re: ${p.subject}`,
+              from: p.to, snippet: "Noted, thank you — we will come back to you shortly.",
+              receivedAt: stamp(),
+            });
+          }
+        });
+        toast.success(`${pending.length} repl${pending.length === 1 ? "y" : "ies"} received`);
+      },
+
+      setEscrowEmailCategories: (orderId, emailId, categories) => {
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          if (!e) return;
+          (e.emailCategories ??= {})[emailId] = categories;
+        });
+      },
+
+      resetEscrowFlow: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        if (!b0.escrow) { toast.error("This order has no escrow to reset"); return; }
+        set((s) => {
+          const e = s.orders[orderId]?.escrow;
+          const b = s.orders[orderId];
+          if (!b || !e) return;
+          /* Back to Draft — before anything was created on HKin. The agreed
+           * terms survive, because those were settled when the PO was drafted,
+           * not by anything the escrow flow does. */
+          e.status = "DRAFT";
+          e.invoice = undefined;
+          e.paymentClosure = undefined;
+          e.agentEmails = [];
+          e.milestoneReleases = [];
+          e.paymentInstructedAt = undefined;
+          e.financeConfirmedAt = undefined;
+          e.financeSwiftReference = undefined;
+          e.paymentSentToHkinAt = undefined;
+          e.fundedAt = undefined;
+          e.goodsReceivedAt = undefined;
+          e.whlVerdict = undefined;
+          e.whlVerdictAt = undefined;
+          e.whlReportRef = undefined;
+          e.whlWorkOrder = undefined;
+          e.whlRawConclusion = undefined;
+          e.refundRequestedAt = undefined;
+          e.refundInstructedAt = undefined;
+          e.rmaDetails = undefined;
+          e.goodsReturnTracking = undefined;
+          e.goodsReturnedAt = undefined;
+          e.inspectionDeadline = undefined;
+          e.cancelledAt = undefined;
+          e.applicationRejectedAt = undefined;
+          e.hkinRpaStartedAt = undefined;
+          e.hkinAccountStatus = "NOT_ASKED";
+          const gone = new Set(["DEMO_SEEDED", "ESCROW_RESET"]);
+          b.events = b.events.filter((x) => !gone.has(x.eventType));
+          b.events.unshift({
+            id: uid("ev"), eventType: "ESCROW_RESET",
+            message: "Escrow reset to Draft for a demo run",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Escrow reset to Draft", {
+          description: "Back to the start: create the order on HKin, send it to the seller, then invoice, payment, shipping, inspection and release.",
+        });
+      },
+
+      resetTestingFlow: (orderId) => {
+        const b0 = get().orders[orderId];
+        if (!b0) return;
+        set((s) => {
+          const b = s.orders[orderId];
+          if (!b) return;
+          /* Back to before anything was booked. The test plan goes too — the
+           * lab's confirmation is what fills it, so booking a slot rebuilds it. */
+          b.lots = [];
+          b.testSlots = [];
+          b.labEmails = [];
+          b.mpnTests = [];
+          const gone = new Set(["DEMO_SEEDED", "TESTING_RESET"]);
+          b.events = b.events.filter((e) => !gone.has(e.eventType));
+          b.events.unshift({
+            id: uid("ev"), eventType: "TESTING_RESET",
+            message: "Testing reset to the start for a demo run",
+            source: "SC_MANUAL", occurredAt: today(), recordedBy: ME,
+          });
+        });
+        toast.success("Testing reset", {
+          description: "Back to the start: book a test slot with the lab, dispatch samples, track the bench, then reports and verdicts.",
         });
       },
 

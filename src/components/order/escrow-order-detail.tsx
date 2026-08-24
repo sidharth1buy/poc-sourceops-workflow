@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, RotateCcw, Sparkles } from "lucide-react";
 import { EscrowTab } from "@/components/order/escrow-tab";
 import { UploadEscrowInvoiceModal, UploadPaymentClosureModal, UploadDocModal, UploadPIModal } from "@/components/order/modals";
-import { Panel, Pill, StatusPill, RoleLocked } from "@/components/ui/primitives";
+import { Button, Panel, Pill, StatusPill, RoleLocked } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
 import { useEscrowMockMode } from "@/lib/escrow-mode";
@@ -20,6 +20,8 @@ export function EscrowOrderDetail({ id }: { id: string }) {
   const escrowMock = useEscrowMockMode();
   const [modal, setModal] = useState<ModalKey>(null);
   const close = () => setModal(null);
+  const seedEscrowDemo = useStore((s) => s.seedEscrowDemo);
+  const resetEscrowFlow = useStore((s) => s.resetEscrowFlow);
 
   if (!canAccessEscrow) {
     return (
@@ -41,7 +43,19 @@ export function EscrowOrderDetail({ id }: { id: string }) {
 
   return (
     <div className="space-y-5">
-      <Link href="/fulfilment/escrow" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Escrow board</Link>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Link href="/fulfilment/escrow" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Escrow board</Link>
+        {/* Demo controls: load a realistic mid-flight state to read end to end,
+            or strip back to Draft and walk the whole flow by hand. */}
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={() => seedEscrowDemo(id)} title="Load a realistic mid-flight escrow onto this order — funded, goods received, testing passed and the first tranche released, leaving the final release to instruct.">
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Load demo flow
+          </Button>
+          <Button variant="ghost" onClick={() => resetEscrowFlow(id)} title="Strip this order's escrow back to Draft, before anything was created on HKin, to run the whole flow step by step.">
+            <RotateCcw className="mr-1.5 h-3.5 w-3.5" /> Reset flow
+          </Button>
+        </div>
+      </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>

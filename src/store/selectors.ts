@@ -119,7 +119,7 @@ export function gateReason(b: OrderBundle, step: JourneyStep): string | null {
   if (step.phase === "PAYMENT") {
     if (b.escrow) {
       if (b.escrow.cancelledAt) return "Escrow order was cancelled (see the Escrow tab).";
-      return escrowStatusIndex(b.escrow.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") ? null : "Escrow T/T payment not received yet (see the Escrow tab).";
+      return escrowStatusIndex(b.escrow.status) >= escrowStatusIndex("TT_PAYMENT_RECEIVED") ? null : "Escrow payment not received yet (see the Escrow tab).";
     }
     return b.payments.some((p) => p.direction === "1BUY_TO_SUPPLIER" && (p.status === "INITIATED" || p.status === "PAID")) ? null : "Supplier payment not initiated yet.";
   }
@@ -598,7 +598,17 @@ export function orderPhaseTimings(b: OrderBundle): PhaseTiming[] {
   const clientDelivery = outbound.find((s) => ["ARRIVED", "DELIVERED"].includes(s.status))?.deliveryDate;
   const readyToShip = inbound[0]?.pickupReadyDate ?? inbound[0]?.dispatchDate;
   const whlArrival = needsTesting ? lotStageEventAt(b, "COMPONENTS_RECEIVED", "min") : undefined;
-  const testingDoneAt = needsTesting
+  /*
+   * Testing is done when EVERY lot is off the bench, not when the latest report
+   * happens to have landed: `lotStageEventAt(…, "max")` only sees stages lots
+   * have already reached, so on a mixed order — one lot reported, one still
+   * running — it read the finished lot's timestamp and declared the whole phase
+   * complete, which then flagged "confirm the goods have been returned" while
+   * samples were still at the lab.
+   */
+  const allLotsOffBench = b.lots.length > 0
+    && b.lots.every((l) => stageIdx(lotStage(l)) >= stageIdx("TESTING_COMPLETED"));
+  const testingDoneAt = needsTesting && allLotsOffBench
     ? (lotStageEventAt(b, "REPORT_SHARED", "max") ?? lotStageEventAt(b, "TESTING_COMPLETED", "max"))
     : undefined;
 

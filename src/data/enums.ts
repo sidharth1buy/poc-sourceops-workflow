@@ -40,9 +40,22 @@ export function statusTone(s?: string): Tone {
   return "neutral";
 }
 
+/*
+ * Statuses whose mechanical title-casing reads badly or in jargon. `TT_PAYMENT_RECEIVED`
+ * came out as "Tt Payment Received" — a mangled "T/T" plus a bank term (telegraphic
+ * transfer) that means nothing to most readers. The escrow flow already says "escrow"
+ * everywhere else, so the state is named for what actually happened: the money reached
+ * escrow. Add to this map rather than teaching `prettyStatus` new rules.
+ */
+const STATUS_LABEL_OVERRIDES: Record<string, string> = {
+  TT_PAYMENT_RECEIVED: "Escrow payment received",
+};
+
 export function prettyStatus(s?: string) {
   if (!s) return "-";
   if (s.toUpperCase() === "FAR") return "F.A.R.";
+  const override = STATUS_LABEL_OVERRIDES[s.toUpperCase()];
+  if (override) return override;
   return s.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
