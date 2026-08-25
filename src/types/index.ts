@@ -900,6 +900,8 @@ export interface Approval {
   status: ApprovalState;
   decidedBy?: string;
   notes?: string;
+  /** Present only on approvals gating an outbound escrow email — what to actually send once approved. */
+  escrowSend?: { purpose: EscrowSendPurpose; milestoneIndex?: number; draft: { to: string; cc?: string; subject: string; body: string } };
 }
 
 export interface OrderEvent {

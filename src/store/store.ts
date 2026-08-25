@@ -4,7 +4,7 @@ import { immer } from "zustand/middleware/immer";
 import { toast } from "sonner";
 import type {
   Order, OrderBundle, OrderLine, ClientPO, SupplierPO, SupplierPoLine, PoTerms, Address, JourneyPhase, TestStatus, TestingMode, PaymentMode, PaymentDirection,
-  PaymentStatus, ShipmentLeg, ShipmentStatus, ShipmentPackage, TradeType, ApprovalState,
+  PaymentStatus, ShipmentLeg, ShipmentStatus, ShipmentPackage, TradeType, ApprovalState, Approval,
   LotTest, MpnTestSpec, TestAuditEntry, TestProcessStatus, WhlReport, LabEmail, NotifyParty,
   Lot, TestingStage, LotDispatch, LabPaymentTerms,
   DemandLine, RfqBundle, SupplierQuote, ClientQuoteDecision, ClientQuote, QuoteEmail, RfqBundleStatus,
@@ -47,6 +47,14 @@ import { isEscrowMockMode } from "@/lib/escrow-mode";
 import { BUYERS, SUPPLIERS } from "@/data/directory";
 
 export interface EscrowEmailDraft { to: string; cc?: string; subject: string; body: string; }
+
+// These two purposes move real money (releasing escrowed funds, instructing Finance to fund
+// escrow), so sending one doesn't go straight out — it's parked as a PENDING Approval instead,
+// and only actually sent once someone approves it on the Approvals board (decideApproval below).
+export const APPROVAL_GATED_PURPOSES: Partial<Record<EscrowSendPurpose, { kind: string; role: string }>> = {
+  RELEASE_FUNDS_INSTRUCTION: { kind: "ESCROW_RELEASE_FUNDS", role: "Finance" },
+  PAYMENT_INSTRUCTION_TO_FINANCE: { kind: "ESCROW_FUND_INSTRUCTION", role: "Finance" },
+};
 
 const SHARPBUY_GSTIN = "27AASCS1234A1Z5"; // masking entity's GSTIN - the only seller GSTIN sent to the IRP
 
@@ -656,7 +664,9 @@ interface Store {
   // orchestrator can react to what's already on file.
   syncRealInbox: (orderId: string) => void;
   recordWhlVerdict: (orderId: string, verdict: WhlVerdict) => void; // real-world lab outcome — the one thing a human still has to report, not "receive"
-  sendEscrowEmail: (orderId: string, purpose: EscrowSendPurpose, draft: EscrowEmailDraft, milestoneIndex?: number) => void;
+  // skipApprovalGate is an internal escape hatch — only decideApproval passes it (true), once an
+  // approval-gated purpose has actually been approved. UI code should never pass it.
+  sendEscrowEmail: (orderId: string, purpose: EscrowSendPurpose, draft: EscrowEmailDraft, milestoneIndex?: number, skipApprovalGate?: boolean) => void;
 
   addPayment: (orderId: string, p: { direction: PaymentDirection; mode: PaymentMode; amount: number; triggerDoc: string; dueDate?: string }) => void;
   setPaymentStatus: (orderId: string, payId: string, status: PaymentStatus, attachment?: string) => void;
@@ -2312,9 +2322,24 @@ export const useStore = create<Store>()(
       // escrow-agents now; this finds the matching backend draft (the orchestrator creates it
       // automatically once the order reaches the right state) and sends it with whatever the
       // human ended up editing.
-      sendEscrowEmail: (orderId, purpose, draft, milestoneIndex) => {
+      sendEscrowEmail: (orderId, purpose, draft, milestoneIndex, skipApprovalGate) => {
         const b = get().orders[orderId]; const e = b?.escrow; if (!b || !e) return;
         if (e.cancelledAt) { toast.error("This escrow order was cancelled."); return; }
+        const gate = !skipApprovalGate ? APPROVAL_GATED_PURPOSES[purpose] : undefined;
+        if (gate) {
+          const dup = b.approvals.some((a) => a.kind === gate.kind && a.status === "PENDING"
+            && a.escrowSend?.milestoneIndex === milestoneIndex);
+          if (dup) { toast.error("Already awaiting approval for this — see the Approvals board."); return; }
+          set((s) => {
+            const bb = s.orders[orderId]; if (!bb) return;
+            bb.approvals.push({
+              id: uid("apr"), subjectType: "ESCROW", kind: gate.kind, role: gate.role, status: "PENDING",
+              notes: draft.subject, escrowSend: { purpose, milestoneIndex, draft: { to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body } },
+            });
+          });
+          toast.message("Submitted for approval — see the Approvals board. Nothing is sent until it's approved.");
+          return;
+        }
         void (async () => {
           try {
             await tickEscrowOrder(orderId); // best-effort — ensures the backend draft exists
@@ -3597,6 +3622,7 @@ Please pre-file the entry so clearance starts before the goods land.`,
       },
       decideApproval: (orderId, approvalId, status) => {
         let nextName: string | null = null;
+        let escrowSend: Approval["escrowSend"];
         set((s) => {
           const b = s.orders[orderId]; const a = b?.approvals.find((x) => x.id === approvalId);
           if (a && b) {
@@ -3613,8 +3639,23 @@ Please pre-file the entry so clearance starts before the goods land.`,
               if (b.status !== "CLOSED" && ["DRAFT", "PENDING_APPROVAL", "APPROVED", "ON_HOLD"].includes(b.status)) b.status = "ACTIVE";
             }
             if (a.kind === "PO_REVIEW" && status === "REJECTED") b.approvalStatus = "REJECTED";
+            // Snapshot into plain objects — a.escrowSend is an immer draft, revoked the instant
+            // this producer returns, so the reference itself can't survive past set().
+            if (a.escrowSend) escrowSend = { purpose: a.escrowSend.purpose, milestoneIndex: a.escrowSend.milestoneIndex, draft: { ...a.escrowSend.draft } };
           }
         });
+        // The approval WAS the gate — approving one of these fires the email that was held back
+        // (sendEscrowEmail, skipping its own gate since this approval already cleared it);
+        // rejecting one just leaves it decided, with nothing ever sent to HKin/Finance.
+        if (escrowSend) {
+          if (status === "APPROVED") {
+            get().sendEscrowEmail(orderId, escrowSend.purpose, escrowSend.draft, escrowSend.milestoneIndex, true);
+            toast.success("Approved — sending the email now.");
+          } else {
+            toast.message("Rejected — no email will be sent.");
+          }
+          return;
+        }
         toast.success(nextName ? `PO approved - advanced to "${nextName}"` : `Approval ${status.toLowerCase()}`);
       },
 
