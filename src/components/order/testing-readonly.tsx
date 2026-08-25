@@ -29,8 +29,8 @@ function Empty({ text }: { text: string }) {
 
 /** One lot opened out: where it is, and the report — parsed on screen and downloadable. */
 export function LotReadOnlyDetail({
-  b, orderId, lot,
-}: { b: OrderBundle; orderId: string; lot: Lot }) {
+  orderId, lot,
+}: { orderId: string; lot: Lot }) {
   return (
     <div className="space-y-3">
       {/* where the lot physically is — every stage, with the date each was established */}
@@ -41,7 +41,7 @@ export function LotReadOnlyDetail({
         <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Test result &amp; report
         </div>
-        <ReportRepository b={b} orderId={orderId} lot={lot} readOnly />
+        <ReportRepository orderId={orderId} lot={lot} readOnly />
       </div>
     </div>
   );

@@ -1,27 +1,31 @@
 "use client";
 
 import { Fragment, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  Plus, Wand2, RefreshCw, Mail, MailQuestion, FileText, Upload,
+  RefreshCw, Mail, FileText, Upload,
   Lock, ChevronRight, ChevronDown, Check, FlaskConical, Clock,
-  Zap, Truck, Undo2, Factory, Users, Landmark, Layers, Receipt, CalendarCheck, CalendarPlus,
+  Zap, Truck, Undo2, Factory, Users, Landmark, Layers, Receipt, CalendarCheck,
   type LucideIcon,
 } from "lucide-react";
-import type { OrderBundle, Lot, LabEmail, LotNotification, NotifyParty } from "@/types";
-import { WHL_CONTACT, WHL_EMAIL_TEMPLATES, stageLabel, stageIdx, LAB_PAYMENT_TONE, TEST_SLOT_LABEL, TEST_SLOT_TONE } from "@/data/enums";
+import type { OrderBundle, Lot, LabEmail, LotNotification, NotifyParty, TestSlot } from "@/types";
+import {
+  WHL_CONTACT, WHL_EMAIL_TEMPLATES, whlTemplate, stageLabel, stageIdx,
+  LAB_PAYMENT_TONE, TEST_SLOT_LABEL, TEST_SLOT_TONE, type WhlMailCtx,
+} from "@/data/enums";
 import { Panel, Pill, StatusPill, Button, Notice } from "@/components/ui/primitives";
-import { Select } from "@/components/ui/form";
+import { Select, Input, Labeled, Textarea } from "@/components/ui/form";
 import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
 import {
-  lotTestProgress, currentReport, lotEmails, unmatchedEmails, lotStageProgress, testingSummary,
+  lotTestProgress, currentReport, lotEmails, lotStageProgress, lotReturnsToSeller,
   labFeeUnpaid, labPaymentOf, labFeeOutstandingTotal, labFeeBlocking, labFeeGross, orderPhaseTimings,
   pendingTestSlot, testSlotsOf,
 } from "@/store/selectors";
 import { qtyfmt, cn } from "@/lib/utils";
 import {
-  ComposeWhlEmailModal, MatchLabEmailModal, NotifyLotResultModal, BulkNotifyModal,
+  ComposeWhlEmailModal, NotifyLotResultModal, BulkNotifyModal,
   RecordDispatchModal, MarkLabFeePaidModal, BookTestSlotModal,
 } from "@/components/order/modals";
 import { TestingStageChain } from "@/components/order/testing-stages";
@@ -36,7 +40,7 @@ type Sub = "lots" | "mail";
  * actual navigation of the screen and are rendered as cards (see `SectionSwitcher`).
  */
 const SUBS: { id: Sub; label: string; hint: string; icon: LucideIcon }[] = [
-  { id: "lots", label: "Test lots · status & actions", hint: "Each test lot's lifecycle, reports, verdict and lab fee — with its actions.", icon: FlaskConical },
+  { id: "lots", label: "Test slots · status & actions", hint: "Each test slot's lifecycle, reports, verdict and lab fee — with its actions.", icon: FlaskConical },
   { id: "mail", label: "Communication", hint: "The WHL thread, the templates, the match queue — and who has been told each result.", icon: Mail },
 ];
 
@@ -101,17 +105,28 @@ function Denied({ what }: { what: string }) {
   return <span className="inline-flex items-center gap-1 text-[11px] text-faint"><Lock className="h-3 w-3" /> {what} needs the SC or Mgmt persona</span>;
 }
 
+/**
+ * @param focusLotId  open scoped to this one test lot — the Testing board's rows are test
+ *   slots now, so a click arrives pointing at one submission and the screen must show that
+ *   submission's journey rather than every lot on the order. Only a starting value: the scope
+ *   selector still widens to the whole order.
+ * @param focusSlotId same, for a slot the lab has not confirmed yet — it owns no lot to point
+ *   at, so the scope is the slot's own MPN lines.
+ * @param focusMpn the widest of the three and the one every board link carries: a row with nothing
+ *   booked has neither a lot nor a slot, and without this it opened the whole order — click one
+ *   part, get the part list.
+ */
 export function TestingTab({
-  b, id, onAdd,
-}: { b: OrderBundle; id: string; onAdd: () => void }) {
+  b, id, focusLotId, focusSlotId, focusMpn,
+}: { b: OrderBundle; id: string; focusLotId?: string; focusSlotId?: string; focusMpn?: string }) {
   const [sub, setSub] = useState<Sub>("lots");
-  const [retestOf, setRetestOf] = useState<string | null>(null);   // slot id being re-tested
-  const [bookSlot, setBookSlot] = useState<{ mpn?: string } | null>(null);   // a fresh slot; `mpn` = booked from that line
+  // The one booking control left on this screen: a re-test of a slot that came back FAIL. It is
+  // not "book a test" — it is the decision a failed result forces, taken where the failure is read.
+  const [retestOf, setRetestOf] = useState<{ slotId: string; mpn: string } | null>(null);
   const [compose, setCompose] = useState<{ lotId?: string; templateId?: string } | null>(null);
   const [notify, setNotify] = useState<{ lotId: string; party: NotifyParty } | null>(null);
   const [bulk, setBulk] = useState<NotifyParty | null>(null);
   const [sel, setSel] = useState<string[]>([]);   // lot ids ticked for a combined action
-  const [match, setMatch] = useState<LabEmail | null>(null);
   const [dispatch, setDispatch] = useState<string | null>(null); // lot id whose dispatch is being recorded
   const [paid, setPaid] = useState<string | null>(null);           // lot id whose lab fee is being marked paid
   const { canEditTests, canEmailLab } = useRole();
@@ -125,12 +140,29 @@ export function TestingTab({
   const markTestingReturnedToSupplier = useStore((s) => s.markTestingReturnedToSupplier);
   const testingPhase = orderPhaseTimings(b).find((p) => p.phase === "TESTING");
 
-  // ALL = order-wide total; a lot id scopes every number, alert and section below to that lot
-  const [scope, setScope] = useState<string>("ALL");
+  // ALL = order-wide total; a lot id scopes every number, alert and section below to that lot.
+  // Seeded from `focusLotId` so a board click lands on that submission — see the prop's note.
+  const [scope, setScope] = useState<string>(focusLotId ?? "ALL");
   const scoped = b.lots.find((l) => l.id === scope);  // undefined for "ALL" (or a stale id after a reset)
   const lotId = scoped?.id;
+  // No lot to scope by — either the lab has not confirmed the booking yet, or the link named a
+  // slot rather than a lot. Either way the sections narrow to that slot's own lines, so a
+  // `?slot=` arrival never widens silently to the whole order.
+  const slotScope = !lotId ? focusSlotId : undefined;
+  // and with neither, the part itself: the widest scope that is still not "the whole order"
+  const mpnScope = !lotId && !slotScope ? focusMpn : undefined;
 
-  const sum = testingSummary(b, lotId);
+  /*
+   * The fee badge follows the scope. Scoped to one submission, the order's roll-up would report
+   * another lot's unpaid invoice on a section about this one — which is exactly the merging the
+   * board stopped doing when its rows became test slots.
+   */
+  const feeBadge = scoped
+    ? {
+      count: !!scoped.labPayment?.invoice && labFeeUnpaid(scoped) ? 1 : 0,
+      held: labFeeBlocking(scoped) ? [scoped.lotCode] : [],
+    }
+    : { count: fees.count, held: fees.blocking };
 
   return (
     <div className="space-y-4">
@@ -171,16 +203,18 @@ export function TestingTab({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <SectionSwitcher active={sub} onChange={setSub}
           badges={{
-            lots: fees.blocking.length > 0 ? { n: fees.blocking.length, label: "held", tone: "bad" }
-              : fees.count > 0 ? { n: fees.count, label: fees.count === 1 ? "fee" : "fees", tone: "warn" } : undefined,
-            mail: sum.unmatched > 0 ? { n: sum.unmatched, label: "to match", tone: "warn" } : undefined,
+            lots: feeBadge.held.length > 0 ? { n: feeBadge.held.length, label: "held", tone: "bad" }
+              : feeBadge.count > 0 ? { n: feeBadge.count, label: feeBadge.count === 1 ? "fee" : "fees", tone: "warn" } : undefined,
+            // no `to match` badge any more (2026-08-25): the queue it pointed at is board-level
+            // now, so a badge here would send the reader to a section with nothing to do about it
+            mail: undefined,
           }} />
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           {/* lot scope — every section below follows it */}
           <Select className="w-52 py-1 text-xs" value={scope} onChange={(e) => setScope(e.target.value)}
-            title="Scope every section below to one test lot">
-            <option value="ALL">All test lots — order total ({b.lots.length})</option>
+            title="Scope every section below to one test slot">
+            <option value="ALL">All test slots — order total ({b.lots.length})</option>
             {b.lots.map((l) => (
               <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn} · {l.testStatus}</option>
             ))}
@@ -189,25 +223,26 @@ export function TestingTab({
             title="Poll the mailbox. Every stage arrives here: the lab's invoice (with its payment terms), the supplier's dispatch advice, WHL's receipt confirmation, progress notes, the payment acknowledgement and the report.">
             <RefreshCw className="h-4 w-4" /> Check mail
           </Button>
-          <Button onClick={onAdd}><Plus className="h-4 w-4" /> Add test lot</Button>
         </div>
       </div>
 
-      {sub === "lots" && <LotsSection b={b} id={id} onlyLotId={lotId} canEdit={canAct} canEmail={canEmailLab} slots={testSlotsOf(b)} onBookRetest={setRetestOf}
-        pendingSlotNo={pending?.slotNo} onBookSlot={(mpn) => setBookSlot({ mpn })}
+      {sub === "lots" && <LotsSection b={b} id={id} onlyLotId={lotId} onlySlotId={slotScope} onlyMpn={mpnScope} canEdit={canAct} canEmail={canEmailLab} slots={testSlotsOf(b)}
+        pendingSlotNo={pending?.slotNo} onBookRetest={setRetestOf}
         sel={sel} setSel={setSel} onBulk={setBulk}
         onCompose={(l, t) => setCompose({ lotId: l, templateId: t })} onNotify={(l, p) => setNotify({ lotId: l, party: p })}
         onDispatch={setDispatch} onMarkPaid={setPaid} />}
-      {sub === "mail" && <MailSection key={lotId ?? "ALL"} b={b} id={id} defaultLotId={lotId} canEmail={canEmailLab} onCompose={(l, t) => setCompose({ lotId: l, templateId: t })} onMatch={setMatch} />}
+      {sub === "mail" && <MailSection key={lotId ?? slotScope ?? mpnScope ?? "ALL"} b={b} id={id}
+        scope={{ lotId, slotId: slotScope, mpn: mpnScope }} canEmail={canEmailLab} />}
 
       {compose && <ComposeWhlEmailModal orderId={id} lotId={compose.lotId} templateId={compose.templateId} onClose={() => setCompose(null)} />}
       {notify && <NotifyLotResultModal orderId={id} lotId={notify.lotId} party={notify.party} onClose={() => setNotify(null)} />}
       {bulk && <BulkNotifyModal orderId={id} lotIds={sel} party={bulk} onClose={() => setBulk(null)} />}
-      {match && <MatchLabEmailModal orderId={id} email={match} onClose={() => setMatch(null)} />}
       {dispatch && <RecordDispatchModal orderId={id} lotId={dispatch} onClose={() => setDispatch(null)} />}
       {paid && <MarkLabFeePaidModal orderId={id} lotId={paid} onClose={() => setPaid(null)} />}
-      {retestOf && <BookTestSlotModal orderId={id} retestOfSlotId={retestOf} onClose={() => setRetestOf(null)} />}
-      {bookSlot && <BookTestSlotModal orderId={id} onlyMpn={bookSlot.mpn} onClose={() => setBookSlot(null)} />}
+      {retestOf && (
+        <BookTestSlotModal orderId={id} retestOfSlotId={retestOf.slotId} presetMpn={retestOf.mpn}
+          onClose={() => setRetestOf(null)} />
+      )}
     </div>
   );
 }
@@ -256,17 +291,28 @@ function SectionSwitcher({
 
 // ==================== 1 · lots: status tracker + report repository ====================
 
+/**
+ * **Test slots, grouped by MPN — one section, one list.**
+ *
+ * This was two stacked things: a `TEST SLOTS` strip of booking summaries, and below it a list of
+ * lot cards. They described the same submissions at two altitudes, so reading an order meant
+ * matching a slot number in the strip against a `slot TS-…` line on a card. The strip is gone and
+ * everything it carried — slot no, status, appointment, re-test provenance, the re-test button —
+ * sits on the card it belongs to.
+ *
+ * There is no flat/grouped toggle any more either. An order is a list of parts; the MPN is the
+ * heading and its slots hang under it, always. And a card leads with the two references the lab and
+ * we both quote — **lot code and work order** — not the MPN, which the heading above it already
+ * said.
+ */
 function LotsSection({
-  b, id, onlyLotId, canEdit, canEmail, sel, setSel, onBulk, slots, onBookRetest, pendingSlotNo, onBookSlot, onCompose, onNotify, onDispatch, onMarkPaid,
-}: { b: OrderBundle; id: string; onlyLotId?: string; canEdit: boolean; canEmail: boolean; sel: string[]; setSel: React.Dispatch<React.SetStateAction<string[]>>; onBulk: (party: NotifyParty) => void; slots: ReturnType<typeof testSlotsOf>; onBookRetest: (slotId: string) => void; pendingSlotNo?: string; onBookSlot: (mpn?: string) => void; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
+  b, id, onlyLotId, onlySlotId, onlyMpn, canEdit, canEmail, sel, setSel, onBulk, slots, pendingSlotNo, onBookRetest, onCompose, onNotify, onDispatch, onMarkPaid,
+}: { b: OrderBundle; id: string; onlyLotId?: string; onlySlotId?: string; onlyMpn?: string; canEdit: boolean; canEmail: boolean; sel: string[]; setSel: React.Dispatch<React.SetStateAction<string[]>>; onBulk: (party: NotifyParty) => void; slots: ReturnType<typeof testSlotsOf>; pendingSlotNo?: string; onBookRetest: (x: { slotId: string; mpn: string }) => void; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
   const [openLots, setOpenLots] = useState<Set<string>>(new Set());
-  // grouped by MPN by default: an order is a list of parts, and "how does this part stand" is the
-  // question this section is opened with. The flat list is the alternate cut, not the baseline.
-  const [group, setGroup] = useState<"flat" | "mpn">("mpn");
-  // no early return on an empty order: the booking header below is exactly what someone with no
-  // lots needs, so it has to render before the empty state
-  const lots = onlyLotId ? b.lots.filter((l) => l.id === onlyLotId) : b.lots;
-  // scoping to a single lot is already a request to see it — don't make them click twice
+  const lots = onlyLotId ? b.lots.filter((l) => l.id === onlyLotId)
+    : onlySlotId ? b.lots.filter((l) => l.testSlotId === onlySlotId)
+      : onlyMpn ? b.lots.filter((l) => l.orderLineMpn === onlyMpn)
+        : b.lots;
   const isOpen = (lotId: string) => openLots.has(lotId) || lots.length === 1;
   const toggle = (lotId: string) => setOpenLots((p) => {
     const n = new Set(p);
@@ -274,102 +320,72 @@ function LotsSection({
     return n;
   });
 
+  const slotOf = (lotId: string) => slots.find((x) => x.lots.some((l) => l.id === lotId))?.slot;
   /**
-   * Grouped by MPN, driven by **the order's own testable lines** — not by which MPNs happen to have
-   * lots. That is the difference that makes this the default view: a part with nothing booked yet is
-   * exactly the one you came here to book, so it has to appear, with its own `Book test` button. Any
-   * MPN that somehow has lots without a matching line is appended so nothing is hidden.
+   * Has **this part** already been re-run against this slot? Per-MPN, not per-slot: two lots can
+   * share a submission, and re-running one of them says nothing about the other.
+   */
+  const rebookedFor = (lot: Lot) => !!lot.testSlotId && !!b.testSlots?.some((x) =>
+    x.retestOfSlotId === lot.testSlotId && x.lines.some((l) => l.mpn === lot.orderLineMpn));
+
+  // an MPN's slots that the lab has not confirmed yet own no lot, so they need a row of their own
+  const awaitingFor = (mpn: string) =>
+    slots
+      .filter((x) => !onlySlotId || x.slot.id === onlySlotId)
+      .filter((x) => !onlyMpn || x.slot.lines.some((l) => l.mpn === onlyMpn))
+      .filter((x) => x.slot.status === "REQUESTED" && x.slot.lines.some((l) => l.mpn === mpn))
+      .map((x) => x.slot);
+
+  /**
+   * Driven by **the order's own testable lines**, not by which MPNs happen to have slots: a part
+   * with nothing booked is exactly the one this view has to surface. Any MPN carrying slots with no
+   * matching line is appended so nothing is hidden.
    */
   const testableMpns = b.lines.filter((l) => l.testingMode !== "NONE").map((l) => l.mpn);
   const orphanMpns = Array.from(new Set(lots.map((l) => l.orderLineMpn))).filter((m) => !testableMpns.includes(m));
+  // scoped to one slot: only the MPNs that slot actually submitted, so a pre-confirmation
+  // arrival shows its own booking rather than the order's whole part list
+  const slotMpns = onlySlotId
+    ? new Set((b.testSlots ?? []).find((x) => x.id === onlySlotId)?.lines.map((l) => l.mpn) ?? [])
+    : undefined;
   const byMpn = [...testableMpns, ...orphanMpns]
     .filter((mpn) => !onlyLotId || lots.some((l) => l.orderLineMpn === mpn))
+    .filter((mpn) => !slotMpns || slotMpns.has(mpn))
+    // scoped to one part: its own section and nothing else, however many lots it carries
+    .filter((mpn) => !onlyMpn || mpn === onlyMpn)
     .map((mpn) => ({ mpn, line: b.lines.find((l) => l.mpn === mpn), rows: lots.filter((l) => l.orderLineMpn === mpn) }));
 
   return (
     <div className="space-y-3">
-      {/* the bookings behind these lots — and the ways to book more: another slot outright, or a
-          re-test against a slot whose result came back FAIL */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Test slots{slots.length ? ` · ${slots.length}` : ""}
+          Test slots{lots.length ? ` · ${lots.length}` : ""}
         </span>
+        {/* Booking left this screen on 2026-08-25: every booking control now lives on the Testing
+            board, where the queue of orders and test slots is — one place that knows the part it is
+            booking, instead of two. The header still says where it went rather than going quiet. */}
         {pendingSlotNo
           ? <span className="text-xs text-warn">{pendingSlotNo} is still with the lab — one booking at a time.</span>
-          : <Button variant="outline" onClick={() => onBookSlot()}
-              title="Ask the lab for another testing slot — same review-then-mail flow, and its confirmation creates the lots">
-              <CalendarPlus className="h-4 w-4" /> Book {slots.length ? "another " : ""}test slot
-            </Button>}
+          : <Link href="/fulfilment/testing" className="text-xs font-medium text-primary hover:underline"
+              title="Test slots are booked from the Testing board, against the part they are for">
+              Book a test slot on the Testing board →
+            </Link>}
       </div>
 
-      {slots.length > 0 && (
-        <div className="space-y-1.5">
-          {slots.map(({ slot, lots: slotLots }) => {
-            const failed = slotLots.filter((l) => l.testStatus === "FAIL");
-            const alreadyRebooked = b.testSlots?.some((x) => x.retestOfSlotId === slot.id);
-            return (
-              <div key={slot.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border bg-card-2 px-3 py-2 text-xs">
-                <span className="inline-flex items-center gap-1.5">
-                  <CalendarCheck className="h-3.5 w-3.5 text-muted-foreground" />
-                  <b className="font-mono">{slot.slotNo}</b>
-                </span>
-                <Pill tone={TEST_SLOT_TONE[slot.status]}>{TEST_SLOT_LABEL[slot.status]}</Pill>
-                {slot.retestOfSlotNo && (
-                  <Pill tone="warn" title={`Re-test of ${slot.retestOfSlotNo}${slot.retestReason ? ` — ${slot.retestReason}` : ""}. Components were already at the lab, so dispatch and receipt carried over.`}>
-                    re-test of {slot.retestOfSlotNo}
-                  </Pill>
-                )}
-                <span className="text-muted-foreground">
-                  {slot.lab}
-                  {slot.appointmentNo ? <> · appointment <span className="font-mono text-foreground">{slot.appointmentNo}</span></> : null}
-                  {" · "}{slotLots.length} test lot{slotLots.length === 1 ? "" : "s"}
-                </span>
-                {/* the lab issues a work order per lot when it approves the slot, so the numbers
-                    belong against the slot they came back on — that is how the lab's own invoices
-                    and reports are referenced */}
-                {slotLots.length > 0 ? (
-                  <span className="inline-flex flex-wrap items-center gap-1.5">
-                    <span className="text-[10px] uppercase tracking-wide text-faint">work orders</span>
-                    {slotLots.map((l) => (
-                      <Pill key={l.id} tone="neutral" title={`${l.lotCode} · ${l.orderLineMpn}`}>
-                        <span className="font-mono">{l.workOrderNo ?? "—"}</span>
-                        <span className="text-faint"> {l.lotCode}</span>
-                      </Pill>
-                    ))}
-                  </span>
-                ) : slot.status === "REQUESTED" ? (
-                  <span className="text-faint">work orders issued when {slot.lab} confirms</span>
-                ) : null}
-                {failed.length > 0 && <Pill tone="bad">{failed.length} failed</Pill>}
-                <span className="ml-auto inline-flex items-center gap-2">
-                  <span className="text-faint">requested {slot.requestedAt}</span>
-                  {failed.length > 0 && (
-                    alreadyRebooked
-                      ? <Pill tone="info">re-test booked</Pill>
-                      : <Button variant="outline" disabled={!canEdit} onClick={() => onBookRetest(slot.id)}
-                          title={canEdit ? `Book a re-test against ${slot.slotNo} — the components are already at ${slot.lab}` : "Only SC / Mgmt may book a re-test"}>
-                          <RefreshCw className="h-4 w-4" /> Book re-test
-                        </Button>
-                  )}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+      {(onlyLotId || onlySlotId) && <p className="text-xs text-muted-foreground">Filtered to one test slot — switch the selector above to <b className="text-foreground">All test slots</b> to see the rest.</p>}
+      {onlyMpn && !onlyLotId && !onlySlotId && (
+        <p className="text-xs text-muted-foreground">
+          Filtered to <b className="text-foreground">{onlyMpn}</b>{" "}— the order&apos;s other parts are on the whole-order view.
+        </p>
       )}
 
-      {onlyLotId && <p className="text-xs text-muted-foreground">Filtered to one test lot — switch the selector above to <b className="text-foreground">All test lots</b> to see the rest.</p>}
-
-      {/* ---- bulk actions: tick lots, act once (at 50 lots you don't mail one by one). This
-           lived on the roll-up table that used to sit above the sections; the table went
-           2026-08-21 as a duplicate of these cards, so the bar and the ticks moved here —
-           the actions are about lots, and this is where the lots are. ---- */}
-      {b.lots.length > 1 && (
+      {/* tick slots, act once — at 50 you don't mail them one by one. Gated on the SCOPED count,
+          not the order's: arriving from the board on one test slot leaves nothing to select
+          between, so the bar would be a control with one possible outcome. */}
+      {lots.length > 1 && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border bg-card-2 px-3 py-2 text-xs">
-          <span className="font-semibold uppercase tracking-wide text-muted-foreground">Select test lots</span>
-          {/* The quick-select presets (all / with report / acceptable / not acceptable / F.A.R.)
-              were removed 2026-08-21 — selection is the ticks on the cards below. */}
-          <span className="text-faint">tick the test lots below, then pick an action</span>
+          <span className="font-semibold uppercase tracking-wide text-muted-foreground">Select test slots</span>
+          <span className="text-faint">tick the test slots below, then pick an action</span>
           {sel.length > 0 && <button onClick={() => setSel([])} className="text-muted-foreground hover:underline">clear</button>}
           <span className="ml-auto inline-flex flex-wrap items-center gap-2">
             <span className={cn("font-medium", sel.length ? "text-foreground" : "text-faint")}>{sel.length} selected</span>
@@ -378,39 +394,24 @@ function LotsSection({
         </div>
       )}
 
-      {b.lots.length === 0 && (group === "flat" || byMpn.length === 0) && (
-        <Empty text="No test lots yet — book a slot with the lab, or add one by hand." />
+      {byMpn.length === 0 && <Empty text="No test slots yet — book one with the lab." />}
+
+      {lots.length > 1 && (
+        <ExpandBar total={lots.length} openCount={lots.filter((l) => openLots.has(l.id)).length} noun="test slot"
+          onCollapseAll={() => setOpenLots(new Set())}
+          onExpandAll={() => setOpenLots(new Set(lots.map((l) => l.id)))} />
       )}
 
-      {(lots.length > 1 || byMpn.length > 0) && (
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <ExpandBar total={lots.length} openCount={lots.filter((l) => openLots.has(l.id)).length} noun="test lot"
-            onCollapseAll={() => setOpenLots(new Set())}
-            onExpandAll={() => setOpenLots(new Set(lots.map((l) => l.id)))} />
-          {/* One MPN routinely carries several test lots (date codes, re-tests, split reels), and
-              the question "how do all the lots of this part stand" is a different one from "what
-              is happening on this lot". Same cards either way — only the grouping changes. */}
-          <div className="inline-flex items-center gap-1 rounded-lg border bg-background p-0.5 text-xs">
-            {([["flat", "Flat list"], ["mpn", "Group by MPN"]] as const).map(([g, label]) => (
-              <button key={g} type="button" onClick={() => setGroup(g)} aria-current={group === g ? "true" : undefined}
-                className={cn("rounded-md px-2.5 py-1 font-medium transition",
-                  group === g ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {group === "mpn" ? (
-        byMpn.map(({ mpn, line, rows }) => (
+      {byMpn.map(({ mpn, line, rows }) => {
+        const awaiting = awaitingFor(mpn);
+        return (
           <section key={mpn} className="space-y-2">
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b pb-1">
               <span className="font-mono text-sm font-semibold">{mpn}</span>
               {line && <Pill tone={line.testingMode === "NONE" ? "neutral" : "info"}>{line.testingMode}</Pill>}
               <span className="text-xs text-muted-foreground">
                 {line ? `${line.make} · order qty ${qtyfmt(line.quantity)} · ` : ""}
-                {rows.length} test lot{rows.length === 1 ? "" : "s"}
+                {rows.length} test slot{rows.length === 1 ? "" : "s"}
                 {rows.length > 0 && <> · sampled {qtyfmt(rows.reduce((a, l) => a + l.sampleQty, 0))} of {qtyfmt(rows.reduce((a, l) => a + l.qty, 0))}</>}
               </span>
               <span className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -419,40 +420,44 @@ function LotsSection({
                   if (!n) return null;
                   return <Pill key={v} tone={v === "PASS" ? "ok" : v === "FAIL" ? "bad" : v === "MAYBE" ? "warn" : "neutral"}>{n} {v.toLowerCase()}</Pill>;
                 })}
-                {/* per-MPN booking: the whole reason this view is driven by lines rather than lots */}
-                {!pendingSlotNo && (
-                  <Button variant="outline" disabled={!canEdit} onClick={() => onBookSlot(mpn)}
-                    title={canEdit ? `Ask the lab for a slot for ${mpn} — same review-then-mail flow` : "Only SC / Mgmt may book a slot"}>
-                    <CalendarPlus className="h-4 w-4" /> Book test
-                  </Button>
-                )}
               </span>
             </div>
-            {rows.length === 0 && (
+
+            {/* a booking the lab has not answered yet: no lot, no work order, but it is a real
+                slot on this MPN and hiding it would make the order look un-booked */}
+            {awaiting.map((sl) => (
+              <div key={sl.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-dashed px-3 py-2 text-xs">
+                <CalendarCheck className="h-3.5 w-3.5 text-muted-foreground" />
+                <b className="font-mono">{sl.slotNo}</b>
+                <Pill tone={TEST_SLOT_TONE[sl.status]}>{TEST_SLOT_LABEL[sl.status]}</Pill>
+                <span className="text-muted-foreground">{sl.lab} · requested {sl.requestedAt}</span>
+                <span className="ml-auto text-faint">lot code and work order arrive with the confirmation</span>
+              </div>
+            ))}
+
+            {rows.length === 0 && awaiting.length === 0 && (
               <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                No test lot for this MPN yet — book a slot with the lab, and its confirmation creates the lot.
+                No test slot for this MPN yet — book one with the lab, and its confirmation creates it.
               </p>
             )}
+
             {rows.map((lot) => (
               <LotCard key={lot.id} b={b} id={id} lot={lot} canEdit={canEdit} canEmail={canEmail}
                 open={isOpen(lot.id)} onToggle={() => toggle(lot.id)}
+                /* this lot's OWN verdict, not its slot's: LOT-KS-2 sharing a slot with a failed
+                   LOT-KS-1 has not failed, and offering to re-run it would re-test a good part */
+                canRetest={lot.testStatus === "FAIL" && !!lot.testSlotId && !rebookedFor(lot)}
+                onBookRetest={() => lot.testSlotId && onBookRetest({ slotId: lot.testSlotId, mpn: lot.orderLineMpn })}
+                selectable={lots.length > 1}
                 selected={sel.includes(lot.id)}
                 onSelect={(on) => setSel((p) => (on ? [...p, lot.id] : p.filter((x) => x !== lot.id)))}
+                slot={slotOf(lot.id)}
                 onCompose={onCompose} onNotify={onNotify} onDispatch={onDispatch} onMarkPaid={onMarkPaid}
                 />
             ))}
           </section>
-        ))
-      ) : (
-        lots.map((lot) => (
-          <LotCard key={lot.id} b={b} id={id} lot={lot} canEdit={canEdit} canEmail={canEmail}
-            open={isOpen(lot.id)} onToggle={() => toggle(lot.id)}
-            selected={sel.includes(lot.id)}
-            onSelect={(on) => setSel((p) => (on ? [...p, lot.id] : p.filter((x) => x !== lot.id)))}
-            onCompose={onCompose} onNotify={onNotify} onDispatch={onDispatch} onMarkPaid={onMarkPaid}
-            />
-        ))
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -577,8 +582,8 @@ function NextActionsMenu({
 }
 
 function LotCard({
-  b, id, lot, canEdit, canEmail, open, onToggle, selected, onSelect, onCompose, onNotify, onDispatch, onMarkPaid,
-}: { b: OrderBundle; id: string; lot: Lot; canEdit: boolean; canEmail: boolean; open: boolean; onToggle: () => void; selected: boolean; onSelect: (on: boolean) => void; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
+  b, id, lot, canEdit, canEmail, open, onToggle, canRetest, onBookRetest, selectable, selected, onSelect, slot, onCompose, onNotify, onDispatch, onMarkPaid,
+}: { b: OrderBundle; id: string; lot: Lot; canEdit: boolean; canEmail: boolean; open: boolean; onToggle: () => void; canRetest: boolean; onBookRetest: () => void; selectable: boolean; selected: boolean; onSelect: (on: boolean) => void; slot?: TestSlot; onCompose: (lotId: string, templateId?: string) => void; onNotify: (lotId: string, party: NotifyParty) => void; onDispatch: (lotId: string) => void; onMarkPaid: (lotId: string) => void }) {
   const setLotStatus = useStore((s) => s.setLotStatus);
   const fetchWhlReport = useStore((s) => s.fetchWhlReport);
   const uploadBookingAppointmentForLot = useStore((s) => s.uploadBookingAppointment);
@@ -600,18 +605,25 @@ function LotCard({
       open={open}
       onToggle={onToggle}
       title={<span className="flex flex-wrap items-center gap-2">
-        {/* the tick the bulk bar acts on — it lived on the roll-up table's checkbox column */}
-        <input type="checkbox" aria-label={`Select ${lot.lotCode}`} checked={selected}
-          onClick={(e) => e.stopPropagation()} onChange={(e) => onSelect(e.target.checked)} />
+        {/* The tick the bulk bar acts on — and only when there is a bulk to act on. With a single
+            test slot in view the selection does nothing the slot's own actions don't, so the
+            checkbox is noise; the bulk bar hides on the same condition (`selectable` counts what
+            is on screen, so a board arrival scoped to one slot shows neither). */}
+        {selectable && (
+          <input type="checkbox" aria-label={`Select ${lot.lotCode}`} checked={selected}
+            onClick={(e) => e.stopPropagation()} onChange={(e) => onSelect(e.target.checked)} />
+        )}
         <FlaskConical className="h-4 w-4 text-primary" />
-        <span className="text-foreground">{lot.lotCode}</span>
-        <span className="font-mono text-xs normal-case text-muted-foreground">{lot.orderLineMpn}</span>
+        {/* lot code + work order lead: they are what the lab, its invoices and its reports quote.
+            The MPN is the heading this card sits under, so repeating it here said nothing. */}
+        <span className="text-sm text-foreground">{lot.lotCode}</span>
+        <span className="text-sm normal-case text-foreground">WO {lot.workOrderNo ?? "—"}</span>
         <span className="font-normal normal-case tracking-normal text-faint">
-          {lot.lab ?? "—"} · WO {lot.workOrderNo ?? "—"} · qty {qtyfmt(lot.qty)} / sample {lot.sampleQty} · DC {lot.dateCode}
-          {lot.testSlotNo ? ` · slot ${lot.testSlotNo}` : ""}
+          {lot.lab ?? "—"} · qty {qtyfmt(lot.qty)} / sample {lot.sampleQty} · DC {lot.dateCode}
+          {slot ? ` · ${slot.slotNo}` : ""}{slot?.appointmentNo ? ` · appointment ${slot.appointmentNo}` : ""}
         </span>
         {lot.retestOfSlotNo && (
-          <Pill tone="warn" title={`This lot is a re-test booked against ${lot.retestOfSlotNo}.`}>re-test of {lot.retestOfSlotNo}</Pill>
+          <Pill tone="warn" title={`Booked as a re-test against ${lot.retestOfSlotNo}.`}>re-test of {lot.retestOfSlotNo}</Pill>
         )}
       </span>}
       // enough while collapsed to spot the lot that needs attention among a hundred
@@ -656,14 +668,6 @@ function LotCard({
             e.target.value = "";                 // so re-picking the same file fires again
             if (f) uploadBookingAppointmentForLot(id, { name: f.name, size: f.size }, lot.id);
           }} />
-        {/* the demo path: same parse, no file. Per lot like the picker — the real lab feed
-            replaces this, and until then it is how a lot's plan gets filled without a PDF. */}
-        <Button variant="ghost" disabled={!canEdit} onClick={() => uploadBookingAppointmentForLot(id, null, lot.id)}
-          title={canEdit
-            ? `Fill ${lot.lotCode}'s test plan from a sample booking appointment (demo data)`
-            : "Only SC / Mgmt may change test requirements"}>
-          <Wand2 className="h-4 w-4" /> Auto-fill
-        </Button>
         <Button variant="outline" onClick={() => fetchWhlReport(id, lot.id)} title="Fetch & parse the WHL report for this work order">
           <FileText className="h-4 w-4" /> {report ? "Fetch revision" : "Fetch report"}
         </Button>
@@ -671,7 +675,9 @@ function LotCard({
             the point the goods are cleared to move — before it there is nothing to assign. */}
         {/* the two post-report stages. Returning the samples is the lab's act, assigning is
             ours — and the assign click IS the last stage, so it also closes the chain. */}
-        {reportShared && !lot.returnedToSellerAt && (
+        {/* only when the booking asked for a return — otherwise the samples are not coming back and
+            there is nothing to record (2026-08-25) */}
+        {reportShared && lotReturnsToSeller(lot) && !lot.returnedToSellerAt && (
           <Button variant="ghost" disabled={!canEdit} onClick={() => markLotReturnedToSeller(id, lot.id)}
             title={canEdit
               ? `Record that ${lot.lab ?? "WHL"} sent the samples back to the seller`
@@ -693,9 +699,19 @@ function LotCard({
             </Button>
           )
         )}
-        <Button variant="outline" disabled={!canEmail} onClick={() => onCompose(lot.id)} title={canEmail ? "Email WHL about this lot" : "Only SC / Mgmt may email WHL"}>
+        <Button variant="outline" disabled={!canEmail} onClick={() => onCompose(lot.id)} title={canEmail ? "Email WHL about this test slot" : "Only SC / Mgmt may email WHL"}>
           <Mail className="h-4 w-4" /> Email WHL
         </Button>
+        {/* The single exception to "booking is board-only" (2026-08-25): a FAIL forces a decision —
+            re-test or return — and it is taken here, where the failed result is being read. Shown
+            only when this lot's slot came back FAIL and nobody has re-run it yet; every other
+            booking, including a plain second slot for this same part, is on the board. */}
+        {canRetest && (
+          <Button variant="outline" disabled={!canEdit} onClick={onBookRetest}
+            title={canEdit ? `Book a re-test against ${slot?.slotNo ?? "this slot"} — the components are already at ${lot.lab ?? "the lab"}` : "Only SC / Mgmt may book a re-test"}>
+            <RefreshCw className="h-4 w-4" /> Book re-test
+          </Button>
+        )}
       </div>}>
 
       {/* ---- lifecycle chain: where the lot physically is, before what was tested ---- */}
@@ -721,7 +737,7 @@ function LotCard({
 
       {/* ---- report repository & auto-parsed header summary ---- */}
       <div className="mt-4">
-        <ReportRepository b={b} orderId={id} lot={lot} />
+        <ReportRepository orderId={id} lot={lot} />
       </div>
 
       {/* ---- lot-level verdict override (unchanged lot logic) + thread peek ---- */}
@@ -736,21 +752,17 @@ function LotCard({
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {awaiting && <span className="inline-flex items-center gap-1 text-warn"><Clock className="h-3.5 w-3.5" /> awaiting WHL reply</span>}
-          <span className="text-muted-foreground">{emails.length} message(s)</span>
-          {/* one-click templated mails, picked by what this lot actually needs */}
+          {/*
+           * Removed 2026-08-25: the `N message(s)` count, `F.A.R. follow-up` and `Re-test request`.
+           * The count was a number with nothing to do about it — the thread itself is one click away
+           * under Communication, which is also where both templates live as composer chips (and the
+           * card's own `Email WHL` opens the compose modal already carrying this lot). Three
+           * controls stacked under a failed report competing with the verdict buttons beside them,
+           * for mail that is written somewhere better.
+           */}
           {!report && (
             <Button variant="outline" disabled={!canEmail} onClick={() => requestWhlUpdate(id, lot.id)}>
               <Mail className="h-4 w-4" /> Request update
-            </Button>
-          )}
-          {report?.anyFar && (
-            <Button variant="outline" disabled={!canEmail} onClick={() => onCompose(lot.id, "FAR_FOLLOWUP")}>
-              <Mail className="h-4 w-4" /> F.A.R. follow-up
-            </Button>
-          )}
-          {lot.testStatus === "FAIL" && (
-            <Button variant="outline" disabled={!canEmail} onClick={() => onCompose(lot.id, "RETEST_REQUEST")}>
-              <Mail className="h-4 w-4" /> Re-test request
             </Button>
           )}
           {awaiting && (
@@ -766,14 +778,93 @@ function LotCard({
 
 // ==================== 6 + 7 · inbox / compose / correspondence ====================
 
+/**
+ * @param scope which submission the screen is on, straight from the URL — a lot, the slot it
+ *   belongs to, or just the part. **Correspondence follows it and cannot be widened from here.**
+ *   Arriving on one test slot and then reading the order's whole mail history answers a question
+ *   nobody asked by clicking that row, so the lot `<Select>`s that used to sit on the thread and on
+ *   `Result circulated` are gone when a scope is set; the way back to everything is the header's
+ *   "show the whole order" link, or the order number on the board. Unscoped, both selects return.
+ */
 function MailSection({
-  b, id, defaultLotId, canEmail, onCompose, onMatch,
-}: { b: OrderBundle; id: string; defaultLotId?: string; canEmail: boolean; onCompose: (lotId?: string, templateId?: string) => void; onMatch: (m: LabEmail) => void }) {
+  b, id, scope, canEmail,
+}: { b: OrderBundle; id: string; scope: { lotId?: string; slotId?: string; mpn?: string }; canEmail: boolean }) {
   const syncWhlInbox = useStore((s) => s.syncWhlInbox);
   const escalateLabEmail = useStore((s) => s.escalateLabEmail);
-  const unmatched = unmatchedEmails(b);
-  // inherits the header's lot scope (remounted on change), still overridable here
-  const [lotFilter, setLotFilter] = useState<string>(defaultLotId ?? "ALL");
+  const sendLabEmail = useStore((s) => s.sendLabEmail);
+  /*
+   * The submissions in scope, as ids and as parts. `undefined` means "the whole order" — the only
+   * state in which this section offers a lot picker at all.
+   */
+  const scopedSlot = scope.slotId ? (b.testSlots ?? []).find((x) => x.id === scope.slotId) : undefined;
+  const scopedLots = scope.lotId ? b.lots.filter((l) => l.id === scope.lotId)
+    : scope.slotId ? b.lots.filter((l) => l.testSlotId === scope.slotId)
+      : scope.mpn ? b.lots.filter((l) => l.orderLineMpn === scope.mpn)
+        : undefined;
+  const scopedMpns: Set<string> | undefined = scope.lotId
+    ? new Set(scopedLots?.map((l) => l.orderLineMpn) ?? [])
+    : scopedSlot ? new Set(scopedSlot.lines.map((l) => l.mpn))
+      : scope.mpn ? new Set([scope.mpn])
+        : undefined;
+  const scoped = !!scopedMpns;
+  const lotOptions = scopedLots ?? b.lots;
+  /** what the strip says instead of the picker */
+  const scopeLabel = scope.lotId
+    ? `${b.lots.find((l) => l.id === scope.lotId)?.lotCode} · ${[...(scopedMpns ?? [])].join(", ")}`
+    : scopedSlot ? `${scopedSlot.slotNo} · ${[...(scopedMpns ?? [])].join(", ")}`
+      : (scope.mpn ?? "");
+
+  // ---- the open composer ----
+  const [to, setTo] = useState(WHL_CONTACT);
+  const [cc, setCc] = useState("");
+  const [composeLot, setComposeLot] = useState(scope.lotId ?? scopedLots?.[0]?.id ?? b.lots[0]?.id ?? "");
+  const [tplId, setTplId] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+
+  // template context comes off the chosen lot, so nothing has to be typed or looked up
+  const ctxFor = (lid: string): WhlMailCtx => {
+    const l = b.lots.find((x) => x.id === lid);
+    const rep = l ? (l.reports ?? []).find((r) => r.current) : undefined;
+    return {
+      entity: b.maskingEntity ?? "1Buy", mpn: l?.orderLineMpn, lotCode: l?.lotCode, qty: l?.qty,
+      sampleQty: l?.sampleQty, workOrderNo: l?.workOrderNo, clientPoNo: l?.clientPoNo,
+      reportNo: rep?.reportNo ?? l?.reportNo, lab: l?.lab, dateCode: l?.dateCode,
+    };
+  };
+  const applyTemplate = (tid: string) => {
+    const t = whlTemplate(tid);
+    const c = ctxFor(composeLot);
+    setTplId(tid); setSubject(t.subject(c)); setBody(t.body(c));
+  };
+  // re-picking the lot re-fills a templated mail; a hand-typed one is left alone
+  const pickComposeLot = (lid: string) => {
+    setComposeLot(lid);
+    if (tplId) { const t = whlTemplate(tplId); const c = ctxFor(lid); setSubject(t.subject(c)); setBody(t.body(c)); }
+  };
+  const sendNow = () => {
+    if (!subject.trim() || !body.trim()) return;
+    sendLabEmail(id, { lotId: composeLot || undefined, subject, body });
+    setSubject(""); setBody(""); setTplId("");
+  };
+  // Only meaningful on the whole-order view: with a scope the thread follows it and there is
+  // nothing to pick. Kept as state (not derived) so the unscoped view still filters by hand.
+  const [lotFilter, setLotFilter] = useState<string>("ALL");
+  const inScope = (lotId?: string) => {
+    if (!scopedLots) return lotFilter === "ALL" || lotId === lotFilter;
+    return !!lotId && scopedLots.some((l) => l.id === lotId);
+  };
+  /**
+   * A booking mail carries no lot — the lot does not exist until the lab answers it. On the
+   * whole-order view it belongs in every list; scoped, it belongs only to the parts it was about,
+   * which we recover from the MPN on the mail or, failing that, from the slot it created.
+   */
+  const bookingInScope = (m: LabEmail) => {
+    if (!scopedMpns) return true;
+    if (m.mpn) return scopedMpns.has(m.mpn);
+    const slot = (b.testSlots ?? []).find((x) => x.requestEmailId === m.id || x.confirmEmailId === m.id);
+    return !!slot && slot.lines.some((l) => scopedMpns.has(l.mpn));
+  };
   /**
    * Everything this order has said or been told, in one list — not just the WHL thread.
    *
@@ -784,12 +875,12 @@ function MailSection({
    */
   const thread: ThreadRow[] = [
     ...(b.labEmails ?? [])
-      // booking mails have no lot yet — they are about the order, and belong in every view
-      .filter((m) => (!m.lotId ? m.kind === "BOOKING_REQUEST" || m.kind === "BOOKING_CONFIRMED"
-        : lotFilter === "ALL" || m.lotId === lotFilter))
+      .filter((m) => (!m.lotId
+        ? (m.kind === "BOOKING_REQUEST" || m.kind === "BOOKING_CONFIRMED") && bookingInScope(m)
+        : inScope(m.lotId)))
       .map((m) => ({ kind: "mail" as const, at: m.at, mail: m })),
     ...b.lots
-      .filter((l) => lotFilter === "ALL" || l.id === lotFilter)
+      .filter((l) => inScope(l.id))
       .flatMap((l) => (l.notifications ?? []).map((n) => ({ kind: "notify" as const, at: n.at, note: n, lot: l }))),
   ].sort((x, y) => String(y.at).localeCompare(String(x.at)));
 
@@ -809,82 +900,91 @@ function MailSection({
 
   return (
     <div className="space-y-4">
-      <Panel title="Compose from a template — subject & body pre-filled">
-        <div className="flex flex-wrap gap-1.5">
-          {WHL_EMAIL_TEMPLATES.map((t) => (
-            <button key={t.id} type="button" disabled={!canEmail} onClick={() => onCompose(b.lots[0]?.id, t.id)}
-              title={t.hint}
-              className="rounded-lg border px-2.5 py-1 text-xs font-medium hover:border-primary hover:text-primary disabled:opacity-50">
-              {t.label}
-            </button>
-          ))}
-        </div>
-        <p className="mt-2 text-xs text-muted-foreground">
-          Each template fills the subject and the whole message from the test lot&apos;s MPN, lot code, work order, report no and sales order — edit the wording and send.
-          {!canEmail && <> <Denied what="Emailing WHL" /></>}
-        </p>
-      </Panel>
-
-      <Panel title="WHL inbox — manual match queue"
-        actions={<div className="flex gap-2">
-          <Button variant="outline" onClick={() => syncWhlInbox(id)}><RefreshCw className="h-4 w-4" /> Check mail</Button>
-          <Button disabled={!canEmail} onClick={() => onCompose(undefined)} title={canEmail ? "Compose to WHL" : "Only SC / Mgmt may email WHL"}>
-            <Mail className="h-4 w-4" /> Compose
-          </Button>
-        </div>}>
-        {unmatched.length === 0 ? <Empty text="Nothing waiting — every inbound WHL email is matched to a lot." /> : (
-          <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[820px] border-collapse text-sm">
-              <thead>
-                <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 text-left">Received</th>
-                  <th className="px-3 py-2 text-left">From</th>
-                  <th className="px-3 py-2 text-left">Subject</th>
-                  <th className="px-3 py-2 text-left">Why it&apos;s here</th>
-                  <th className="px-3 py-2 text-left">Files</th>
-                  <th className="px-3 py-2 text-right">Route it</th>
-                </tr>
-              </thead>
-              <tbody>
-                {unmatched.map((m) => (
-                  <Fragment key={m.id}>
-                    <tr className="border-b bg-warn-bg/30">
-                      <td className="whitespace-nowrap px-3 py-2 text-xs tnum text-muted-foreground">{m.at}</td>
-                      <td className="px-3 py-2 text-xs">{m.by}</td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium">{m.subject}</div>
-                        <p className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{m.body}</p>
-                      </td>
-                      <td className="px-3 py-2 text-xs text-warn">{m.matchNote ?? "No lot code, MPN or work order in the message"}</td>
-                      <td className="px-3 py-2 text-xs">
-                        {m.attachments?.length
-                          ? <span className="inline-flex items-center gap-1 text-muted-foreground"><FileText className="h-3 w-3" /> {m.attachments.join(", ")}</span>
-                          : <span className="text-faint">—</span>}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <Button variant="outline" onClick={() => onMatch(m)}><MailQuestion className="h-4 w-4" /> Match to lot</Button>
-                      </td>
-                    </tr>
-                  </Fragment>
-                ))}
-              </tbody>
-            </table>
+      {/* ---- An OPEN composer, not a button that opens one. Modelled on the Logistics desk's
+           "Communication on this order" (components/logistics/logistics-communication.tsx):
+           a real mail head sitting at the top of the thread, typed into directly. The templates
+           moved from "chip opens a modal" to "chip fills this form", which is what they were
+           always for — the modal is still the way in from a lot's own Email-WHL button. ---- */}
+      <Panel title="Write to WHL">
+        <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Labeled label="To" hint="the lab's reports mailbox">
+              <Input value={to} onChange={(e) => setTo(e.target.value)} />
+            </Labeled>
+            <Labeled label="CC" hint="comma-separated">
+              <Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="optional" />
+            </Labeled>
+            {/* Scoped to one lot, the mail can only be about that lot — a picker here would let a
+                screen about LOT-A file a mail against LOT-B. Scoped to a part or a slot, the
+                options narrow to its lots. */}
+            <Labeled label="About" hint={scope.lotId ? "this test slot" : "files the mail against a test slot"}>
+              {scope.lotId ? (
+                <div className="text-sm font-medium">{scopeLabel}</div>
+              ) : (
+                <Select value={composeLot} onChange={(e) => pickComposeLot(e.target.value)}>
+                  <option value="">No specific test slot</option>
+                  {lotOptions.map((l) => <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn}</option>)}
+                </Select>
+              )}
+            </Labeled>
           </div>
-        )}
-        <p className="mt-3 text-xs text-muted-foreground">
-          Unroutable mail is held here rather than dropped or applied to the wrong test lot. Matching it applies its updates to that lot&apos;s tracker.
-        </p>
+
+          {/* a template fills the form in place — subject and body, from the chosen lot */}
+          <div>
+            <span className="mb-1 block text-[11px] font-medium text-muted-foreground">
+              Fill from a template — every field stays editable
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {WHL_EMAIL_TEMPLATES.map((t) => (
+                <button key={t.id} type="button" disabled={!canEmail} onClick={() => applyTemplate(t.id)}
+                  title={t.hint}
+                  className={cn("rounded-full border px-2.5 py-1 text-xs font-medium transition disabled:opacity-50",
+                    tplId === t.id ? "border-primary bg-accent-soft text-primary" : "bg-card text-muted-foreground hover:bg-muted")}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <Labeled label="Subject">
+            <Input value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder={`e.g. ${b.orderNo} — status on the current work order`} />
+          </Labeled>
+          <Labeled label="Message">
+            <Textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)}
+              placeholder="Type the mail, or fill it from a template above and edit." />
+          </Labeled>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button disabled={!canEmail || !subject.trim() || !body.trim()} onClick={sendNow}
+              title={canEmail ? "Send to WHL — it lands on this thread against the chosen lot" : "Only SC / Mgmt may email WHL"}>
+              <Mail className="h-4 w-4" /> Send to WHL
+            </Button>
+            <Button variant="outline" onClick={() => syncWhlInbox(id)}>
+              <RefreshCw className="h-4 w-4" /> Check mail
+            </Button>
+            {(subject || body) && (
+              <button onClick={() => { setSubject(""); setBody(""); setTplId(""); }}
+                className="text-xs font-medium text-muted-foreground hover:text-foreground">clear</button>
+            )}
+            {!canEmail && <Denied what="Emailing WHL" />}
+          </div>
+        </div>
       </Panel>
 
-      <ResultCirculated b={b} defaultLotFilter={lotFilter} />
+      <ResultCirculated b={b} defaultLotFilter={lotFilter} scopedLots={scopedLots} scopeLabel={scopeLabel} />
 
       <Panel title="Correspondence & tracking history — every party"
-        actions={
-          <Select className="w-52 py-1 text-xs" value={lotFilter} onChange={(e) => setLotFilter(e.target.value)}>
-            <option value="ALL">All test lots</option>
-            {b.lots.map((l) => <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn}</option>)}
-          </Select>
-        }>
+        actions={scoped
+          ? <span className="text-[11px] text-muted-foreground">
+              only <b className="text-foreground">{scopeLabel}</b> — the order&apos;s other threads are on the whole-order view
+            </span>
+          : (
+            <Select className="w-52 py-1 text-xs" value={lotFilter} onChange={(e) => setLotFilter(e.target.value)}>
+              <option value="ALL">All test slots</option>
+              {b.lots.map((l) => <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn}</option>)}
+            </Select>
+          )}>
         {thread.length === 0 ? <Empty text="Nothing communicated on this order yet." /> : (
           <>
             <div className="overflow-x-auto rounded-lg border">
@@ -949,13 +1049,16 @@ function MailSection({
  * Follows the section's own lot filter, and only lists lots that have a report — there is nothing
  * to circulate before one exists.
  */
-function ResultCirculated({ b, defaultLotFilter }: { b: OrderBundle; defaultLotFilter: string }) {
+function ResultCirculated({
+  b, defaultLotFilter, scopedLots, scopeLabel,
+}: { b: OrderBundle; defaultLotFilter: string; scopedLots?: Lot[]; scopeLabel?: string }) {
   const [openHistory, setOpenHistory] = useState<Set<string>>(new Set());
-  // its own filter, seeded from the header's lot scope but independent afterwards — "who was
-  // told about LOT-B" is a different question from "what did we say to the lab about LOT-B"
+  // its own filter on the whole-order view — "who was told about LOT-B" is a different question
+  // from "what did we say to the lab about LOT-B" — but it cannot escape a URL scope either
   const [lotFilter, setLotFilter] = useState<string>(defaultLotFilter);
-  const withReport = b.lots.filter((l) => !!currentReport(l));
-  const lots = withReport.filter((l) => lotFilter === "ALL" || l.id === lotFilter);
+  const all = b.lots.filter((l) => !!currentReport(l));
+  const withReport = scopedLots ? all.filter((l) => scopedLots.some((x) => x.id === l.id)) : all;
+  const lots = scopedLots ? withReport : withReport.filter((l) => lotFilter === "ALL" || l.id === lotFilter);
   const toggle = (lotId: string) => setOpenHistory((p) => {
     const n = new Set(p);
     if (n.has(lotId)) n.delete(lotId); else n.add(lotId);
@@ -963,18 +1066,20 @@ function ResultCirculated({ b, defaultLotFilter }: { b: OrderBundle; defaultLotF
   });
 
   return (
-    <Panel title={`Result circulated · ${lots.length} test lot${lots.length === 1 ? "" : "s"} with a report`}
-      actions={withReport.length > 1 ? (
+    <Panel title={`Result circulated · ${lots.length} test slot${lots.length === 1 ? "" : "s"} with a report`}
+      actions={scopedLots
+        ? (scopeLabel ? <span className="text-[11px] text-muted-foreground">only <b className="text-foreground">{scopeLabel}</b></span> : undefined)
+        : withReport.length > 1 ? (
         <Select className="w-52 py-1 text-xs" value={lotFilter} onChange={(e) => setLotFilter(e.target.value)}
-          title="Show one test lot's circulation, or all of them">
+          title="Show one test slot's circulation, or all of them">
           <option value="ALL">All test lots with a report ({withReport.length})</option>
           {withReport.map((l) => <option key={l.id} value={l.id}>{l.lotCode} · {l.orderLineMpn}</option>)}
         </Select>
       ) : undefined}>
       {lots.length === 0 ? (
         <Empty text={withReport.length === 0
-          ? "Nothing to circulate yet — a test lot needs a report before its result can go out."
-          : "No test lot matches that filter."} />
+          ? "Nothing to circulate yet — a test slot needs a report before its result can go out."
+          : "No test slot matches that filter."} />
       ) : (
         <div className="space-y-2">
           {lots.map((lot) => {

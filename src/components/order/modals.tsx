@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Upload, Wand2, Mail, Plus, Trash2 } from "lucide-react";
+import { Upload, Mail, Plus, Trash2 } from "lucide-react";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Select, Textarea } from "@/components/ui/form";
 import { Button, Pill } from "@/components/ui/primitives";
@@ -62,20 +62,47 @@ export function AddStepModal({ orderId, onClose }: { orderId: string; onClose: (
  * `retestOf` turns it into a re-test request: the mail cites the failed slot, and the lots the
  * confirmation creates skip straight to `COMPONENTS_RECEIVED` because the parts never left.
  */
+/**
+ * @param presetMpn **the booking is for this part, and only this part.** The Testing board books
+ *   per row (2026-08-24) and a row is one MPN, so the part is already decided when the form opens:
+ *   there is no MPN dropdown, no `+ Add MPN` and no delete — offering them would let a per-part
+ *   booking silently become a different one. Its **lot code is pre-filled** with the next free code
+ *   on the order (same convention the lab's confirmation falls back to), still editable, because
+ *   what the field holds is what the confirmed lot is created under. Booking **per order** — the
+ *   grouped board header, the workspace — passes no preset and keeps the dropdown and `+ Add MPN`:
+ *   one appointment can carry several parts.
+ */
 export function BookTestSlotModal({
-  orderId, retestOfSlotId, onlyMpn, onClose,
-}: { orderId: string; retestOfSlotId?: string; onlyMpn?: string; onClose: () => void }) {
+  orderId, retestOfSlotId, presetMpn, onClose,
+}: { orderId: string; retestOfSlotId?: string; presetMpn?: string; onClose: () => void }) {
   const b = useStore((s) => s.orders[orderId]);
   const requestTestSlot = useStore((s) => s.requestTestSlot);
   const prior = (b?.testSlots ?? []).find((x) => x.id === retestOfSlotId);
 
   const testable = (b?.lines ?? []).filter((l) => l.testingMode !== "NONE");
-  // the lab pulls a sample, not the lot: ~5% clamped into a sane bench range
-  const sampleFor = (qty: number) => Math.max(5, Math.min(50, Math.round(qty * 0.05)));
-  const blank = (mpn: string) => {
+  /**
+   * The next free lot code on the order, in the same `LOT-A / LOT-B …` convention the lab's
+   * confirmation falls back to — so a code suggested here and a code the confirmation invents look
+   * alike. Only ever a **suggestion**: the field stays editable and whatever it holds is what the
+   * confirmed lot is created under (the request quotes it, so the two sides track one name).
+   * A re-test gets none: its lots are deliberately prefixed `RT<n>-` at confirmation, and filling
+   * a plain code here would defeat that.
+   */
+  const nextLotCode = () => {
+    const taken = new Set((b?.lots ?? []).map((l) => l.lotCode));
+    for (let i = 0; i < 260; i++) {
+      const code = `LOT-${String.fromCharCode(65 + (i % 26))}${i > 25 ? Math.floor(i / 26) + 1 : ""}`;
+      if (!taken.has(code)) return code;
+    }
+    return "";
+  };
+  const blank = (mpn: string, withLotCode = false) => {
     const line = testable.find((l) => l.mpn === mpn);
     const qty = line?.quantity ?? 0;
-    return { key: `r${Math.round(qty)}-${mpn}-${testable.length}`, mpn, qty, sampleQty: sampleFor(qty), dateCode: "", preferredDate: "", tests: [] as { name: string; standard?: string }[] };
+    // no sampleQty: we do not tell the lab what to sample — it states that on its confirmation
+    // returnToSeller is opt-in: a screen can be destructive and plenty of lots are consumed, so
+    // the lifecycle should not claim a return nobody asked for
+    return { key: `r${Math.round(qty)}-${mpn}-${testable.length}`, mpn, lotCode: withLotCode ? nextLotCode() : "", qty, dateCode: "", preferredDate: "", returnToSeller: false, tests: [] as { name: string; standard?: string }[] };
   };
   /**
    * One row per MPN the operator **chooses**, not one per testable line.
@@ -94,17 +121,18 @@ export function BookTestSlotModal({
   );
   const seed = prior
     ? prior.lines
-        .filter((l) => failedMpns.size === 0 || failedMpns.has(l.mpn))
-        .map((l, i) => ({ key: `rt${i}`, preferredDate: "", ...l }))
-    // `onlyMpn` = booked from that MPN's own row, so open on it. The picker still lists every
-    // testable line and `+ Add MPN` still works — pre-selection is the shortcut, not a lock.
-    : [blank(onlyMpn && testable.some((l) => l.mpn === onlyMpn) ? onlyMpn : testable[0]?.mpn ?? "")];
+        // a re-test booked from a board row re-runs THAT part; from the order it re-runs whatever
+        // came back FAIL
+        .filter((l) => (presetMpn ? l.mpn === presetMpn : failedMpns.size === 0 || failedMpns.has(l.mpn)))
+        .map((l, i) => ({ key: `rt${i}`, lotCode: "", preferredDate: "", returnToSeller: false, ...l, sampleQty: undefined }))
+    // the part that was clicked (the board books per row), with its lot code filled in; else the
+    // order's first testable line, for the operator to pick from
+    : [blank(presetMpn ?? testable[0]?.mpn ?? "", !!presetMpn)];
 
   const [lab, setLab] = useState(prior?.lab ?? b?.lots[0]?.lab ?? "WHL Shenzhen");
-  const [preferredDate, setPreferredDate] = useState("");
   const [note, setNote] = useState("");
   const [retestReason, setRetestReason] = useState(prior ? "Result not acceptable — re-screen required." : "");
-  const [rows, setRows] = useState(seed);
+  const [rows, setRows] = useState(seed.length > 0 ? seed : [blank(presetMpn ?? testable[0]?.mpn ?? "", !!presetMpn)]);
   // no outbound mail leaves this app unseen: "details" collects it, "draft" shows exactly what
   // will be sent, and it stays editable right up to the send
   const [step, setStep] = useState<"details" | "draft">("details");
@@ -120,7 +148,7 @@ export function BookTestSlotModal({
   const pickMpn = (i: number, mpn: string) => setRows((p) => p.map((r, j) => {
     if (j !== i) return r;
     const qty = testable.find((l) => l.mpn === mpn)?.quantity ?? r.qty;
-    return { ...r, mpn, qty, sampleQty: sampleFor(qty) };
+    return { ...r, mpn, qty };
   }));
   const addRow = () => setRows((p) => [...p, { ...blank(testable[0]?.mpn ?? ""), key: `r${Date.now()}` }]);
   const removeRow = (i: number) => setRows((p) => p.filter((_, j) => j !== i));
@@ -134,16 +162,16 @@ export function BookTestSlotModal({
     }));
 
   const chosen = rows.filter((r) => !!r.mpn);
-  const ok = chosen.length > 0 && chosen.every((r) => r.qty > 0 && r.sampleQty > 0);
+  const ok = chosen.length > 0 && chosen.every((r) => r.qty > 0);
 
   const payload = () => ({
     lab: lab.trim() || "WHL Shenzhen",
-    preferredDate: preferredDate || undefined,
     note: note.trim() || undefined,
     retestOfSlotId: prior?.id,
     retestReason: prior ? (retestReason.trim() || undefined) : undefined,
-    lines: chosen.map(({ mpn, qty, sampleQty, dateCode, tests, preferredDate: rowDate }) => ({
-      mpn, qty, sampleQty, dateCode, tests, preferredDate: rowDate || undefined,
+    lines: chosen.map(({ mpn, lotCode, qty, dateCode, tests, preferredDate: rowDate, returnToSeller }) => ({
+      mpn, lotCode: lotCode?.trim() || undefined, qty, dateCode, tests, preferredDate: rowDate || undefined,
+      returnToSeller: returnToSeller || undefined,
     })),
   });
 
@@ -163,9 +191,7 @@ export function BookTestSlotModal({
 
   return (
     <Dialog open onClose={onClose}
-      title={prior ? `Book a re-test — against ${prior.slotNo}`
-        : onlyMpn ? `Book a test slot — ${onlyMpn}`
-        : "Book a test slot with the lab"}
+      title={prior ? `Book a re-test — against ${prior.slotNo}` : "Book a test slot with the lab"}
       footer={step === "details"
         ? <><Button variant="ghost" onClick={onClose}>Cancel</Button>
             <Button onClick={review} disabled={!ok}><Mail className="h-4 w-4" /> Review the mail</Button></>
@@ -202,12 +228,9 @@ export function BookTestSlotModal({
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <Labeled label="Lab"><Input value={lab} onChange={(e) => setLab(e.target.value)} /></Labeled>
-          <Labeled label="Preferred start" hint="the default for every MPN below">
-            <Input type="date" value={preferredDate} onChange={(e) => setPreferredDate(e.target.value)} />
-          </Labeled>
-        </div>
+        {/* Preferred start lives per MPN only (2026-08-24): a slot-level default sitting above the
+            rows meant the same date got typed twice for no gain. */}
+        <Labeled label="Lab"><Input value={lab} onChange={(e) => setLab(e.target.value)} /></Labeled>
         {prior && (
           <Labeled label="Why it is being re-tested" hint="quoted in the mail">
             <Input value={retestReason} onChange={(e) => setRetestReason(e.target.value)} />
@@ -226,13 +249,25 @@ export function BookTestSlotModal({
                     instead of wrapping under it */}
                 <div className="mb-2 flex flex-wrap items-end gap-x-3 gap-y-1">
                   <div className="w-[17rem] shrink-0">
-                    <Labeled label={`MPN ${rows.length > 1 ? `#${i + 1}` : ""}`}>
-                      <Select value={r.mpn} onChange={(e) => pickMpn(i, e.target.value)}>
-                        {testable.map((l) => (
-                          <option key={l.id} value={l.mpn}>{l.mpn} — {l.make} · order qty {l.quantity}</option>
-                        ))}
-                      </Select>
-                    </Labeled>
+                    {presetMpn ? (
+                      /* the part is already decided — a dropdown here would let a booking for one
+                         MPN quietly become a booking for another */
+                      <Labeled label="MPN">
+                        <div className="text-sm font-semibold">{r.mpn}</div>
+                        <div className="text-[11px] text-faint">
+                          {testable.find((l) => l.mpn === r.mpn)?.make}
+                          {" · order qty "}{testable.find((l) => l.mpn === r.mpn)?.quantity}
+                        </div>
+                      </Labeled>
+                    ) : (
+                      <Labeled label={`MPN ${rows.length > 1 ? `#${i + 1}` : ""}`}>
+                        <Select value={r.mpn} onChange={(e) => pickMpn(i, e.target.value)}>
+                          {testable.map((l) => (
+                            <option key={l.id} value={l.mpn}>{l.mpn} — {l.make} · order qty {l.quantity}</option>
+                          ))}
+                        </Select>
+                      </Labeled>
+                    )}
                   </div>
                   {/* one group, so a narrow dialog moves all three together instead of orphaning
                       "remove" on its own line */}
@@ -244,26 +279,46 @@ export function BookTestSlotModal({
                     </button>
                     {/* always available, including on the last row: deleting it leaves an empty
                         booking, which is recoverable (Add MPN) and better than a control that
-                        appears and disappears depending on how many rows there happen to be */}
-                    <button type="button" onClick={() => removeRow(i)}
+                        appears and disappears depending on how many rows there happen to be.
+                        Not on a per-part booking though — there is no Add MPN to recover with,
+                        so deleting the only row would leave a form that cannot be sent. */}
+                    {!presetMpn && <button type="button" onClick={() => removeRow(i)}
                       className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium text-muted-foreground transition hover:border-bad hover:text-bad"
                       title="Delete this MPN from the booking">
                       <Trash2 className="h-3 w-3" /> Delete
-                    </button>
+                    </button>}
                   </span>
                 </div>
                 {/* 2×2, not four across: the dialog is ~500px and a four-column row squeezed
                     "Preferred start" onto two label lines with a stub of an input under it */}
                 <div className="grid grid-cols-2 gap-3">
-                  <Labeled label="Lot qty"><Input type="number" value={r.qty} onChange={(e) => patch(i, { qty: +e.target.value })} /></Labeled>
-                  <Labeled label="Sample qty" hint="what the lab pulls"><Input type="number" value={r.sampleQty} onChange={(e) => patch(i, { sampleQty: +e.target.value })} /></Labeled>
+                  <Labeled label="Lot code" hint={presetMpn && !prior ? "filled in for you — edit it and the lab is quoted yours" : "quoted to the lab; the confirmed lot carries it"}>
+                    <Input value={r.lotCode ?? ""} onChange={(e) => patch(i, { lotCode: e.target.value })} placeholder="LOT-A" />
+                  </Labeled>
                   <Labeled label="Date code"><Input value={r.dateCode} onChange={(e) => patch(i, { dateCode: e.target.value })} placeholder="2410" /></Labeled>
-                  {/* only quoted to the lab when it differs from the slot-level default above —
-                      one part having to go on the bench before another is a real request, but
-                      repeating the same date under every MPN is noise */}
-                  <Labeled label="Preferred start" hint={preferredDate ? "overrides the default" : "optional"}>
+                  {/* No sample-qty field (2026-08-24): we do not tell the lab what to pull. The
+                      booking states the lot; the lab draws its sample and states the quantity on
+                      the confirmation, which is where the lot's `sampleQty` now comes from. */}
+                  <Labeled label="Lot qty"><Input type="number" value={r.qty} onChange={(e) => patch(i, { qty: +e.target.value })} /></Labeled>
+                  <Labeled label="Preferred start" hint="optional — when this part goes on the bench">
                     <Input type="date" value={r.preferredDate ?? ""} onChange={(e) => patch(i, { preferredDate: e.target.value })} />
                   </Labeled>
+                  {/*
+                   * Opt-in, and it decides the lot's lifecycle: ticked, the lot walks a
+                   * `Returned to Seller from WHL` stage and the card offers the action to record it;
+                   * unticked, that stage is not part of this lot's journey at all. Left as a choice
+                   * rather than a default because a screen can be destructive and plenty of lots are
+                   * consumed or scrapped — a stage nobody will ever reach is a chain that never
+                   * finishes. It is quoted to the lab in this MPN's block.
+                   */}
+                  <label className="flex items-start gap-2 self-end pb-2 text-xs">
+                    <input type="checkbox" className="mt-0.5" checked={!!r.returnToSeller}
+                      onChange={(e) => patch(i, { returnToSeller: e.target.checked })} />
+                    <span>
+                      <span className="font-medium">Return samples to the seller</span>
+                      <span className="block text-[11px] text-faint">adds the return stage to this lot&apos;s lifecycle</span>
+                    </span>
+                  </label>
                 </div>
                 <div className="mt-2 grid gap-1 rounded-lg border p-2 sm:grid-cols-2">
                   {WHL_PROCESSES.map((name) => (
@@ -280,9 +335,13 @@ export function BookTestSlotModal({
                 No MPN on this booking — add one to send the request.
               </p>
             )}
-            <Button variant="outline" onClick={addRow} title="Add another MPN to this booking — same fields and test plan">
-              <Plus className="h-4 w-4" /> Add MPN
-            </Button>
+            {/* per-order booking only: one appointment can carry several parts. A booking opened
+                from a board row is for that row's part, so there is nothing to add to it. */}
+            {!presetMpn && (
+              <Button variant="outline" onClick={addRow} title="Add another MPN to this booking — same fields and test plan">
+                <Plus className="h-4 w-4" /> Add MPN
+              </Button>
+            )}
           </>
         )}
 
@@ -311,6 +370,21 @@ export function BookTestSlotModal({
  *
  * The appointment path here is the **only order-wide** call to `uploadBookingAppointment`: it is
  * the one that *creates* lots. Everywhere else the action is lot-scoped (§9.3).
+ */
+/**
+ * PARKED (2026-08-25) — **nothing mounts this any more.**
+ *
+ * It was the workspace's `Add test slot`: two modes, *from a booking appointment* (parse a PDF and
+ * let it create the lots) or *enter details by hand* (with the `WHL_PROCESSES` checklist, which was
+ * the only way a hand-typed test plan got in while §9.2 stays parked). Booking moved wholesale to
+ * the Testing board, so both doors it offered are gone from the per-order screen: a slot is now
+ * requested from the board row for the part, and the lab's confirmation is what creates the lots.
+ *
+ * Kept, not deleted, because re-reading an appointment against an **existing** lot is still a live
+ * action (the lot card's `⬆ Booking appointment` picker, which calls the same
+ * `uploadBookingAppointment`), and because hand-entering a lot is the obvious escape hatch if the
+ * mail path ever fails. Whoever brings it back: mount it somewhere that isn't a second booking
+ * entry point, and read §9.1 first.
  */
 export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: () => void }) {
   const b = useStore((s) => s.orders[orderId]);
@@ -341,7 +415,7 @@ export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: ()
     onClose();
   };
 
-  const readAppointment = async (file: { name: string; size: number } | null) => {
+  const readAppointment = async (file: { name: string; size: number }) => {
     setBusy(true);
     await uploadBookingAppointment(orderId, file);   // order-wide: this is what creates the lots
     setBusy(false);
@@ -349,9 +423,9 @@ export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: ()
   };
 
   return (
-    <Dialog open onClose={onClose} title="Add test lot"
+    <Dialog open onClose={onClose} title="Add test slot"
       footer={mode === "manual"
-        ? <Footer onClose={onClose} onSave={save} saveLabel="Add test lot" disabled={!lotCode.trim() || !mpn} />
+        ? <Footer onClose={onClose} onSave={save} saveLabel="Add test slot" disabled={!lotCode.trim() || !mpn} />
         : <Button variant="ghost" onClick={onClose}>Cancel</Button>}>
       <div className="space-y-3">
         {/* two ways in, same as the app's other segmented controls */}
@@ -392,10 +466,6 @@ export function AddLotModal({ orderId, onClose }: { orderId: string; onClose: ()
                   e.target.value = "";
                   if (f) void readAppointment({ name: f.name, size: f.size });
                 }} />
-              <Button variant="outline" disabled={busy} onClick={() => void readAppointment(null)}
-                title="Fill from a sample booking appointment (demo data — the real lab feed replaces this)">
-                <Wand2 className="h-4 w-4" /> Use a sample appointment
-              </Button>
               {busy && <span className="text-xs text-muted-foreground">reading…</span>}
             </div>
             <p className="text-xs text-faint">
@@ -913,6 +983,15 @@ export function BulkNotifyModal({
 }
 
 /** Resolve one inbound mail out of the manual-match queue. */
+/**
+ * PARKED (2026-08-25) — nothing mounts this.
+ *
+ * It was the per-order match queue's "Match to lot" dialog. The queue moved to a board-level screen
+ * (`/fulfilment/testing/inbox`), which maps a mail with an inline dropdown over **every test slot on
+ * every order** — the thing this modal structurally could not do, since it only ever knew one order.
+ * Kept in case a per-order variant is ever wanted again; if so, read §9.4 first and don't reintroduce
+ * a second place to resolve the same queue.
+ */
 export function MatchLabEmailModal({ orderId, email, onClose }: { orderId: string; email: LabEmail; onClose: () => void }) {
   const b = useStore((s) => s.orders[orderId]);
   const matchLabEmail = useStore((s) => s.matchLabEmail);

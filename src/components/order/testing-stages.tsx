@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import type { Lot, TestingStage } from "@/types";
 import {
-  TESTING_STAGES, TESTING_STAGE_META, STAGE_OWNER_LABEL, stageIdx,
+  TESTING_STAGE_META, STAGE_OWNER_LABEL, stageIdx,
   LAB_PAYMENT_LABEL, LAB_PAYMENT_TONE, LAB_TERMS_LABEL, LAB_TERMS_TONE, LAB_TERMS_HINT,
 } from "@/data/enums";
 import { lotStageProgress, labPaymentOf, labFeeUnpaid, labTerms, labFeeBlocking } from "@/store/selectors";
@@ -32,16 +32,22 @@ const STAGE_ICON: Record<TestingStage, React.ComponentType<{ className?: string 
 
 /** Compact one-line indicator — used on lot lists and the cross-order testing board. */
 export function TestingStageBar({ lot, className }: { lot: Lot; className?: string }) {
-  const { stage, idx, total, done, complete, waitingOn } = lotStageProgress(lot);
+  const { stage, idx, stages, total, done, complete, waitingOn, next } = lotStageProgress(lot);
   return (
     <div className={cn("min-w-0", className)}>
       <div className="flex items-center gap-1" title={stage ? TESTING_STAGE_META[stage].description : "Testing not requested yet"}>
-        {TESTING_STAGES.map((s, i) => (
+        {/* `stages`, not TESTING_STAGES: a lot that is not coming back to the seller does not walk
+            that stage, so it gets no segment here either (2026-08-25). Comparisons stay on the
+            CANONICAL index — that is what stage history and the forward-only `moveStage` are keyed
+            on — and "current" is the next *applicable* stage rather than `idx + 1`, which could
+            land on a stage this lot skips. */}
+        {stages.map((s) => (
           <span
             key={s}
             className={cn(
               "h-1.5 flex-1 rounded-full transition-colors",
-              i < idx ? "bg-ok" : i === idx ? "bg-primary" : "bg-muted",
+              // `lot.stage` is the stage that HAS happened, so it is filled, not pending
+              stageIdx(s) <= idx ? "bg-ok" : s === next ? "bg-primary" : "bg-muted",
             )}
           />
         ))}
@@ -74,11 +80,11 @@ export function TestingStageChain({
 }) {
   const syncWhlInbox = useStore((s) => s.syncWhlInbox);
   const setLotStage = useStore((s) => s.setLotStage);
-  const { stage, idx, total, done, complete, waitingOn, eventFor } = lotStageProgress(lot);
+  const { stage, idx, stages, total, done, complete, waitingOn, eventFor, next } = lotStageProgress(lot);
 
   const needsDispatch = idx < stageIdx("SUPPLIER_DISPATCHING");
   const currentEvent = stage ? eventFor(stage) : undefined;
-  const nextStage = idx + 1 < total ? TESTING_STAGES[idx + 1] : null;
+  const nextStage = next;
   // advance terms + unpaid = the lab is holding the lot, so the chain is stopped on us
   const blocked = labFeeBlocking(lot);
 
@@ -98,8 +104,10 @@ export function TestingStageChain({
             <Lock className="h-3.5 w-3.5" /> Held — advance fee unpaid
           </span>
         ) : stage ? (
+          // the stage is done; the useful thing to name is what the chain is waiting for
           <span className="inline-flex items-center gap-1 rounded-md bg-accent-soft px-2 py-0.5 text-xs font-medium text-primary">
-            <CircleDot className="h-3.5 w-3.5" /> At: {TESTING_STAGE_META[stage].label}
+            <CircleDot className="h-3.5 w-3.5" />
+            {nextStage ? <>Next: {TESTING_STAGE_META[nextStage].label}</> : <>At: {TESTING_STAGE_META[stage].label}</>}
             {waitingOn && <span className="font-normal text-muted-foreground">· waiting on {STAGE_OWNER_LABEL[waitingOn]}</span>}
           </span>
         ) : (
@@ -110,15 +118,24 @@ export function TestingStageChain({
       </div>
 
       <ol className="flex items-start gap-0 overflow-x-auto pb-1">
-        {TESTING_STAGES.map((s, i) => {
+        {/* the stages this lot actually walks — see `lotStages` */}
+        {stages.map((s, i) => {
           const meta = TESTING_STAGE_META[s];
           const Icon = STAGE_ICON[s];
           // On credit terms the lab works on account, so testing can run past the payment
           // stage with the fee still owed. Index alone would then paint this node "done" —
           // a lie. Read the payment record: it's the one node whose truth isn't positional.
           const unpaid = s === "WHL_PAYMENT" && labFeeUnpaid(lot);
-          const isDone = !unpaid && (i < idx || (complete && i === idx));
-          const isCurrent = !unpaid && i === idx && !complete;
+          /*
+           * `lot.stage` names what has ALREADY happened — every stage in this chain is a
+           * past-tense fact established by a mail ("Test Booked", "Components Received by WHL",
+           * "Test Report Shared"). So the stage the lot is at is **done**, and the pointer sits
+           * on the one after it — the thing being waited for. It used to render the current
+           * stage as pending, which meant "Test Booked" only ticked once the supplier dispatched:
+           * the chain always looked one step behind the truth.
+           */
+          const isDone = !unpaid && stageIdx(s) <= idx;
+          const isCurrent = !unpaid && s === next && !complete;
           const ev = eventFor(s);
           const node = unpaid ? (blocked ? "border-bad bg-bad-bg text-bad" : "border-warn bg-warn-bg text-warn")
             : isDone ? "border-primary bg-primary text-primary-foreground"
@@ -138,11 +155,11 @@ export function TestingStageChain({
           return (
             <li key={s} className="flex min-w-[92px] flex-1 flex-col items-center" title={tip}>
               <div className="flex w-full items-center">
-                <span className={cn("h-0.5 flex-1", i === 0 ? "opacity-0" : i <= idx ? "bg-primary" : "bg-border")} />
+                <span className={cn("h-0.5 flex-1", i === 0 ? "opacity-0" : stageIdx(s) <= idx ? "bg-primary" : "bg-border")} />
                 <span className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 text-[11px] font-semibold", node)}>
                   {isDone ? <Check className="h-3.5 w-3.5" /> : (isCurrent || unpaid) ? <Icon className="h-3.5 w-3.5" /> : i + 1}
                 </span>
-                <span className={cn("h-0.5 flex-1", i === total - 1 ? "opacity-0" : i < idx ? "bg-primary" : "bg-border")} />
+                <span className={cn("h-0.5 flex-1", i === total - 1 ? "opacity-0" : stageIdx(s) <= idx ? "bg-primary" : "bg-border")} />
               </div>
               <span className={cn("mt-1 px-1 text-center text-[10px] leading-tight", isCurrent ? "font-medium text-foreground" : "text-muted-foreground")}>
                 {meta.owner !== "1BUY" && (
@@ -261,6 +278,19 @@ export function LabFeePanel({
 
   // nothing to bill before a work order exists
   if (!lot.workOrderNo) return null;
+  /*
+   * And nothing to bill before the report is out — no exception, not even for an invoice that
+   * somehow arrived early. WHL invoices once it has issued the report, which is why
+   * `WHL_PAYMENT` sits behind `REPORT_SHARED` on the chain; the whole money block (request,
+   * upload, send-to-finance, mark-paid) belongs to that stage and showing it earlier put an
+   * "Invoice not requested" notice on every live lot for weeks.
+   *
+   * The mock lab was the other half of this: it used to bill on booking, so `Check mail` pulled
+   * an invoice in at stage 1 and the panel appeared with it. `whlPollInbox` now withholds the
+   * invoice mail until the lot is at `REPORT_SHARED` too, so the data and the UI agree rather
+   * than the UI hiding something the app already holds.
+   */
+  if (stageIdx(lotStageProgress(lot).stage) < stageIdx("REPORT_SHARED")) return null;
 
   return (
     <div className={cn("mt-3 rounded-lg border p-3 text-xs",
@@ -291,7 +321,7 @@ export function LabFeePanel({
         <p className="text-muted-foreground">
           {pay.status === "REQUESTED"
             ? <>Invoice requested{pay.requestedAt ? <> <span className="tnum text-faint">{pay.requestedAt}</span></> : null} — it arrives on the WHL thread, so <b className="text-foreground">Check mail for updates</b> pulls it in, terms and all. If it never lands, <b className="text-foreground">Upload invoice</b> takes it by hand.</>
-            : <>No invoice on file yet. The lab bills on booking, so it normally arrives with the first inbox sync — and that mail is what tells us whether this work order is advance or credit. Came by another medium? <b className="text-foreground">Upload invoice</b>.</>}
+            : <>The report is out, so the lab can bill: <b className="text-foreground">Request invoice</b> asks for it, and it arrives on the WHL thread with its own terms. Already have it by another medium? <b className="text-foreground">Upload invoice</b>.</>}
         </p>
       ) : (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">

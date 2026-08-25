@@ -330,6 +330,22 @@ export function labFeeOutstandingTotal(b: OrderBundle) {
   };
 }
 
+/**
+ * Every lab invoice on the order, paid or not — what the testing has actually cost, as against
+ * `labFeeOutstandingTotal`'s "what is still owed". Deliberately a second figure and not a widened
+ * first one: a settled fee leaves the outstanding ledger entirely, which is right for a worklist
+ * and wrong for a cost, so an order whose fees are all paid must read as billed-and-settled rather
+ * than as never billed.
+ */
+export function labFeeBilledTotal(b: OrderBundle) {
+  const rows = b.lots.filter((l) => !!labPaymentOf(l).invoice);
+  return {
+    count: rows.length,
+    gross: rows.reduce((sum, l) => sum + labFeeGross(l), 0),
+    currency: (rows[0] ? labPaymentOf(rows[0]).invoice?.currency : undefined) ?? "USD",
+  };
+}
+
 /** The stage to show for a lot: the furthest of what's stored and what's implied. */
 export function lotStage(lot: Lot): TestingStage | undefined {
   const stored = stageIdx(lot.stage);
@@ -339,22 +355,46 @@ export function lotStage(lot: Lot): TestingStage | undefined {
 }
 
 /** Everything the stage chain UI needs for one lot. */
+/**
+ * Is `RETURNED_TO_SELLER` part of this lot's journey?
+ *
+ * Opt-in at booking (2026-08-25): a screen can be destructive, and plenty of lots are consumed or
+ * scrapped rather than shipped back, so the stage was claiming a step that would never happen on
+ * most lots. A lot that **already** has the stamp shows it regardless of the flag — never hide
+ * something that demonstrably happened, including on lots booked before the flag existed.
+ */
+export const lotReturnsToSeller = (lot: Lot) => lot.returnToSeller === true || !!lot.returnedToSellerAt;
+
+/** The stages this lot walks — the canonical nine, less the ones that do not apply to it. */
+export const lotStages = (lot: Lot): TestingStage[] =>
+  TESTING_STAGES.filter((s) => s !== "RETURNED_TO_SELLER" || lotReturnsToSeller(lot));
+
 export function lotStageProgress(lot: Lot) {
   const stage = lotStage(lot);
   const idx = stageIdx(stage);
-  const total = TESTING_STAGES.length;
+  /*
+   * `stages` is what this lot shows; `idx` stays an index into the canonical nine, because that is
+   * what `moveStage`'s forward-only ordering and every stored `stageHistory` row are keyed on.
+   * Anything counted for display is therefore counted over `stages`, never over `idx` directly —
+   * "6/9" on a lot that skips the return would have been wrong in both numbers.
+   */
+  const stages = lotStages(lot);
+  const total = stages.length;
   const history = lot.stageHistory ?? [];
   const complete = stage === TESTING_TERMINAL_STAGE;
+  const done = stages.filter((s) => stageIdx(s) <= idx).length;
+  const next = stages.find((s) => stageIdx(s) > idx) ?? null;
   return {
     stage,
     idx,
+    stages,
     total,
     complete,
-    done: idx + 1,
-    pct: Math.round(((idx + 1) / total) * 100),
-    /** what the chain is waiting on next, or null once the report is in */
-    next: idx + 1 < total ? TESTING_STAGES[idx + 1] : null,
-    waitingOn: idx < 0 ? "1BUY" as const : complete ? null : TESTING_STAGE_META[TESTING_STAGES[Math.min(idx + 1, total - 1)]].owner,
+    done,
+    pct: Math.round((done / total) * 100),
+    /** what the chain is waiting on next, or null once the chain is finished */
+    next,
+    waitingOn: idx < 0 ? "1BUY" as const : complete || !next ? null : TESTING_STAGE_META[next].owner,
     /** last recorded move, for "x days at this stage" style copy */
     lastEvent: history.length ? history[history.length - 1] : undefined,
     /** stage → the event that recorded it (stages reached by a skip have none) */

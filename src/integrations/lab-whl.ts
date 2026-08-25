@@ -256,11 +256,13 @@ function nextStageMail(wo: WhlPollInboxReq["workOrders"][number], now: string): 
   // on advance terms the lab won't put the lot on the bench until the transfer clears
   const advanceHold = wo.terms === "ADVANCE" && feeUnpaid;
 
-  // The lab bills on booking, so its invoice is the first thing back after the work
-  // order — before the samples have even shipped. Issued once; we own it after that.
-  // The mail is also where the payment mode comes from: advance or credit is the lab's
-  // call per work order, so it can only be read off the invoice, never chosen by us.
-  if (!wo.hasInvoice) {
+  // The lab bills once it has issued the report — not on booking (changed 2026-08-24; the
+  // chain moved `WHL_PAYMENT` behind `REPORT_SHARED` for the same reason). Issued once; we
+  // own it after that. The mail is also where the payment mode comes from: advance or credit
+  // is the lab's call per work order, so it can only be read off the invoice, never chosen
+  // by us — which is why the terms line still exists even though an "advance" invoice can no
+  // longer hold a bench that has already finished.
+  if (!wo.hasInvoice && at >= stageIdx("REPORT_SHARED")) {
     const processCount = Math.max(1, wo.testNames.length || 5);
     const amount = processCount * WHL_TEST_FEE_PER_PROCESS;
     const taxAmount = Math.round(amount * WHL_INVOICE_TAX_PCT);

@@ -215,7 +215,7 @@ export function TestingViewTab({ b, id }: { b: OrderBundle; id: string }) {
                         {isOpen && (
                           <tr className="border-b bg-card-2/60 last:border-0">
                             <td colSpan={8} className="px-3 py-3">
-                              <LotReadOnlyDetail b={b} orderId={id} lot={r.lot} />
+                              <LotReadOnlyDetail orderId={id} lot={r.lot} />
                             </td>
                           </tr>
                         )}

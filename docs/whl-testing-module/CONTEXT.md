@@ -446,26 +446,55 @@ lot** — and those are what both sides quote afterwards. A re-test request ther
 *"your appointment <no>, work orders <a, b>"*, never our earlier slot number, and the confirmation
 names the MPNs rather than echoing a reference we never sent.
 
-**The operator picks the MPN; the form does not assume one block per line** (2026-08-21). The modal
-opens with **one row** — an MPN `<Select>` over the order's testable lines, plus lot qty, sample qty,
-date code and the test checklist — and an **`+ Add MPN`** button repeats the whole block for another
-part. Every row carries a **`🗑 Delete`** button, **including the last one** — a control that appears
-and disappears with the row count is worse than an empty booking, which is recoverable (`+ Add MPN`)
-and shows *"No MPN on this booking — add one to send the request."* with the review button disabled. It used to open with a block per testable line and a tick to
-*exclude* the ones you didn't want, which is backwards: a booking is usually for one part, and
-unticking five blocks to book one is work. Changing a row's MPN **re-seeds its lot qty and sample**
-off that order line, since the old numbers belonged to the part that was there before. Each row also
-carries **its own optional `Preferred start`** — the slot-level one is the default for every line, and
-a row's date is only quoted to the lab **when it differs** from it (repeating the same date under every
-MPN is noise; one part having to go on the bench before another is a real request). When any row
-overrides it, the header line reads *"Preferred start: <date> (unless stated per MPN below)"*.
-`TestSlotLine.preferredDate?` carries it. Duplicate MPNs
+**The operator picks the MPN; the form does not assume one block per line** (2026-08-21). Booking
+**per order** — the workspace's header button, the board's grouped-view header — opens with **one
+row**: an MPN `<Select>` over the order's testable lines, plus **lot code**, date code, lot qty, a
+**Preferred start** and the test checklist, and an **`+ Add MPN`** button that repeats the whole block
+for another part. Every row carries a **`🗑 Delete`**, **including the last one** — a control that
+appears and disappears with the row count is worse than an empty booking, which is recoverable
+(`+ Add MPN`) and shows *"No MPN on this booking — add one to send the request."* with the review
+button disabled. It used to open with a block per testable line and a tick to *exclude* the ones you
+didn't want, which is backwards: a booking is usually for one part, and unticking five blocks to book
+one is work. Changing a row's MPN **re-seeds its lot qty** off that order line, since the old number
+belonged to the part that was there before. **`Preferred start` is per MPN and nowhere else**
+(2026-08-24): a slot-level default used to sit above the rows, which meant the same date got typed
+twice for no gain. `TestSlot.preferredDate` is gone; `TestSlotLine.preferredDate?` carries it, and a
+row's date is quoted in that MPN's block when set.
+
+**Booking per part fixes the part** (2026-08-24, `presetMpn`). A booking opened from a Testing-board
+row is *for that row's MPN*, so the form does not offer a way to make it a different one: **no MPN
+dropdown** (the part shows as text with its make and order qty), **no `+ Add MPN`**, **no `🗑 Delete`**
+— with no Add to recover with, deleting the only row would leave a form that cannot be sent. Its
+**lot code is pre-filled** with the next free `LOT-A / LOT-B …` on the order — the same convention the
+confirmation falls back to, so a suggested code and an invented one look alike — and stays editable,
+because whatever the field holds is still what gets quoted and what the confirmed lot is created
+under. A **re-test** opened per part re-runs only that part (rather than every FAIL on the prior slot)
+and is **not** pre-filled with a lot code: its lots are deliberately prefixed `RT<n>-` at
+confirmation, and a plain code here would defeat that.
+
+**Nobody tells the lab what to sample** (2026-08-24). The `Sample qty` field is **gone from the
+booking form**, and the request mail no longer carries a `Sample qty:` line — it never should have:
+the lab draws the sample, and the mail has always *closed* by asking it to confirm "work order
+numbers, sample quantities and the agreed test plan". Quoting a number of ours in the same mail read
+as an instruction and was pure invention (a 5% clamp). `TestSlotLine.sampleQty` is therefore
+**optional** now and normally absent; the confirmation supplies the figure
+(`line.sampleQty ?? appt.sampleQty ?? 5%`), where the first term only ever fires for a slot booked
+before this change or a seeded one. Nothing that already carries a sample loses it, and every
+`sampled X of Y` reading on the board and the workspace still comes off `Lot.sampleQty`, which is
+unchanged and still required — the lot *has* a sample, we just don't choose it. **`AddLotModal`
+keeps its sample field**: that form transcribes an appointment the lab has already issued, so the
+number is being *read off a document*, not decided.
+
+**`Lot code` is asked for, not invented — but it can be suggested** (2026-08-24). `TestSlotLine.lotCode?` goes out in the mail
+(`Lot code: <x>` in the MPN block) and the confirmation **creates the lot under exactly that code** —
+falling back to the appointment's own only when the field was left blank. Both sides then track one
+name for the submission; letting the app name it meant our lot code and the lab's never matched. Duplicate MPNs
 across rows are allowed on purpose — one line split across two date codes is two lots at the lab, not
 a mistake. A re-test still seeds from the failed submission's lines (only the MPNs whose verdict came
 back FAIL).
 
 **Tests are a numbered list, one per line.** Each MPN gets its own block —
-`MPN <x>` / `Lot qty:` / `Sample qty:` / `Date code:` / `Tests requested:` then `1.`…`n.` — because a
+`MPN <x>` / `Lot code:` / `Lot qty:` / `Date code:` / `Tests requested:` then `1.`…`n.` — because a
 comma-run of ten process names is the exact part the lab has to work from and is unreadable inline.
 An MPN with nothing ticked reads *"as per your standard AS6081 screen"*.
 
@@ -486,7 +515,7 @@ demo while the real integration polls the mailbox. Both mails — the request an
 `Communication` as `booking` / `confirmed` rows marked `order-level`.
 
 - `TestSlot` = `{ id, slotNo, lab, status: REQUESTED|CONFIRMED|DECLINED, preferredDate?, lines[{mpn,
-  qty, sampleQty, dateCode, tests[]}], note?, requestedAt/By, requestEmailId?, confirmedAt?,
+  qty, sampleQty?, dateCode, tests[]}], note?, requestedAt/By, requestEmailId?, confirmedAt?,
   appointmentNo?, confirmEmailId?, createdLotIds[], retestOfSlotId?, retestOfSlotNo?, retestReason? }`
   on `OrderBundle.testSlots`. A lot back-references its slot via `testSlotId` / `testSlotNo` /
   `retestOfSlotNo`.
@@ -495,8 +524,8 @@ demo while the real integration polls the mailbox. Both mails — the request an
   book "something on this order", and a booking is per-MPN with quantities, samples and a test plan,
   which is not fillable from a queue row. Its `nextTestingAction` for an order with no lots reads
   *"Open the order and book a test slot with the lab"*. Inside the workspace the **Test lots** section
-  has its own `TEST SLOTS · n` header with `Book another test slot`
-  (`Book test slot` when there are none) — same review-then-mail flow. While a slot is `REQUESTED` that
+  has its own `TEST SLOTS · n` header, which since 2026-08-25 **links to the board** rather than
+  booking (`Book a test slot on the Testing board →`, §9.3). While a slot is `REQUESTED` that
   header reads *"<slotNo> is still with the lab — one booking at a time."* instead. The section renders
   the header **before** its empty state, so an order with no lots can still book.
 - **`pendingTestSlot(b)` is a real gate.** While a slot is `REQUESTED` the workspace shows a warn
@@ -1047,7 +1076,7 @@ the identical component with the identical actions:
   the cross-order Testing board (`/fulfilment/testing`)
 
 Two doors, one screen: whichever way an operator arrives, WHL mail, report fetches, stage moves,
-lab-fee settlement, lot verdicts, adding a lot and reconciling a parse flag all behave the same.
+lab-fee settlement and lot verdicts all behave the same.
 Never fork them — a feature added to one and not the other is a bug by construction.
 
 **The two doors no longer cross-link** (2026-08-20). The testing route's `Order workspace` header
@@ -1058,11 +1087,19 @@ neither a per-order acting screen nor a board is reachable from it. The workspac
 still a live door — you just reach it from the workspace, not from the flow page.
 
 The one **reading** surface is the **Testing section of the order-flow page**
-(`/fulfilment/order-flow/[orderId]`, the page the Dashboard links to): seven tiles, the unpaid/held
-fee notice, a current-reports strip, and the lot table (verdict · tests · lab fee · report ·
-outstanding · lifecycle). Expanding a lot renders `LotReadOnlyDetail`, and that is deliberately
+(`/fulfilment/order-flow/[orderId]`, the page the Dashboard links to): **five tiles**, the unpaid/held
+fee notice, a current-reports strip, and the test-slot table (verdict · tests · lab fee · report ·
+outstanding · lifecycle). Expanding a row renders `LotReadOnlyDetail`, and that is deliberately
 **two things only**: the `readOnly` lifecycle stepper, and the report — parsed on screen, openable
 and downloadable.
+
+**The tiles count test slots, not tests** (2026-08-24): `Test slots` · `Passed` · `Failed` ·
+`Completed n/N` · `In progress n/N`, where completed means the lifecycle reached its terminal stage.
+There were seven — lots, tests tracked, passed n/m, still open, F.A.R., not acceptable, reports —
+a per-test breakdown of the whole order added together, which is the wrong altitude twice over on a
+reading page: the numbers belong to different submissions that were never one batch, and nobody
+scanning an order needs the test-level tally to know where it stands. The page also says
+**"test slot"** rather than "lot" throughout — the column header, the reports strip and the caption.
 
 Rules that keep the split honest:
 
@@ -1071,8 +1108,9 @@ Rules that keep the split honest:
   `LotFeeCell`, `ReportRepository`, `LotReadOnlyDetail`); it never recomputes a number or
   re-lays-out a report of its own.
 - **No half-disabled controls.** An action is absent there, not greyed out — `readOnly` drops the
-  whole action row on `TestingStageChain` / `LabFeePanel` and the reconcile action on a report's
-  parse flag, rather than passing `canEdit={false}`, which is the *role* gate and means something
+  whole action row on `TestingStageChain` / `LabFeePanel` — and, until the parse-flag notices went
+  (2026-08-25), a report's reconcile action; on `ReportRepository` it now only changes the empty
+  state's wording — rather than passing `canEdit={false}`, which is the *role* gate and means something
   different.
 - **Reading a report is not an action.** Opening and downloading a report **are** available on the
   reading surface — the report is the deliverable that page exists to show. Both write an NDA
@@ -1090,48 +1128,93 @@ Rules that keep the split honest:
     manual overrides) and belongs with the sub-tab that can act on it (§9.2).
   What's left answers the two questions a reader has: *where is this lot* and *what did the lab
   say*. Anything more granular is one link away on the acting screen.
-- The cross-order board is **order-first**: orders with lots sort above orders with only
-  testable lines, ties broken by what needs a human (mail to match, chases past SLA, lots the
-  lab is holding, bad results, unparsed MPNs), then newest.
+- The cross-order board is **slot-first** (2026-08-24, was order-first): a row is one MPN's
+  submission, sorted by bucket severity, then by what needs a human (mail to match, chases past
+  SLA, lots the lab is holding, bad results), then newest — see §9.0a.
 
 ### 9.0a The cross-order Testing board (`/fulfilment/testing`)
 
 **Rebuilt 2026-08-21 to the Logistics-queue idiom** (`lib/logistics-order.ts` +
-`app/fulfilment/logistics/page.tsx`), so the two desks read alike: a derived per-order view,
-mutually-exclusive pressure buckets as filter chips with live counts, one search box, one paginated
-`DataTable` whose whole row is the link, and an *"action to perform"* column that states the next
-step instead of making the reader infer it.
+`app/fulfilment/logistics/page.tsx`), so the two desks read alike: mutually-exclusive pressure
+buckets as filter chips with live counts, one search box, one paginated `DataTable` whose whole row
+is the link, and a column that states where the work stands instead of making the reader infer it.
+
+**A ROW IS ONE MPN'S TEST SLOT, NOT AN ORDER (2026-08-24).** The lab does not test orders: it tests
+one part's samples against one work order, and every record this module keeps — lifecycle stage,
+verdict, report revisions, the invoice — already hangs off that submission. While rows were orders,
+each cell had to merge several submissions into one figure (*"2 test slots · 1 failed"*) and the
+reader still had to open the order to learn **which part** failed; the fee columns had the same
+problem one level up, summing invoices raised against different work orders. Now the row is the
+submission and every column on it is that submission's own. Consequences worth stating:
+
+- **The party columns exist because the row no longer names an order by itself.** `Order no`,
+  `Buyer` and `Supplier` put a submission in context without a second lookup — a lab queue is
+  scanned across orders, so "whose part is this" is a question every row has to answer.
+- **A testable line with nothing booked still gets a row** (`pressure = NOT_BOOKED`, no slot). That
+  is the entire point of the bucket, and a list of only-booked work could never answer *"which of my
+  parts is not at the lab yet"* — the same reasoning as the workspace's grouped view being driven by
+  the order's lines rather than by which MPNs happen to have lots (§9.3).
+- **Rows come from the LOTS once a slot is confirmed, not from the slot's lines.** One line can
+  become two lots (the same MPN split across two date codes is two samples, two work orders, two
+  verdicts). Matching a line back to *"the lot with this MPN"* collapsed them into one row and
+  reported the first lot's result twice — a real bug on the seeded ORD-151, caught in review the
+  same day. Lines are the source only *before* a confirmation exists, when no lot does.
+- **Two order-level facts stay off the rows.** Unmatched WHL mail belongs to no lot **by
+  definition** — that is what makes it unmatched — so it stays on the board's attention card and the
+  grouped view's header. The Testing phase clock (`atRisk`) *is* per order, and does show on every
+  row of that order as `behind clock`, because it is a statement about the testing those rows are.
 
 `lib/testing-queue.ts` holds all of the derivation — pure, no store access, so any surface can
 share the answer:
 
 | export | what it is |
 |---|---|
-| `TestingPressure` | `FAILED` → `IN_PROGRESS` → `BOOKED` → `COMPLETED` → `PASSED`, worst first and **mutually exclusive**, so the chip counts always sum to the queue length |
+| `TestingPressure` | `FAILED` → `IN_PROGRESS` → `NOT_BOOKED` → `COMPLETED` → `PASSED`, worst first. A **row** lands in exactly one; the **`Completed` chip** is a superset of `FAILED`/`PASSED` (see `pressureMatches`), so the chip counts no longer sum to the queue length |
+| `pressureMatches(chip, rowPressure)` | which rows a chip selects — identity for four of them, `FAILED ∪ PASSED ∪ COMPLETED` for `Completed` |
 | `TESTING_PRESSURE_META` | per bucket: `label`, `tone`, and `what` (the chip's tooltip) |
-| `testingView(b)` | tallies (`lots/tests/passed/open/far/failed/reports`), attention signals (`unmatched/overdue/gaps`), the fee position (`feeGross/feeCount/held[]`), the **slowest lot** (least-advanced lifecycle — an order moves at the speed of its slowest lot), `atRisk`, `pct`, and `attention` (the count of separate things wanting a human) |
+| `testingSlotRows(b)` | **the board's unit**: one `TestingSlotRow` per submission — party fields, the part, the slot (`slotNo/status/lab/isRetest/rebooked`), the lot it became (`lotCode/workOrderNo/stage/verdict`), that lot's own test tallies, and that work order's own money (`feeBilled/feeDue/invoiceNo/labTerms/held/feeAwaiting/feeToSend`) |
+| `slotStatusLine(r)` | the `Status / updates` sentence for one submission: held advance → lab gone quiet → a FAIL to decide → F.A.R. → invoice to pass to Finance → no test list → awaiting the lab → passed → the residual |
+| `sortSlotRows(rows)` | bucket severity, then `attention`, then newest order, then slot no, then MPN |
+| `testingView(b)` | the **order-level** roll-up, now used only by the grouped view's header: tallies (`lots/tests/passed/open/far/failed/reports`), attention signals (`unmatched/overdue/gaps`), the fee position (`feeGross/feeCount/held[]`), the **slowest lot** (least-advanced lifecycle — an order moves at the speed of its slowest lot), `atRisk`, `pct`, and `attention` (the count of separate things wanting a human) |
 | `nextTestingAction(b, v)` | the one sentence: pay the held advance → raise a lot → match mail → chase past SLA → decide a not-acceptable → close out F.A.R. → parse a test list → send fees to finance → awaiting WHL → nothing pending |
 | `sortTestingQueue(rows)` | bucket severity, then `attention`, then newest order |
 
-**Five buckets, and the order they are tested in *is* the semantics** (all 2026-08-21):
+**Five buckets, and the order they are tested in *is* the semantics** (2026-08-21). Since
+2026-08-24 the same precedence is read one altitude down, per submission (`slotRowPressure`) — so a
+row is one test slot, not one order:
 
 ```
-b.lots.length === 0            → BOOKED       // nothing at the lab yet
-any lot testStatus === "FAIL"  → FAILED       // needs a decision now, not when the rest finishes
-every lot testStatus === "PASS"→ PASSED       // terminal and good
+no slot at all                 → NOT_BOOKED   // this part is not at the lab
+slot exists, no lot yet        → IN_PROGRESS  // booked; we are waiting on the lab's confirmation
+lot testStatus === "FAIL"      → FAILED       // needs a decision now, not when the rest finishes
+lot testStatus === "PASS"      → PASSED       // terminal and good
 open tests > 0 || attention > 0→ IN_PROGRESS
 otherwise                      → COMPLETED    // every result in, but not a clean pass
 ```
 
-- **`BOOKED` first, before anything else.** An order with no lot raised has nothing at the lab, and
+A slot the lab has not confirmed is deliberately **`IN_PROGRESS`, not `NOT_BOOKED`**: it *is*
+booked, the wait is on the lab. `testingView`'s order-level version of this precedence is unchanged
+and still drives the grouped header. The old order-level rule `b.lots.length === 0 → NOT_BOOKED`
+survives as the row-level *"no slot at all"* test.
+
+- **`NOT_BOOKED` first, before anything else.** An order with no lot raised has nothing at the lab, and
   its test list not being parsed yet is the normal state of a fresh order. Without that precedence
   every untouched order claimed to need a human (23 of 24 on the demo seed).
 - **`FAILED` outranks open tests.** A FAIL is a decision (retest or return) and the escrow refund
   path hangs off it; waiting for the other lots to finish before surfacing it is the wrong default.
-- **`COMPLETED` is the residual, and that is intentional** — results all in, no FAIL, but not
-  every lot PASS: a `MAYBE` lot, an F.A.R. closed out, an accepted not-conducted process. It reads 0
-  on the demo seed and that's fine; folding it into `PASSED` would let a not-clean order pass for a
-  clean one.
+- **`COMPLETED` is the one chip that is a superset, not a bucket** (2026-08-25). As a bucket it was
+  the residual — results all in, no FAIL, not every lot PASS: a `MAYBE` lot, an F.A.R. closed out, an
+  accepted not-conducted process — and it read `0` next to `Failed 2` and `Passed 4`, which is the
+  board contradicting itself: a submission the lab has finished with is completed whichever way it
+  came out. `pressureMatches(chip, rowPressure)` now makes the **chip** match `FAILED` and `PASSED`
+  as well, while the **row** keeps its own precise pill, and the residual keeps the label for rows
+  that are neither.
+  - **The counts therefore no longer sum to `All`** — deliberate, and the reason the function carries
+    the note. They did while every bucket was exclusive, which made them trustworthy as a partition;
+    one chip now answers *"how far along"* at a coarser grain than its neighbours. Narrowing
+    `Completed` back to the residual to restore the arithmetic would re-introduce the `0`.
+  - The residual is still worth its own rows: folding a MAYBE lot into `PASSED` would let a not-clean
+    result pass for a clean one.
 - **`HELD` and `ACTION` were buckets and are not any more.** An unpaid advance holding a lot, mail to
   match, a chase past SLA, an unparsed test list — each describes what kind of trouble an *in-progress*
   order is in, and the board-level question is how far along it is. Those signals still drive the row's
@@ -1139,33 +1222,191 @@ otherwise                      → COMPLETED    // every result in, but not a cl
   phase behind its clock; amber for anything else wanting a human) and the `attention` tie-break in the
   sort, so the worst in-progress orders are still the top rows. Don't re-add them as buckets.
 
-**One section: the order queue.** A second `Lots at the lab` table across every order was built and
-removed the same day — an order's lots live on that order's own workspace (§9.3), a cross-order lot
-list is a different screen's job, and as a tail on this board it doubled the page for a cut nobody
-had asked for. Don't re-add it here.
+**Columns, and what each one refuses to do** (per-submission since 2026-08-24).
+**The part comes first** — `MPN`, `Lot code`, *then* `Order no` / `Buyer` / `Supplier`: a row is one
+MPN's submission, so those two are its identity and everything after them is context (which order it
+belongs to, who is waiting on it, where it is). Leading with the order number made the table read
+order-shaped again, which is what the per-slot redesign moved away from.
+
+- **Order no** — the order number alone, and a **link that deliberately goes somewhere else than
+  the row** (2026-08-24): the row opens the one submission that was clicked, the order number opens
+  the **whole order** — every part, every test slot, the full mail history. Two questions, two
+  targets, and the number is the obvious place for the second. The grouped view's header carries the
+  same link, which is why the order number there sits *outside* the collapse button (nesting a link
+  in a button is invalid) — the chevron and the party line are the toggle. The supplier PO number sat under it for half a day and cost
+  the table more width than the whole `Lab fee due` column, for a reference nobody scans a lab queue
+  by; it is on the workspace header.
+- **Buyer** / **Supplier** — two columns, not one merged `Buyer → Supplier` cell. They are separate
+  questions ("who is waiting on this part" vs "who shipped the samples") and the grouped view is
+  where the pair reads as a relationship.
+- **MPN** — the part, in the **plain UI face at `text-xs`, not `font-mono`** (2026-08-24): a part
+  number is read here as a name, and the mono face rendered its hyphens as minus-like glyphs that
+  looked pasted-in against the white row. `whitespace-nowrap`, because a part number broken across
+  two lines stops being one token. Sub-line: make · `20/400 sampled`, the share of the ordered
+  quantity that actually went to the lab.
+- **Test slot** — this submission's own references, the ones the lab quotes back at us: slot no ·
+  `re-test of <slotNo>` when it is one · a status pill **only when the status is not `CONFIRMED`**
+  (a confirmed slot's state is already told by its stage and verdict, so the pill would be noise on
+  the majority of rows) · then lot code · `WO <no>` · the lab. Before a confirmation the sub-line
+  says *"lot code with the confirmation"* rather than inventing one.
+  - **Submissions are never added together.** Two slots on one order — even for the same MPN — are
+    independent: their own samples, work orders and results. That is what the old merged
+    *"N test slots · n passed · m failed"* cell got wrong, and it is why the row is the unit now.
+  - The confirmation **de-duplicates lot codes and work orders across slots** (suffix `-2`, bump the
+    WO), because the mock appointment derives both from the order number and would otherwise hand a
+    second slot the first one's identifiers — the collision that made two submissions look like one.
+  - **This cell also carries the booking control** (2026-08-24) — `Book test` with no slot, `Re-test`
+    on an un-re-run FAIL, **nothing at all on a slot that is simply running** (2026-08-25: the quiet
+    ghost `Book again` that used to sit there offered a second submission for a part the lab is still
+    working on — a bill for nothing, and it read as if the first submission needed replacing; a real
+    second submission is still bookable from the grouped view's order-level control, where picking
+    the MPN is a deliberate act rather than a button beside a running test), or
+    *"awaiting <slotNo>'s reply"* while `pendingTestSlot` holds the order. It started as a trailing `Book` column and moved here the same
+    day: at nine columns the trailing column sat past the right edge of the viewport, so the one
+    control a row offers needed a horizontal scroll to reach — and booking is what this column is
+    *about* (an unbooked row's entire content is "not booked"). The click `stopPropagation()`s, since
+    the row itself is a link into the slot's workspace. Rationale for booking from a board row at all
+    (and why it does not contradict the workspace's single entry point) is in §9.3.
+- **Lot code** — its own column since 2026-08-24, previously a sub-line under the slot no. The lot
+  code and its **work order** are the two references the lab, its invoices and its reports all quote,
+  so they are what an operator matches an incoming mail or bill against — that is a column's job, not
+  a caption's. The sample figure (`20/400`) lives here rather than under the MPN because the lab
+  pulls a sample **per lot**: it is this submission's fact, not the part's. Before a confirmation the
+  cell says *"with the confirmation"* rather than inventing a code; with no slot at all, a dash.
+- **Lab fee** and **Lab fee due** — **two columns since 2026-08-24**, because *"what did this
+  testing cost"* and *"what do we still owe"* are different questions and one figure could only ever
+  answer one of them. At row altitude each is a single invoice, since the lab bills per work order.
+  - **Lab fee = the cost.** What the lab invoiced on this work order, settled or not — plain text,
+    not a pill: a cost is not an alert, and the urgency belongs to the column beside it. Sub-line is
+    the invoice no, plus `· advance` **only** when the terms are ADVANCE, the case that can hold a
+    lot; `CREDIT` changes nothing about how the row is read and the due column says the rest.
+  - **`none due` vs `awaiting`.** The lab bills *after* it issues the report, so for most of a lot's
+    life there is no invoice to state — and that is not the same as owing nothing. A lot that is
+    unpaid and carries no invoice (`feeAwaiting`) reads **`awaiting` and nothing else** (2026-08-25):
+    the explanatory *"bills after report"* line under it was explaining the pill to a reader who had
+    already understood it, on every unbilled row. `none due` is reserved for the only case that earns
+    it — nothing at the lab.
+  - **Lab fee due = the worklist figure. A dash, never a zero, while no invoice has arrived** — the
+    amount is unknown, not nil, and a `0` there would read as "nothing to pay". It briefly repeated
+    the cost column's `awaiting` pill instead (2026-08-25) and went back to the dash the same day:
+    two identical cells side by side spent this column on a state the column to its left already
+    reported. The pill lives in one place, the dash means "ask that column". Billed and paid reads
+    `settled · nothing owed`, which is the whole reason the cost column exists. **Held outranks the figure**: an unpaid *advance* means the lab is
+    sitting on the parts, so the amount goes red with a lock and the sub-line says `advance — lot
+    held`; otherwise the sub-line says whether the invoice is with Finance yet.
+  - The order-level roll-ups these columns used to show (`labFeeBilledTotal` /
+    `labFeeOutstandingTotal`, `across N invoices`, `· N awaiting`) are unchanged in `selectors.ts`
+    and still used by the workspace and the board's own attention card. They are just not what a row
+    reports any more.
+- **Row colour is the bucket** (2026-08-25) — `bad` for `FAILED` **and for a held lot whatever
+  bucket it sits in** (an unpaid advance means the parts are off the bench), `ok` for `PASSED`, `warn`
+  for `IN_PROGRESS` and for the `COMPLETED` residual, and **no tint at all for `NOT_BOOKED`**: nothing
+  has happened yet, so no colour should claim otherwise. Before this only rows wanting a human were
+  tinted, which left a passed slot and an unbooked one looking identical — both plain — though one is
+  finished and the other has not started. `DataTable`'s `rowAccent` gained `"ok"` for it.
+  - `rowMuted` is **gone**. It dimmed passed rows so live work read first, but green already says
+    *done and good*, grey text on a green ground reads muddy, and the sort puts `PASSED` last anyway,
+    which is what the dimming was really for.
+  - The order's phase clock (`atRisk`) is deliberately **not** in the accent: it would paint every row
+    of that order, passed ones included. It keeps its `behind clock` pill in the status cell.
+- **Status / updates** — renamed from *"Action to perform"* (2026-08-24): at slot altitude most rows
+  are **reporting** where the submission has got to and only some are asking for something, so a
+  column called "action" mislabelled the majority of its own contents. Carries the bucket pill, the
+  lifecycle stage, an `F.A.R. follow-up` pill for a `MAYBE` verdict, `behind clock` for the order's
+  phase clock, then `slotStatusLine(r)` and a `n/m tests passed · n open · n F.A.R. · n reports`
+  tally line.
+
+**Two cuts of the same rows** (2026-08-24) — the same two-views-one-dataset shape the Payments board
+uses, never a second implementation: one `filtered` array, one predicate, one set of columns.
+
+- **All test slots** (default) — every submission across every order, worst first. This is the cut
+  that answers *"what does the lab desk do next"*, which is not an order-shaped question.
+- **Group by order** — the same rows stacked under a collapsible order header. The header carries
+  what is genuinely order-level and therefore has no row of its own: the parties, the worst bucket
+  among its rows, the slot count, the unmatched-mail count, `nextTestingAction`'s order-level
+  sentence, and a **`Book test slot` button** — one appointment can carry several parts, and that
+  booking belongs to the order, not to any one of its rows. **The three party columns are dropped inside a group**, because the header just said all
+  three. Pagination switches unit with the cut: 20 rows/page flat, 8 order-groups/page grouped.
+
+**One section: the queue.** A second `Lots at the lab` table across every order was built and
+removed on 2026-08-21 — and the per-slot redesign is what that table was reaching for, done as the
+board's own unit instead of as a tail on it. Don't re-add a second table.
 
 ```
-┌ attention cards (only when non-empty; board-wide facts, invisible in a per-order table) ┐
-│ ✉ "N WHL emails await matching"  + the order numbers, each a link                        │
+┌ attention cards (only when non-empty; board-wide facts, invisible in a per-row table) ──┐
+│ ✉ "N WHL emails await matching" — the WHOLE CARD links to /fulfilment/testing/inbox     │
+│    (§9.5a): every unmatched mail vs every test slot on every order. NO order            │
+│    numbers on it — which order it belongs to is what the inbox is for                   │
 │ 🔒/🧾 "{cur} {total} owed to WHL across N invoices" — advance ⇒ names the held lots,     │
 │        credit ⇒ "owed, but nothing is blocked"; links to Payments ?tab=whl               │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
-┌ Panel "Orders with testing · N" ────────────────────────────────────────────────────────┐
-│ chips: [All] [Failed] [In progress] [Booked — not started] [Completed] [Passed]          │
-│        …search right-aligned: order, party, lot, MPN, WO                                 │
-│ columns: Order (no + "supplier → lab") | Tests passed (n/m + bar + "N test lots · N       │
-│          reports") | Slowest test lot | Lab fee | **Test slot** (read-only: a warn          │
-│          "TS-… awaiting · check mail to confirm" pill, else the latest slot no +            │
-│          appointment, else "not booked")                                                    │
-│          | Slowest lot (code + TestingStageBar) | Lab fee (🔒 held / 🧾 {cur} {n} /      │
-│          "none due") | Action to perform (bucket pill + signal pills + the sentence)     │
-│ rowAccent bad = FAILED, a held lot or behind-clock · warn = anything else wanting a       │
-│ human;   rowMuted = PASSED (terminal and good, so the live work reads first)              │
-│ whole row → /fulfilment/testing/[orderId];  pagination 10/page                            │
+┌ Panel "Test slots · N" ─────────────────────────────────────────────────────────────────┐
+│ chips: [All] [Failed] [In progress] [Not booked] [Completed] [Passed]                    │
+│        …right: [▤ All test slots | ⧉ Group by order]  search: order, party, MPN, slot, WO │
+│ columns: MPN | Lot code (+ WO, sampled) | Order no | Buyer | Supplier | Test slot         │
+│          (+ Book test / Re-test only) | Lab fee | Lab fee due | Status / updates          │
+│          (Order no / Buyer / Supplier are dropped inside a group, which leaves the part    │
+│           leading there too; the group header adds an order-level [Book test slot])        │
+│ rowAccent IS the bucket (2026-08-25): bad = FAILED or a held lot · ok = PASSED ·          │
+│ warn = IN_PROGRESS or COMPLETED · nothing = NOT_BOOKED. No rowMuted any more.              │
+│ whole row → /fulfilment/testing/[orderId]?mpn=<mpn>[&lot=<id> | &slot=<id>]                │
+│ pagination 20 rows/page · 8 orders/page grouped                                           │
 └─────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 9.1 Shell — the testing workspace (`/fulfilment/testing/[orderId]`)
+
+**Scoped to one submission on arrival (2026-08-24).** The board's rows are submissions, so a click
+carries **`?mpn=<mpn>` always**, plus `&lot=<lotId>` — or `&slot=<slotId>` while the lab has not
+confirmed the booking and no lot exists to point at. The screen opens on **that submission's
+journey**: its stages, its report, its fee, its mail. Showing the order's other parts there would
+answer a question nobody asked by clicking one row, and the records are already kept per lot, so
+nothing has to be re-derived to do it.
+
+**Three tiers, narrowest first — `lot` → `slot` → `mpn`.** The `mpn` tier was added the same day and
+is the one that closed the actual hole: a row with **nothing booked** has neither a lot nor a slot,
+so the two narrower tiers had nothing to bind to and the click fell through to the whole order —
+click one part, get the part list. The part is what was clicked, so it is on every link and is the
+floor of the scope. Scoped by part, `LotsSection` renders that MPN's section and nothing else, however
+many lots it carries, and the note reads *"Filtered to `<mpn>` — the order's other parts are on the
+whole-order view."*
+
+- `TestingTab` gained `focusLotId` / `focusSlotId`. `focusLotId` **seeds the existing scope state**
+  (`useState(focusLotId ?? "ALL")`) rather than adding a second scoping mechanism — the lot selector
+  in the toolbar is still the one control, and widening to the whole order is one click on it.
+- `focusSlotId` is the pre-confirmation case and narrows by **the slot's own MPN lines** instead
+  (`onlySlotId` on `LotsSection`): it has no lot to filter by, and the order's whole part list would
+  bury the one booking that was clicked.
+- All three are **verified against the order** before use, so a stale id or part after a demo reset
+  falls back to the whole order instead of scoping the screen to nothing.
+- A strip under the header names what is on screen — *"Showing one test slot: `MPN · slotNo · lot
+  code · WO`"*, or *"Showing one part: `MPN`"* when nothing is booked — and links to
+  `show the whole order — N testable parts, M test slots →`. Scoping is a starting point, not a cage — and it has to be
+  visible, or the screen silently shows a subset of what the order has.
+- The **bulk bar and the per-card tick key off the count *in view*, not the order's** (`lots.length`,
+  not `b.lots.length`): arriving on one slot leaves nothing to select between, so both would be
+  controls with one possible outcome.
+- The section switcher's **fee badge follows the scope** too (`feeBadge`, off the scoped lot rather
+  than `labFeeOutstandingTotal(b)`): scoped to one submission, the order roll-up reported another
+  lot's unpaid invoice on a section about this one — exactly the merging the board stopped doing.
+- **Communication follows the scope and cannot be widened from inside it** (2026-08-24). `MailSection`
+  takes the whole `scope` (`{lotId, slotId, mpn}`) rather than a default lot id, and:
+  - the **lot `<Select>` on `Correspondence & tracking history` and on `Result circulated` is gone**
+    while a scope is set, replaced by *"only `<lot · MPN>` — the order's other threads are on the
+    whole-order view"*. A picker there let a screen opened on one test slot read the order's entire
+    mail history, which is the question the click did not ask. Unscoped, both selects return.
+  - the composer's **`About` field is static text** when the scope is a lot (a picker would let a
+    screen about LOT-A file a mail against LOT-B) and narrows to the scope's lots otherwise.
+  - **booking mails have no lot** — the lot does not exist until the lab answers — so scoped they are
+    matched by the mail's own `mpn`, or failing that by the slot that names it as its
+    `requestEmailId`/`confirmEmailId`; on the whole-order view they show in every list as before.
+  - the **manual match queue is no longer on this tab at all** (2026-08-25): it was the one panel that
+    had to ignore the scope, which was the clue it belonged elsewhere — it is now the board-level WHL
+    inbox screen (§9.5a), where an unmatched mail can be filed against any slot on any order.
+- Arriving with no parameter — the attention cards, an older link, the order workspace's own Testing
+  tab — still opens the whole order, unchanged.
+- The route reads the params with `useSearchParams()`, so its component sits under `<Suspense>`; the
+  production build refuses the page otherwise. Same wrapper and same reason as the Logistics queue.
 
 **Rebuilt twice on 2026-08-21.** It began as one full-height panel titled *"WHL testing — MPN × lot ×
 test"* holding the scope banner, six stat tiles, a caption, the alert stack, the bulk bar, a
@@ -1178,7 +1419,8 @@ put the sections first. Current shape, top to bottom:
 ┌ order header + phase notices (at-risk / mark-returned-to-supplier) ─────────────────┐
 └─────────────────────────────────────────────────────────────────────────────────────┘
   9/14 tests passed [▬▬▬▬░░] · 3 lots · 3 reports (4 open) (1 F.A.R.) (🧾 fee unpaid)
-       …right-aligned: [lot scope ▾] [Check mail] [+ Add lot]
+       …right-aligned: [lot scope ▾] [Check mail]        (no [+ Add lot] since 2026-08-25 —
+                                                          booking is board-only, §9.3)
 
   WORK THE ORDER
 ┌──────────────────────┬───────────────────────────┬────────────────────────┐
@@ -1224,7 +1466,7 @@ Don't put an order-wide reader back on the header.
 
 **The sections come first.** They are the screen's navigation, and anything above them is something
 a reader has to scroll past to reach the work. Only the order-level controls ride above (lot scope,
-Check mail, Add lot), because they are needed whichever section is open. Do not put another panel
+Check mail), because they are needed whichever section is open. Do not put another panel
 between the header and the switcher.
 
 **Two sections, and no roll-up metrics** (2026-08-21). The header briefly carried a metrics row —
@@ -1255,7 +1497,7 @@ it carried moved rather than vanished:
 | the table had | where it lives now |
 |---|---|
 | the **bulk bar** | top of the **Lots** section, above the cards — the actions are about lots and that is where the lots are. Shown only when the order has more than one lot. Now just `SELECT LOTS · tick the lots below, then pick an action · [clear] · N selected · [Next actions ▾]`: the quick-select presets (`all` / `with report` / `acceptable` / `not acceptable` / `F.A.R.`) were removed 2026-08-21, since the ticks on the cards are the selection and five preset filters on top of them was a second way to do the same thing. |
-| the per-row **checkbox** the bulk bar acted on | on each **`LotCard`** title row (`stopPropagation` so ticking never expands the card) |
+| the per-row **checkbox** the bulk bar acted on | on each **`LotCard`** title row (`stopPropagation` so ticking never expands the card), and **only when the order has more than one test lot** — with a single lot the selection does nothing the lot's own actions don't, so the tick is noise; the bulk bar hides on the same condition |
 | the **Progress** cell's `LotProgressToggle` → inline lifecycle stepper | the card's own stepper (§9.3a) — deleted here, it was the same component |
 | verdict · tests · fee · report · outstanding | the card's collapsed **summary row**, which already showed all of it |
 | **click-a-row-to-scope** | the lot selector in the top toolbar, which always did the same thing |
@@ -1342,14 +1584,64 @@ the filter) — see §9.7 for the collapse rules:
 and the flat list is the alternate cut. **The lot cards are identical either way; only the grouping
 changes.**
 
-**Grouped mode is driven by the order's testable LINES, not by which MPNs have lots.** That is what
-makes it the default: a part with nothing booked yet is exactly the one you came to book, so it must
-appear — with an empty note (*"No test lot for this MPN yet — book a slot with the lab, and its
-confirmation creates the lot."*) and its own **`Book test`** button, which opens `BookTestSlotModal`
-with `onlyMpn` so row 1 is pre-selected (the picker still lists every line and `+ Add MPN` still
-works — pre-selection is a shortcut, not a lock; the dialog title reads *"Book a test slot — <mpn>"*).
-An MPN that somehow has lots with no matching line is appended so nothing is hidden. The section's
-own **`Book test slot`** header button stays as the order-level entry.
+**Grouped mode is driven by the order's testable LINES, not by which MPNs have lots.** A part with
+nothing booked yet still has to appear — *"which of my parts has no test lot"* is the question this
+view answers, and an MPN that vanishes until someone books it cannot answer it — so it shows with an
+empty note: *"No test lot for this MPN yet — book a slot with the lab, and its confirmation creates
+the lot."* An MPN that somehow has lots with no matching line is appended so nothing is hidden.
+
+**Booking has left this screen, with one exception (2026-08-25).** There is no `Add test slot` and no
+`Book test slot` / `Book another test slot` header button: **booking lives on the Testing board**,
+where the queue of orders and test slots is. The one control that stays is **`Book re-test` on a lot
+whose own verdict is `FAIL`** — that is not "book a test", it is the decision a failed result forces
+(re-test or return), and it is taken where the failure is being read, on the card that shows the
+report. Precisely gated:
+
+- **the lot's own `testStatus === "FAIL"`, not its slot's.** LOT-KS-2 sharing submission TS-0153-1
+  with a failed LOT-KS-1 has not failed, and offering to re-run it would re-screen a good part at our
+  cost. The first cut of this used a slot-wide check and did exactly that.
+- **not already re-run, per part** (`rebookedFor`): a later slot with `retestOfSlotId === this slot`
+  **whose lines include this MPN**. Slot-wide was wrong here too — re-running one part of a
+  two-part submission says nothing about the other, and hid a re-test the second part still needed.
+  `TestingSlotRow.rebooked` on the board was fixed the same way.
+- the modal opens as a re-test **against that slot and preset to that part** (`retestOfSlotId` +
+  `presetMpn`), so the lab is cited its own appointment and work orders and the part cannot drift.
+
+Everything else — a first booking, a second slot for a part that already has one, an order-level
+appointment carrying several parts — is board-only. The
+history is worth keeping because it went back and forth: per-MPN buttons on the workspace's own MPN
+headings were removed 2026-08-24 (from inside the order the form already picks its own MPNs, so a
+per-line variant was a second way in with nothing to add), the board then gained per-row booking the
+same day (a board row *is* one MPN, so its button knows the part), and once the board could do it
+per part, per order and as a re-test, keeping a second set of controls here meant two places to keep
+honest for no gain. The section header now **says where booking went** —
+`Book a test slot on the Testing board →` — rather than going quiet; while a slot is `REQUESTED` it
+still reads *"<slotNo> is still with the lab — one booking at a time."*
+
+The board covers all of it (§9.0a): `Book test` on a row with no slot, `Re-test` on an un-re-run FAIL
+(the same act as the lot card's, from the queue side), and the grouped header's order-level
+`Book test slot` — which is also the only way to open a *second* submission for a part that already
+has one, since a running slot offers no booking control of its own. **`AddLotModal` is therefore
+PARKED** — nothing mounts it. It is kept rather than deleted because re-reading an appointment
+against an *existing* lot is still live (the lot card's `⬆ Booking appointment` picker, same
+`uploadBookingAppointment` action) and because hand-entering a lot is the obvious escape hatch if the
+mail path ever fails. **Consequence to accept, not to paper over:** with it unmounted there is no
+hand-entry path for a lot or for a hand-typed test plan while §9.2 stays parked — a lot now only ever
+comes from the lab's confirmation. Whoever brings it back: mount it somewhere that is not a second
+booking entry point.
+
+**The Testing board books per row and per order (2026-08-24, and it is not the same decision.)**
+Booking from the *board* was asked for the same day and it earns its place, because a board row **is
+one MPN's submission**: the button knows which part it is booking and opens the modal with that part
+already picked (`presetMpn`), which is precisely what the workspace's per-line buttons could not
+offer. Three acts, and they are distinguished on purpose — `Book test` on a row with no slot,
+`Re-test` on a FAIL nobody has re-run (`retestOfSlotId`, so the lab is cited its own appointment and
+work orders), and — since 2026-08-25 — **nothing on a slot that is merely in progress**. A second
+submission for a part that already has one is still legal (one line, two date codes, two
+submissions) but it is an order-level decision, not a button beside a test the lab is still running. The grouped cut adds the **order-level** booking in its header, which is the workspace's
+control in the workspace's place. All of it obeys `pendingTestSlot` — while the lab has not answered
+a request the button becomes *"awaiting <slotNo>'s reply"*, because there are no work orders to act
+on and the desk books one at a time. See §9.0a for where the controls sit.
 Each MPN heading carries: the MPN (mono) · its testing-mode pill · `N test lot(s)` · make · order qty ·
 `sampled X of Y` (summed across its lots) · and a right-aligned verdict roll-up (`n pass` / `n maybe` /
 `n fail` / `n pending`, only the non-zero ones). MPN order follows the order's own lines, so the
@@ -1401,8 +1693,8 @@ grouping reads like the PO.
   failures in red with the reason) sits behind a **`▸ Show history (n)` / `▾ Hide history (n)`**
   disclosure, **collapsed by default**. Caption: *"use **Next actions** above to send"*.
 - **footer**: `Lot verdict [PASS][MAYBE][FAIL]` (unchanged lot logic) + *"drives the escrow release /
-  refund path"*; right side: `awaiting WHL reply` chip, `n message(s)`, and context buttons —
-  `[Request update]` when no report, `[F.A.R. follow-up]` when `anyFar`, `[Re-test request]` when FAIL,
+  refund path"*; right side: the `awaiting WHL reply` chip and context buttons —
+  `[Request update]` when no report,
   `[Escalate TAT]` when awaiting.
 
 ### 9.3a Testing lifecycle stepper (per lot)
@@ -1410,10 +1702,34 @@ grouping reads like the PO.
 Deliberately the **same visual shape as the order's Journey stepper**, so the two read as one idea at
 different scales: reuse the host's stepper markup rather than inventing a second treatment.
 
+**A lot walks the stages that apply to it, not all nine (2026-08-25).** `RETURNED_TO_SELLER` is now
+**opt-in at booking**: `TestSlotLine.returnToSeller` (a per-MPN checkbox in `BookTestSlotModal`, *"Return
+samples to the seller — adds the return stage to this lot's lifecycle"*, unticked by default) is copied
+onto `Lot.returnToSeller` by the lab's confirmation. `lotStages(lot)` filters the canonical nine down to
+what the lot actually walks, and `lotStageProgress` counts `total`/`done`/`pct`/`next` over **that**
+list — so an unticked lot reads `1/8 stages` with no return node, and a ticked one reads `1/9` with it.
+Verified both ways on the demo seed.
+
+- **Why opt-in:** a screen can be destructive and plenty of lots are consumed or scrapped rather than
+  shipped back. As a fixed stage it claimed a step most lots would never reach, which left every
+  chain looking permanently unfinished.
+- **`lotReturnsToSeller(lot)` is `returnToSeller === true || !!returnedToSellerAt`** — a lot that
+  already carries the stamp shows the stage whatever the flag says. Never hide something that
+  demonstrably happened, including on lots booked before the flag existed (which is also why no store
+  version bump was needed: the field is additive and its absence is a meaningful default).
+- **`idx` stays an index into the canonical nine** — that is what `stageIdx`, every stored
+  `stageHistory` row and the forward-only `moveStage` are keyed on. Display maths counts over
+  `stages`, and "current" is the **next applicable** stage rather than `idx + 1`, which could land on
+  a stage the lot skips. Both steppers (`TestingStageBar`, `TestingStageChain`) render `stages`.
+- The lot card's **`Returned to seller` action is gated on the same predicate** — with no return
+  asked for, there is nothing to record.
+- The booking mail states it only when ticked (*"After testing: please return the samples to the
+  seller."* in that MPN's block); silence means we are not expecting them back.
+
 ```
-┌ Testing lifecycle · 6/9 stages                          [◉ At: Testing Completed ·  ┐
-│                                                             waiting on WHL]         │
-│   ✓────✓────✓────✓────✓────◉────⑦                                                   │
+┌ Testing lifecycle · 6/9 stages                    [◉ Next: Payment to WHL ·         ┐
+│                                                       waiting on 1Buy]              │
+│   ✓────✓────✓────✓────✓────✓────◉────⑧────⑨                                        │
 │  Test  Pay   Supp  Comp  Test  Test  Test                                           │
 │  Req   WHL   Disp  Recd  InPr  Cmpl  RepShared                                      │
 │  07-19 07-19 07-19 07-21 07-21 07-24                                                │
@@ -1436,8 +1752,21 @@ held on an unpaid advance instead of the "At:" pill:
    transfer clears. Settle the fee below — WHL's payment acknowledgement releases the lot."
 ```
 
-- **Nodes**: done = filled primary with ✓ · current = primary ring + the stage's icon · future =
-  muted outline with its index number. Half-rails either side, coloured primary up to the current node.
+- **Nodes**: `done = i <= idx` — filled primary with ✓ · `current = i === idx + 1` — primary ring +
+  that stage's icon · future = muted outline with its index number. Half-rails either side, coloured
+  primary up to and including the stage reached.
+  - **The stage a lot is AT renders as done, and the ring sits on the one after it** (fixed
+    2026-08-24). Every stage in this chain is a **past-tense fact** established by a mail — *Test
+    Booked*, *Components Received by WHL*, *Test Report Shared* — so treating `lot.stage` as
+    "in progress" meant a stage only ticked once the *next* one happened: booking a test showed
+    incomplete until the supplier dispatched, and the whole chain read one step behind the truth.
+  - Same rule in the compact `TestingStageBar` (`i <= idx` filled, `i === idx + 1` primary) and in the
+    header pill, which now names **what is being waited for** — `Next: <label> · waiting on <owner>`
+    — falling back to `At: <label>` only on the terminal stage. `waitingOn` was already the *next*
+    stage's owner, so it was the pill's label that disagreed with it, not the data.
+  - The one node whose truth is not positional is still `WHL_PAYMENT`: an unpaid fee paints it
+    warn/bad regardless of index, because on credit terms the chain runs past it while the money is
+    still owed.
 - **Labels** under each node, current one emphasised, with the recorded date (`MM-DD`) beneath when a
   history row exists. Non-1Buy owners carry a tiny icon (truck for Supplier, flask for WHL).
 - **Tooltip per node**: the stage description, plus either `at · by — note` when recorded, or
@@ -1469,6 +1798,20 @@ held on an unpaid advance instead of the "At:" pill:
 Used in the scope banner and on the cross-order testing board, one row per lot.
 
 ### 9.3b WHL invoice & payment (per lot)
+
+**The panel is hidden until the report is out** (2026-08-24), and that is enforced on **both sides**:
+
+- **UI:** `if (stageIdx(lotStageProgress(lot).stage) < stageIdx("REPORT_SHARED")) return null` — the
+  whole money block (request · upload · download · send-to-finance · mark-paid) belongs to the
+  `WHL_PAYMENT` stage, and rendering it from the moment a work order existed put an *"Invoice not
+  requested"* notice on every live lot for weeks.
+- **Adapter:** `whlPollInbox` withholds the `INVOICE` mail until the lot is at `REPORT_SHARED`
+  (`if (!wo.hasInvoice && at >= stageIdx("REPORT_SHARED"))`). It used to bill on booking, so
+  `Check mail` pulled an invoice in at stage 1 and the panel appeared with it. **Fixing only the UI
+  would have meant hiding data the app already held** — the two now agree. The no-invoice copy reads *"The report is out, so the lab can bill: **Request
+invoice** asks for it, and it arrives on the WHL thread with its own terms. Already have it by another
+medium? **Upload invoice**."* — it used to say the lab bills on booking, which is the model this
+module no longer follows.
 
 Rendered inside the stepper card, below the actions, and only once a work order exists — there is
 nothing to bill before that. Amber-tinted while the fee is outstanding, **red-tinted while it blocks**.
@@ -1528,7 +1871,16 @@ With reports ⇒ bordered block:
     bad) · amber pill **"F.A.R. on a process — follow up"** when `anyFar`
   - right: `[🛡 accessCount]` toggle · `[👁 Open PDF]` · `[⬇ Download]` (both log access)
   - `revisionNote` in a muted box when present
-  - parse flags as amber notices; a client-p/o flag gets `[Set to <PO on file>]`
+  - **no parse-flag notices** (removed 2026-08-25). `WhlReport.parseFlags` used to render as a stack of
+    amber `Notice`s above the field grid — *"Client P/O came back as “PO Unknown” — reconcile against
+    the PO on file."*, *"One or more processes were Not Conducted or inconclusive…"* — with a
+    `[Set to <PO on file>]` reconcile action on the first. **Nothing is hidden by dropping them:** every
+    discrepancy they announced is already **on the field it is about**, one line below — the client P/O
+    renders amber when it reads `PO Unknown`, an MPN that disagrees with the lot renders red, a lot qty
+    that disagrees carries *"(lot on file N)"*, and a not-conducted or inconclusive process is a row in
+    the test tracker with its own status. The banners restated all of it in prose, above the data, on
+    the one panel whose job is to hand over the document. `parseFlags` stays on the model, and
+    `reconcileReportPo` stays in the store, for whoever wants either elsewhere.
   - field grid (2-col): Report no · date | Work order | Part number (MPN — **red when ≠ lot MPN**) |
     Manufacturer | Lot qty (+ *"(lot on file N)"* when different) | Client | Client P/O (**amber when
     “PO Unknown”**) | Approved by + title | Standards | Risk classification | MSL | Package type
@@ -1562,14 +1914,33 @@ Named for what it does: this thread is the lifecycle's driver, not an archive.
    subject · attachments`, with the failure note in `bad`). Empty: *"Nothing to circulate yet — a lot
    needs a report before its result can go out."* **Sending is still `Next actions` on the lot**; this is
    only the record, and the panel says so.
-1. **Panel "Compose from a template — subject & body pre-filled"** — a chip per WHL template (tooltip =
-   hint) opening the compose modal for that template; caption explains the auto-fill; role note when gated.
-2. **Panel "WHL inbox — manual match queue"** — `[Check mail]` `[Compose]`; a **table**, amber-tinted rows:
-   `Received | From | Subject (+ 2-line body preview) | Why it's here | Files | Route it → [Match to lot]`.
-   "Why it's here" is the match note, falling back to *"No lot code, MPN or work order in the message"*.
-   Empty: *"Nothing waiting — every inbound WHL email is matched to a lot."* Caption: *"Unroutable mail is
-   held here rather than dropped or applied to the wrong lot. Matching it applies its updates to that
-   lot's tracker."*
+1. **Panel "Write to WHL" — an OPEN composer, not a button that opens one** (2026-08-24). Modelled on
+   the Logistics desk's *"Communication on this order"*
+   (`components/logistics/logistics-communication.tsx`): a real mail head sitting at the top of the
+   thread, typed into directly, because the mail *is* the work here and a modal put a click in front
+   of it every time.
+   - **To** (defaults to `WHL_CONTACT`) · **CC** (comma-separated) · **About** — a lot `<Select>`
+     (`No specific test lot` + one option per lot) which is what `sendLabEmail`'s `lotId` files the
+     mail against, so it lands on that lot's tracker instead of the match queue.
+   - **Template chips fill the form in place** rather than opening a modal — which is what they were
+     always for. The active chip is highlighted; `whlTemplate(id).subject/body` are built from
+     `ctxFor(lot)` (MPN, lot code, qty/sample, work order, client P/O, report no, lab, date code), and
+     **every field stays editable** afterwards. Re-picking the lot re-fills a *templated* mail and
+     leaves a hand-typed one alone.
+   - **Subject** · **Message** (8 rows) · `[✉ Send to WHL]` (disabled until both are filled) ·
+     `[Check mail]` · a `clear` link once anything is typed · the role note when gated.
+   - Sending resets the form. `ComposeWhlEmailModal` still exists and is still the way in from a
+     lot's own `[Email WHL]` button — that entry point carries lot context from elsewhere on the
+     page, so a modal is right there.
+
+2. **The manual match queue is NOT here any more (2026-08-25)** — it is a board-level screen,
+   `/fulfilment/testing/inbox` (§9.5a). It sat on this tab as *"WHL inbox — manual match queue"* and
+   was wrong here twice over: an unmatched mail belongs to no test slot **by definition**, so a tab
+   scoped to one submission could never be where it is resolved (it was the one panel that had to
+   ignore the scope), and its dropdown could only offer *this order's* lots — while an unroutable mail
+   is precisely the one whose order cannot be trusted. `MatchLabEmailModal` is parked with it. The
+   Communication tab's `to match` **badge went too**: a badge pointing at a queue this tab no longer
+   holds would send the reader to a section with nothing to do about it.
 3. **Panel "Correspondence & tracking history — every party"** — **one merged list** (2026-08-21):
    the lab's `labEmails` **and** every party notification off `lot.notifications` (supplier, buyer /
    client, escrow, WHL, finance), sorted newest-first into one row shape (`ThreadRow`). Three stores,
@@ -1603,15 +1974,54 @@ Named for what it does: this thread is the lifecycle's driver, not an archive.
    claims truncation after you've expanded is just wrong. Eight is a table-row budget, not the two a
    clamped-paragraph card could afford.
 
+### 9.5a Screen — the WHL inbox (`/fulfilment/testing/inbox`)
+
+**Where unroutable lab mail is resolved, board-level (2026-08-25).** One row per unmatched mail across
+every live order, newest first; the door is the Testing board's *"N WHL emails await matching"*
+attention card, which is now **a link, whole-card** (it used to list the order numbers as per-order
+links — which dropped the reader on a screen that could only offer that order's lots).
+
+**The card names no order at all** (2026-08-25). It listed the orders the mails had landed on, first as
+links and then as plain text, and both were wrong for the same reason: the thread a mail arrived on is
+the very thing in doubt — WHL filing against the wrong client PO is a normal way for one to land in the
+wrong place — so printing an order there invited the reader to assume the answer before opening the
+queue that exists to determine it. The card now says only how many are waiting and that deciding the
+order is part of the job.
+
+- A row shows: received · sender · **`arrived on <orderNo>`** (the thread it landed on — deliberately
+  not called "its order", because that is the thing in doubt) · its kind · subject · the body in full ·
+  the match note (falling back to *"No lot code, MPN or work order in the message"*) · attachments.
+- **The mapping is one dropdown over every test slot on every order**, grouped by order
+  (`<optgroup>` per order, labelled `orderNo — buyer → supplier`), each option
+  `lotCode · MPN · WO · slotNo · qty`. Then `[Match to this slot]`, disabled until a slot is picked
+  and for non-SC personas.
+- **Matching across orders moves the mail** rather than copying it: `matchLabEmail` gained a
+  `toOrderId` — the mail is spliced out of the source order's `labEmails`, pushed onto the target's,
+  and stamped `matchNote = "Re-filed from <orderNo>."`. The row warns before the click
+  (*"different order — the mail moves onto <orderNo>'s thread"*), and offers
+  `open that slot first →` for when the operator wants to look before filing. Same-order matching is
+  unchanged and still clears the note.
+- Search covers order no, subject, body, sender and file names. `[Check every mailbox]` re-polls every
+  order (`syncWhlInbox` per order) — a later mail sometimes names the work order the earlier one
+  omitted. Empty state: *"Nothing waiting — every inbound WHL email is filed against a test slot."*
+- SC-gated like the rest of the desk, and a `BOOKING_CONFIRMED` never appears here — it is
+  order-level by design (`unmatchedEmails` excludes it).
+
 ### 9.6 Menus and modals
 
-**"Add test lot" modal — two ways in** (`AddLotModal`, 2026-08-21). A segmented control at the top,
+**"Add test slot" modal — PARKED 2026-08-25, nothing mounts it** (`AddLotModal`; renamed from "Add
+test lot" 2026-08-24, since what the desk adds is a slot and the lots come off the lab's
+confirmation). Booking moved wholesale to the board — see §9.3 for why it is kept rather than
+deleted. What it offered, for whoever remounts it: a segmented control at the top,
 same pattern as the section switcher; **From booking appointment** is the default.
 
 - **From booking appointment** — explains what the document carries (which lots, the sample pulled
   from each, date codes, the work order, the quoted TAT, the test plan), then
-  `[⬆ Choose appointment PDF]` and `[✨ Use a sample appointment]` (the demo path, no file). Both call
-  `uploadBookingAppointment(orderId, file | null)` **with no `lotId`** and close on completion. This is
+  `[⬆ Choose appointment PDF]`, which calls `uploadBookingAppointment(orderId, file)` **with no
+  `lotId`** and closes on completion. The `[✨ Use a sample appointment]` demo button was removed
+  2026-08-24 along with the lot cards' per-lot `Auto-fill`: a confirmed test slot now creates the lots
+  properly, and a one-click "fill it with something" button beside that only invited fake data. The
+  action still accepts `file: null` as a harness seam, but no surface calls it. This is
   the **only order-wide** call to that action — it is the one that *creates* lots; everywhere else it
   is lot-scoped (§9.3). Says a pre-existing lot is topped up, never overwritten, and points at the
   other tab when there is no appointment yet.
@@ -1902,7 +2312,8 @@ the reference repo; this table is what a target repo should expect to end up wit
 | `src/components/order/modals.tsx` | compose / notify / bulk-notify / match / record-dispatch / mark-paid / **upload-invoice** / shipment-prefill | +560 |
 | `src/app/fulfilment/logistics/page.tsx` | §9.8 hand-off | +90 |
 | `src/app/fulfilment/payments/page.tsx` | §9.9 the "WHL testing" tab — the finance-side fee ledger (tiles, table, attach-then-pay row) | +95 |
-| `src/app/fulfilment/testing/page.tsx` | cross-order board, order-first (§9.0): pick an order, then the per-lot list with one `TestingStageBar` each | 150 |
+| `src/app/fulfilment/testing/page.tsx` | cross-order board, **slot-first** (§9.0a): a row per MPN submission, flat or grouped by order; the row links into that slot's own journey | ~470 |
+| `src/app/fulfilment/testing/inbox/page.tsx` | the **WHL inbox** (§9.5a): every unmatched lab mail vs every test slot on every order, one dropdown each | ~190 |
 | `src/app/fulfilment/testing/[orderId]/page.tsx` | the workspace route — order header + `TestingTab` + the add-lot modal | 70 |
 | `src/data/fixtures.ts`, `src/data/order-details.ts` | demo seed §13 | +700 |
 
@@ -1973,11 +2384,12 @@ released, notifications to all four parties), and a **no-testing** order (`"PO s
 ## 14. Acceptance checklist
 
 Surfaces (§9.0)
-- [ ] The Testing board is one order queue with five mutually-exclusive chips (Failed / In progress / Booked — not started / Completed / Passed) whose counts sum to All, plus search and pagination §9.0a; picking an order opens the full screen §9.1–9.7.
+- [ ] The Testing board is one queue of **test slots** — a row per MPN submission, with Order no / Buyer / Supplier / MPN / Test slot / Lab fee / Lab fee due / Status-updates columns — under five mutually-exclusive chips (Failed / In progress / Not booked / Completed / Passed) whose counts sum to All, plus a `Group by order` cut, search and pagination §9.0a; picking a row opens that slot's own journey in the full screen §9.1–9.7.
 - [ ] The workspace opens with the overview strip collapsed, "Needs attention" only when non-empty, and the lots panel above the fold §9.1.
 - [ ] The three sections are cards with icon + hint + attention badge, active one filled, not a tab strip §9.1.
 - [ ] The order's Testing tab and `/fulfilment/testing/[orderId]` render the same component with the
-      same actions — Check mail, Auto-fill, Add lot, the bulk menu and every alert action work on both.
+      same actions — Check mail, the bulk menu and every alert action work on both (booking is on
+      neither since 2026-08-25 — it is the board's, §9.3).
 - [ ] The order-flow page's Testing section renders **no** order-changing control, and every number on
       it matches the acting screen for the same order: same selectors, no second implementation.
 - [ ] That section shows exactly two things per lot: the lifecycle stepper and the report (openable +

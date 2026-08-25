@@ -21,7 +21,7 @@ import { incotermPlan, supplierHandlesCustoms, weClearImportCustoms } from "@/li
 import { TrackingTimeline } from "@/components/order/tracking-timeline";
 import { customsBucket, BUCKET_META } from "@/lib/customs-bucket";
 import {
-  AddStepModal, AddLotModal, AddPaymentModal,
+  AddStepModal, AddPaymentModal,
   AllocateDeliveryModal, AddEventModal, UploadDocModal, AddAllocationModal, UploadPIModal,
 } from "@/components/order/modals";
 // The same acting screen the Testing board opens at /fulfilment/testing/[orderId] — one
@@ -124,7 +124,8 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Lines" && <LinesTab b={b} />}
       {tab === "Allocations" && <AllocationsTab b={b} onMap={setMapLine} />}
       {tab === "Journey" && <JourneyTab b={b} id={id} onAdd={() => setModal("addStep")} />}
-      {tab === "Testing" && <TestingTab b={b} id={id} onAdd={() => setModal("addLot")} />}
+      {/* no onAdd: booking a test slot lives on the Testing board now (2026-08-25) */}
+      {tab === "Testing" && <TestingTab b={b} id={id} />}
       {tab === "Payments" && <PaymentsTab b={b} id={id} onAdd={() => setModal("addPayment")} />}
       {tab === "Shipments" && <ShipmentsTab b={b} id={id} />}
       {tab === "Customs" && <CustomsTab b={b} id={id} />}
@@ -136,7 +137,6 @@ export function OrderWorkspace({ id }: { id: string }) {
       {tab === "Approvals" && <ApprovalsTab b={b} id={id} />}
 
       {modal === "addStep" && <AddStepModal orderId={id} onClose={close} />}
-      {modal === "addLot" && <AddLotModal orderId={id} onClose={close} />}
       {modal === "addPayment" && <AddPaymentModal orderId={id} onClose={close} />}
       {modal === "allocate" && <AllocateDeliveryModal orderId={id} onClose={close} />}
       {modal === "event" && <AddEventModal orderId={id} onClose={close} />}

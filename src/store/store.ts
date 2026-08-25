@@ -187,8 +187,8 @@ const SUPPLIER_RELAY = "Supplier (relayed)";
 function buildSlotMail(
   b: OrderBundle,
   input: {
-    lab: string; preferredDate?: string; note?: string;
-    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    lab: string; note?: string;
+    lines: { mpn: string; lotCode?: string; qty: number; sampleQty?: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string; returnToSeller?: boolean }[];
     retestOfSlotId?: string; retestReason?: string;
   },
 ) {
@@ -217,17 +217,20 @@ function buildSlotMail(
       : "We would like to book a testing slot for the lots below.",
     "",
     `Client P/O: ${b.supplierPoNo ?? b.orderNo}`,
-    input.preferredDate ? `Preferred start: ${input.preferredDate}${input.lines.some((l) => l.preferredDate) ? " (unless stated per MPN below)" : ""}` : "",
     "",
     // one block per MPN, tests as a numbered list — a comma-run of ten process names is
     // unreadable on the lab's side and is exactly the part they have to work from
     ...input.lines.flatMap((l) => [
       `MPN ${l.mpn}`,
+      ...(l.lotCode ? [`  Lot code: ${l.lotCode}`] : []),
       `  Lot qty: ${l.qty}`,
-      `  Sample qty: ${l.sampleQty}`,
+      // no sample quantity: the lab decides what it pulls and states it on the confirmation,
+      // which the closing line asks for. Quoting a number of ours read like an instruction.
+      ...(l.sampleQty ? [`  Sample qty: ${l.sampleQty}`] : []),
       ...(l.dateCode ? [`  Date code: ${l.dateCode}`] : []),
-      // a per-MPN start only earns a line when it differs from what the header already said
-      ...(l.preferredDate && l.preferredDate !== input.preferredDate ? [`  Preferred start: ${l.preferredDate}`] : []),
+      ...(l.preferredDate ? [`  Preferred start: ${l.preferredDate}`] : []),
+      // only when asked for: silence means we are not expecting the samples back
+      ...(l.returnToSeller ? ["  After testing: please return the samples to the seller."] : []),
       l.tests.length ? "  Tests requested:" : "  Tests requested: as per your standard AS6081 screen",
       ...l.tests.map((t, i) => `    ${i + 1}. ${t.name}${t.standard ? ` (${t.standard})` : ""}`),
       "",
@@ -553,10 +556,10 @@ interface Store {
   /**
    * Read the lab's **booking appointment** and let it create the lots and their test plans.
    *
-   * `file === null` is the demo/auto-fill path: same parse, no document to file against the
-   * order. This is what "Auto-fill tests from PO" used to be — the PO says what the buyer
-   * requires, the appointment says what the lab agreed to run, and the tracker mirrors the
-   * second. Real backend integration later; the adapter seam is unchanged.
+   * `file === null` runs the same parse with no document filed. **No surface calls it that way any
+   * more** — the demo auto-fill buttons were removed 2026-08-24, since a confirmed test slot now
+   * creates the lots properly and a one-click "fill it with something" button next to it only
+   * invited fake data. Kept because it is the seam a backend/test harness would use.
    *
    * `lotId` scopes it to **one lot**: labs book per lot, so an operator with the appointment
    * for LOT-B must be able to apply it to LOT-B without touching the others (and without a
@@ -591,8 +594,8 @@ interface Store {
    * `retestOf` makes it a re-test of an earlier slot.
    */
   requestTestSlot: (orderId: string, input: {
-    lab: string; preferredDate?: string; note?: string;
-    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    lab: string; note?: string;
+    lines: { mpn: string; lotCode?: string; qty: number; sampleQty?: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string; returnToSeller?: boolean }[];
     retestOfSlotId?: string; retestReason?: string;
     /** the reviewed draft. Omitted only by callers that have no UI — the modal always sends both. */
     subject?: string; body?: string;
@@ -602,8 +605,8 @@ interface Store {
    * anything leaves. Pure — builds the same subject/body `requestTestSlot` would.
    */
   draftTestSlotMail: (orderId: string, input: {
-    lab: string; preferredDate?: string; note?: string;
-    lines: { mpn: string; qty: number; sampleQty: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string }[];
+    lab: string; note?: string;
+    lines: { mpn: string; lotCode?: string; qty: number; sampleQty?: number; dateCode: string; tests: { name: string; standard?: string }[]; preferredDate?: string; returnToSeller?: boolean }[];
     retestOfSlotId?: string; retestReason?: string;
   }) => { subject: string; body: string; slotNo: string };
   markLotReturnedToSeller: (orderId: string, lotId: string) => void;
@@ -620,7 +623,14 @@ interface Store {
   requestWhlUpdate: (orderId: string, lotId: string) => void;         // pre-mapped outbound chase
   sendLabEmail: (orderId: string, m: { lotId?: string; subject: string; body: string }) => void;
   syncWhlInbox: (orderId: string) => void;                            // inbound status mails → test statuses / reports
-  matchLabEmail: (orderId: string, emailId: string, lotId: string) => void; // resolve the manual-match queue
+  /**
+   * Resolve the manual-match queue. `toOrderId` is for the **cross-order** case (2026-08-25): the
+   * queue moved to a board-level screen that lists every unmatched mail against every test slot on
+   * every order, because an unroutable mail is exactly the one whose order we cannot trust — WHL
+   * quoting the wrong PO is a normal way for one to land on the wrong thread. When it differs from
+   * `orderId` the mail is moved between the two orders' `labEmails`, not copied.
+   */
+  matchLabEmail: (orderId: string, emailId: string, lotId: string, toOrderId?: string) => void;
   escalateLabEmail: (orderId: string, emailId: string) => void;
   logReportAccess: (orderId: string, lotId: string, reportId: string, action: "VIEW" | "DOWNLOAD") => void;
   reconcileReportPo: (orderId: string, lotId: string, reportId: string) => void;
@@ -1419,7 +1429,7 @@ export const useStore = create<Store>()(
           });
           b.testSlots.unshift({
             id: slotId, slotNo, lab: input.lab, status: "REQUESTED",
-            preferredDate: input.preferredDate, lines: input.lines, note: input.note,
+            lines: input.lines, note: input.note,
             requestedAt: stamp(), requestedBy: ME, requestEmailId: emailId,
             retestOfSlotId: prior?.id, retestOfSlotNo: prior?.slotNo, retestReason: input.retestReason,
           });
@@ -1668,9 +1678,18 @@ export const useStore = create<Store>()(
             } catch (e) { toast.error(errMsg(e)); return; }
 
             const created: string[] = [];
+            // the mock derives the appointment from the order number, so a second slot on the
+            // same order would be confirmed under the first one's reference — the same collision
+            // the lot code and work order had, and just as misleading on the board
+            const apptNo = parsed.appointmentNo;
             set((s) => {
               const b = s.orders[orderId]; if (!b) return;
               const slot = (b.testSlots ?? []).find((x) => x.id === pending.id); if (!slot) return;
+              let appointmentNo = apptNo;
+              let apptN = 1;
+              while ((b.testSlots ?? []).some((x) => x.id !== slot.id && x.appointmentNo === appointmentNo)) {
+                appointmentNo = `${apptNo}-${++apptN}`;
+              }
               const prior = slot.retestOfSlotId ? (b.testSlots ?? []).find((x) => x.id === slot.retestOfSlotId) : undefined;
               const confirmId = uid("lm");
               b.mpnTests ??= [];
@@ -1679,7 +1698,7 @@ export const useStore = create<Store>()(
                 const appt = parsed!.lots[i] ?? parsed!.lots[0];
                 // the test plan we asked for wins — the lab confirmed it; fall back to its own
                 const plan = line.tests.length ? line.tests : (appt?.tests ?? []);
-                const doc = `Booking appointment ${parsed!.appointmentNo} (slot ${slot.slotNo})`;
+                const doc = `Booking appointment ${appointmentNo} (slot ${slot.slotNo})`;
 
                 let spec = b.mpnTests!.find((x) => x.mpn === line.mpn);
                 if (!spec) {
@@ -1695,14 +1714,39 @@ export const useStore = create<Store>()(
                   before: "-", after: `${plan.length} test(s) from ${doc}`,
                 }));
 
-                const lotCode = prior
-                  ? `${(prior.createdLotIds ?? []).length ? "" : ""}RT${(b.testSlots ?? []).filter((x) => x.retestOfSlotId).length}-${appt?.lotCode ?? `L${i + 1}`}`
-                  : appt?.lotCode ?? `LOT-${String.fromCharCode(65 + b.lots.length)}`;
+                // the code we asked for wins: the lab confirms against it, so inventing our own
+                // here would leave the two sides tracking different names for the same submission
+                const asked = line.lotCode?.trim();
+                const base = asked
+                  ? asked
+                  : prior
+                    ? `RT${(b.testSlots ?? []).filter((x) => x.retestOfSlotId).length}-${appt?.lotCode ?? `L${i + 1}`}`
+                    : appt?.lotCode ?? `LOT-${String.fromCharCode(65 + b.lots.length)}`;
+                /*
+                 * Two slots on one order are independent submissions, so they cannot share a lot
+                 * code or a work order — the mock appointment derives both from the order number,
+                 * which collides the moment a second slot is booked. Suffix / bump until free.
+                 */
+                let lotCode = base, n = 1;
+                while (b.lots.some((x) => x.lotCode === lotCode)) lotCode = `${base}-${++n}`;
+                let workOrderNo = appt?.workOrderNo;
+                while (workOrderNo && b.lots.some((x) => x.workOrderNo === workOrderNo)) {
+                  workOrderNo = String(Number(workOrderNo) + 1);
+                }
                 const lotId = uid("lot");
                 const lot: Lot = {
                   id: lotId, orderLineMpn: line.mpn, lotCode, dateCode: line.dateCode || (appt?.dateCode ?? ""),
-                  qty: line.qty, sampleQty: line.sampleQty, testStatus: "PENDING",
-                  lab: slot.lab, workOrderNo: appt?.workOrderNo, tatDays: appt?.estimatedTatDays,
+                  qty: line.qty,
+                  /*
+                   * The sample is the LAB's decision (2026-08-24): the booking no longer asks for
+                   * one, so the confirmation's own figure is the source. `line.sampleQty` is only
+                   * consulted for a slot booked before this change or a seeded one that carries it.
+                   */
+                  sampleQty: line.sampleQty ?? appt?.sampleQty ?? Math.max(5, Math.min(50, Math.round(line.qty * 0.05))),
+                  // whether this lot ever walks the return stage was decided at booking
+                  returnToSeller: line.returnToSeller,
+                  testStatus: "PENDING",
+                  lab: slot.lab, workOrderNo, tatDays: appt?.estimatedTatDays,
                   clientPoNo: b.sourcingAllocations.find((a) => a.orderLineMpn === line.mpn)?.clientPoNo,
                   testSlotId: slot.id, testSlotNo: slot.slotNo,
                   retestOfSlotNo: slot.retestOfSlotNo,
@@ -1717,7 +1761,7 @@ export const useStore = create<Store>()(
                   reports: [],
                 };
                 moveStage(lot, "TEST_BOOKED", `${slot.lab} (confirmation)`, {
-                  note: `${slot.lab} confirmed slot ${slot.slotNo} — appointment ${parsed!.appointmentNo}, work order ${appt?.workOrderNo ?? "—"}.`,
+                  note: `${slot.lab} confirmed slot ${slot.slotNo} — appointment ${appointmentNo}, work order ${workOrderNo ?? "—"}.`,
                   sourceEmailId: confirmId,
                 });
                 // a re-test re-uses components already sitting at the lab, so the dispatch and
@@ -1740,7 +1784,7 @@ export const useStore = create<Store>()(
 
               slot.status = "CONFIRMED";
               slot.confirmedAt = stamp();
-              slot.appointmentNo = parsed!.appointmentNo;
+              slot.appointmentNo = appointmentNo;
               slot.confirmEmailId = confirmId;
 
               const req = (b.labEmails ?? []).find((m) => m.id === slot.requestEmailId);
@@ -1748,11 +1792,11 @@ export const useStore = create<Store>()(
               b.labEmails ??= [];
               b.labEmails.unshift({
                 id: confirmId, direction: "IN",
-                subject: `Booking confirmed — ${parsed!.appointmentNo}${slot.retestOfSlotNo ? " (re-test)" : ""} — ${slot.lines.map((l) => l.mpn).join(", ")}`,
+                subject: `Booking confirmed — ${appointmentNo}${slot.retestOfSlotNo ? " (re-test)" : ""} — ${slot.lines.map((l) => l.mpn).join(", ")}`,
                 body: [
                   `Hi Sourcing Ops,`, "",
                   `We confirm the ${slot.retestOfSlotNo ? "re-test " : ""}slot for ${slot.lines.map((l) => l.mpn).join(", ")}.`,
-                  `Our booking appointment: ${parsed!.appointmentNo}${slot.retestOfSlotNo ? " (re-test — components already held here)" : ""}`,
+                  `Our booking appointment: ${appointmentNo}${slot.retestOfSlotNo ? " (re-test — components already held here)" : ""}`,
                   "",
                   ...created.map((c) => `  ${c}`),
                   "",
@@ -1760,11 +1804,11 @@ export const useStore = create<Store>()(
                   "", `Regards,`, `${slot.lab}`,
                 ].join("\n"),
                 at: stamp(), by: `${slot.lab} Bookings`, status: "UPDATE_RECEIVED", kind: "BOOKING_CONFIRMED",
-                attachments: [`${parsed!.appointmentNo}.pdf`],
+                attachments: [`${appointmentNo}.pdf`],
               });
               b.events.unshift({
                 id: uid("ev"), eventType: "GENERAL",
-                message: `${slot.lab} confirmed slot ${slot.slotNo} (${parsed!.appointmentNo}) — ${created.length} test lot(s) created: ${created.join(", ")}.`,
+                message: `${slot.lab} confirmed slot ${slot.slotNo} (${appointmentNo}) — ${created.length} test lot(s) created: ${created.join(", ")}.`,
                 source: "WHL", occurredAt: today(), recordedBy: slot.lab,
               });
             });
@@ -1895,14 +1939,22 @@ export const useStore = create<Store>()(
         })();
       },
 
-      matchLabEmail: (orderId, emailId, lotId) => {
+      matchLabEmail: (orderId, emailId, lotId, toOrderId) => {
         set((s) => {
-          const b = s.orders[orderId]; if (!b) return;
-          const em = b.labEmails?.find((x) => x.id === emailId); if (!em) return;
+          const from = s.orders[orderId]; if (!from) return;
+          const b = s.orders[toOrderId ?? orderId]; if (!b) return;
+          const em = from.labEmails?.find((x) => x.id === emailId); if (!em) return;
           const lot = b.lots.find((l) => l.id === lotId); if (!lot) return;
+          // matched onto another order's slot: the mail belongs to that order's thread now
+          if (b.id !== from.id) {
+            from.labEmails = (from.labEmails ?? []).filter((x) => x.id !== emailId);
+            b.labEmails = [...(b.labEmails ?? []), em];
+            em.matchNote = `Re-filed from ${from.orderNo}.`;
+          }
           em.lotId = lot.id; em.lotCode = lot.lotCode; em.mpn = lot.orderLineMpn;
           em.workOrderNo = em.workOrderNo ?? lot.workOrderNo; em.poNo = lot.clientPoNo;
-          em.matchedBy = ME; em.matchNote = undefined;
+          em.matchedBy = ME;
+          if (b.id === from.id) em.matchNote = undefined;
           em.status = em.kind === "REPORT" ? "REPORT_DELIVERED" : "UPDATE_RECEIVED";
           const spec = (b.mpnTests ?? []).find((x) => x.mpn === lot.orderLineMpn);
           spec?.audit.push(auditRow({ by: ME, action: "EMAIL", target: lot.lotCode, after: "matched inbound mail", note: em.subject, sourceEmailId: em.id }));
@@ -3108,10 +3160,10 @@ Please pre-file the entry so clearance starts before the goods land.`,
           // ---- the lab appointment everything hangs off ----
           b.testSlots = [{
             id: slotId, slotNo: "TS-2026-0044", lab, status: "CONFIRMED",
-            preferredDate: d(-12),
+            // preferred start is per line now — there is no slot-level default any more
             lines: [
-              { mpn: mpnA, qty: qtyA, sampleQty: 20, dateCode: "2325", tests: PLAN_A.map((name) => ({ name, standard: "AS6081" })) },
-              { mpn: mpnB, qty: qtyB, sampleQty: 15, dateCode: "2410", tests: PLAN_B.map((name) => ({ name, standard: "AS6081" })) },
+              { mpn: mpnA, qty: qtyA, sampleQty: 20, dateCode: "2325", preferredDate: d(-12), tests: PLAN_A.map((name) => ({ name, standard: "AS6081" })) },
+              { mpn: mpnB, qty: qtyB, sampleQty: 15, dateCode: "2410", preferredDate: d(-12), tests: PLAN_B.map((name) => ({ name, standard: "AS6081" })) },
             ],
             note: "Two date codes, same purchase order — please run both under one appointment.",
             requestedAt: at(-14, "09:20"), requestedBy: ME,
@@ -4289,7 +4341,7 @@ Please pre-file the entry so clearance starts before the goods land.`,
       // 35 = LogisticsMessage.threadId/cc/bcc (mail chains with per-email reply) ·
       // 36 = multi-category email filing (string[] per email) + free-address To with inferred counterparty (OTHER) ·
       // 37 = merge: 6-phase fulfilment clock (Escrow.fundedAt + OrderBundle.whlReturnedToSupplierAt) landed beside 36 on main — both schemas, one discard
-      version: 40,
+      version: 42,
       storage: createJSONStorage(() => (typeof window !== "undefined" ? window.localStorage : (undefined as unknown as Storage))),
       skipHydration: true,
       // No real migration path across these schema jumps — discard on a version bump rather than

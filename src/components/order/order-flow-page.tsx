@@ -18,7 +18,7 @@ import { useStore } from "@/store/store";
 import { useRole } from "@/lib/role";
 import {
   journeyPct, gateReason, customsApplies, remainingToShip, remainingToAllocate,
-  mappedForOrderLine, testingSummary, lotResults, labFeeOutstandingTotal, remainingToShipLeg,
+  mappedForOrderLine, lotResults, lotStageProgress, labFeeOutstandingTotal, remainingToShipLeg,
   escrowStatusIndex, escrowInvoiceTotals, escrowReleaseReadiness, escrowMilestoneTriggerMet,
   escrowFeeReconciliation, currentReport,
 } from "@/store/selectors";
@@ -639,28 +639,38 @@ function MoneySection({
 function TestingSection({
   b, id, steps, currentId, reason,
 }: { b: OrderBundle; id: string; steps: JourneyStep[]; currentId?: string; reason: string | null }) {
-  const [open, setOpen] = useState<string | null>(null);   // lot id whose result is expanded
+  const [open, setOpen] = useState<string | null>(null);   // test slot whose result is expanded
 
-  const sum = testingSummary(b);
   const rows = lotResults(b);
   const fees = labFeeOutstandingTotal(b);
   const testable = b.lines.filter((l) => l.testingMode !== "NONE");
   const reportsOnFile = b.lots.flatMap((l) => l.reports ?? []);
+  /*
+   * Counted by **test slot**, never by test.
+   *
+   * This used to be seven tiles — lots, tests tracked, passed n/m, still open, F.A.R., not
+   * acceptable, reports — which is a per-test breakdown of the whole order added together. On a
+   * reading page that is the wrong altitude twice over: the numbers belong to different slots that
+   * were never one batch, and nobody scanning an order needs the test-level tally to know where it
+   * stands. Five facts do: how many submissions there are, how they came out, and how far along
+   * they are.
+   */
+  const total = b.lots.length;
   const passed = b.lots.filter((l) => l.testStatus === "PASS").length;
+  const failed = b.lots.filter((l) => l.testStatus === "FAIL").length;
+  const completed = b.lots.filter((l) => lotStageProgress(l).complete).length;
 
   return (
     <FlowSection id="testing" title="Testing" hint={testable.length === 0
       ? "No line on this order needs incoming testing, so the testing gate is vacuous."
       : `${testable.length} of ${b.lines.length} line(s) need testing — every one needs a PASS before the money and the goods move on.`}
       icon={<FlaskConical className="h-4 w-4" />} steps={steps} currentId={currentId} reason={reason}>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-        <MiniStat label="Lots" value={String(sum.lots)} sub={`${passed} passed`} />
-        <MiniStat label="Tests tracked" value={String(sum.tests)} />
-        <MiniStat label="Passed" value={`${sum.passed}/${sum.tests}`} tone={sum.tests && sum.passed === sum.tests ? "ok" : undefined} />
-        <MiniStat label="Still open" value={String(sum.open)} tone={sum.open ? "warn" : undefined} />
-        <MiniStat label="F.A.R." value={String(sum.far)} tone={sum.far ? "warn" : undefined} />
-        <MiniStat label="Not acceptable" value={String(sum.failed)} tone={sum.failed ? "bad" : undefined} />
-        <MiniStat label="Reports" value={String(sum.reports)} sub={reportsOnFile.length > b.lots.length ? "incl. revisions" : undefined} />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <MiniStat label="Test slots" value={String(total)} />
+        <MiniStat label="Passed" value={String(passed)} tone={total > 0 && passed === total ? "ok" : undefined} />
+        <MiniStat label="Failed" value={String(failed)} tone={failed ? "bad" : undefined} />
+        <MiniStat label="Completed" value={`${completed}/${total}`} tone={total > 0 && completed === total ? "ok" : undefined} />
+        <MiniStat label="In progress" value={`${total - completed}/${total}`} tone={total - completed > 0 ? "warn" : undefined} />
       </div>
 
       {fees.count > 0 && (
@@ -687,7 +697,7 @@ function TestingSection({
               {r.parseFlags.length > 0 && <span className="text-warn">{r.parseFlags.length} flag(s)</span>}
             </span>
           ))}
-          <span className="text-faint">open a lot below to read a report and download it</span>
+          <span className="text-faint">open a test slot below to read a report and download it</span>
         </div>
       )}
 
@@ -699,7 +709,7 @@ function TestingSection({
             <table className="w-full min-w-[880px] border-collapse text-sm">
               <thead>
                 <tr className="border-b bg-card-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-3 py-2 text-left">Lot</th>
+                  <th className="px-3 py-2 text-left">Test slot</th>
                   <th className="px-3 py-2 text-left">MPN</th>
                   <th className="px-3 py-2 text-left">Verdict</th>
                   <th className="px-3 py-2 text-left">Tests</th>
@@ -762,7 +772,7 @@ function TestingSection({
                       {isOpen && (
                         <tr className="border-b bg-card-2/60 last:border-0">
                           <td colSpan={8} className="px-3 py-3">
-                            <LotReadOnlyDetail b={b} orderId={id} lot={r.lot} />
+                            <LotReadOnlyDetail orderId={id} lot={r.lot} />
                           </td>
                         </tr>
                       )}
@@ -773,9 +783,9 @@ function TestingSection({
             </table>
           </div>
           <p className="text-xs text-faint">
-            Click a lot for its lifecycle and its report — readable on screen and downloadable. Opens and downloads
-            are recorded on the report&apos;s NDA access log. The per-test tracker and the WHL thread live on the
-            testing workspace.
+            Click a test slot for its lifecycle and its report — readable on screen and downloadable. Opens and
+            downloads are recorded on the report&apos;s NDA access log. The per-test tracker and the WHL thread live
+            on the testing workspace.
           </p>
         </>
       )}

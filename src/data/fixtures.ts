@@ -2,7 +2,7 @@ import type {
   Order, OrderBundle, JourneyStep, JourneyPhase, Lot, Escrow, EscrowContact, EscrowOrderStatus, EscrowFeeBreakdown, EscrowConditions, MilestoneRelease, WhlVerdict, Payment,
   Shipment, CustomsEntry, DeliveryAllocation, SourcingAllocation, DocumentRef, Approval, OrderEvent, OrderLine, ClientPO, SupplierPO, TestingMode, Address,
   MpnTestSpec, LabEmail, LotTest, WhlReport, TestProcessStatus, TestAuditEntry, LotNotification,
-  TestingStage, TestingStageEvent,
+  TestingStage, TestingStageEvent, TestSlot,
 } from "@/types";
 import { WHL_CONFIDENTIALITY, ESCROW_STATUS_ORDER } from "@/data/enums";
 import { ORDER_DETAILS } from "@/data/order-details";
@@ -1041,6 +1041,43 @@ const ESCROW_SEED_SCENARIOS: Record<string, EscrowSeedScenario> = {
   },
 };
 
+
+/**
+ * Give every seeded lot the **test slot** it was booked under.
+ *
+ * Slots arrived after the fixtures did, so the seed carried lots with no `testSlotId` and the UI
+ * had to invent a category for them ("N test lots outside a slot"). That category described a gap
+ * in our data, not anything real — a lot only exists because the lab agreed to test it — so the
+ * data is backfilled here instead and the concept is gone from the screens.
+ *
+ * One confirmed slot per order, covering all of its lots: that is what a seeded order represents,
+ * a single booking the lab confirmed. Lot codes and work orders are already on the lots, so the
+ * slot just records the booking they came from.
+ */
+function withSeededTestSlots(b: OrderBundle): OrderBundle {
+  const loose = b.lots.filter((l) => !l.testSlotId);
+  if (loose.length === 0) return b;
+  const slotId = `${b.id}-slot-1`;
+  const slotNo = `TS-${b.orderNo.replace(/\D/g, "").slice(-4)}-1`;
+  const lab = loose[0].lab ?? "WHL Shenzhen";
+  const wo = loose.find((l) => l.workOrderNo)?.workOrderNo;
+  const slot: TestSlot = {
+    id: slotId, slotNo, lab, status: "CONFIRMED",
+    lines: loose.map((l) => ({
+      mpn: l.orderLineMpn, lotCode: l.lotCode, qty: l.qty, sampleQty: l.sampleQty,
+      dateCode: l.dateCode, tests: (l.tests ?? []).map((t) => ({ name: t.name, standard: t.standard })),
+    })),
+    requestedAt: b.createdAt, requestedBy: b.createdBy,
+    confirmedAt: b.createdAt, appointmentNo: wo ? `WHL-APT-${wo}` : `WHL-APT-${slotNo}`,
+    createdLotIds: loose.map((l) => l.id),
+  };
+  return {
+    ...b,
+    testSlots: [...(b.testSlots ?? []), slot],
+    lots: b.lots.map((l) => (l.testSlotId ? l : { ...l, testSlotId: slotId, testSlotNo: slotNo })),
+  };
+}
+
 export function getOrderBundle(id: string): OrderBundle | undefined {
   const o = ORDERS.find((x) => x.id === id);
   if (!o) return undefined;
@@ -1050,12 +1087,12 @@ export function getOrderBundle(id: string): OrderBundle | undefined {
     journey: buildJourney(o),
   };
   if (o.id === HERO_ID) {
-    return {
+    return withSeededTestSlots({
       ...base, lines: HERO_LINES, lots: HERO_LOTS, mpnTests: HERO_MPN_TESTS, labEmails: HERO_LAB_EMAILS,
       escrow: HERO_ESCROW, payments: HERO_PAYMENTS, shipments: HERO_SHIPMENTS,
       customs: HERO_CUSTOMS, deliveries: HERO_DELIVERIES, sourcingAllocations: HERO_SOURCING,
       documents: HERO_DOCS, approvals: HERO_APPROVALS, events: HERO_EVENTS,
-    };
+    });
   }
   // every other order carries a hardcoded detail seed too (see order-details.ts), so the
   // testing/payments/shipments/customs/delivery/docs screens all have real data. Escrow itself is
@@ -1162,13 +1199,13 @@ export function getOrderBundle(id: string): OrderBundle | undefined {
   ] : [];
 
   if (d) {
-    return {
+    return withSeededTestSlots({
       ...base, lines: d.lines, lots: d.lots, mpnTests: d.mpnTests, labEmails: d.labEmails, escrow,
       payments: d.payments, shipments: d.shipments, customs: d.customs, deliveries: d.deliveries,
       sourcingAllocations: d.sourcingAllocations, documents: d.documents, approvals: d.approvals,
       events: d.events, einvoice: d.einvoice,
       hubAddress: ONEBUY_HUB, buyerAddress: d.buyerAddress ?? base.buyerAddress,
-    };
+    });
   }
 
   return {

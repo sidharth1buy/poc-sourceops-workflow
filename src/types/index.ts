@@ -314,13 +314,31 @@ export type TestSlotStatus = "REQUESTED" | "CONFIRMED" | "DECLINED";
 
 export interface TestSlotLine {
   mpn: string;
+  /** the lot code we want this submission tracked under. The lab quotes it back on its
+   *  confirmation, so the created lot carries it rather than a code the app invented. */
+  lotCode?: string;
   qty: number;
-  sampleQty: number;
+  /**
+   * Optional since 2026-08-24 — and normally absent. **We do not tell the lab what to sample.**
+   * The booking states the lot; the lab pulls the sample and states the quantity on its
+   * confirmation (the request mail has always closed by asking it to). The field stays for the
+   * seeded slots and for a confirmation that echoes it back, so nothing that already carries a
+   * number loses it, but the booking form no longer asks.
+   */
+  sampleQty?: number;
   dateCode: string;
   tests: { name: string; standard?: string }[];
-  /** per-MPN preferred start, when one part has to go on the bench before another. Falls back to
-   *  the slot's own `preferredDate`, which is the default for every line. */
+  /** when this part should go on the bench. Per MPN and nowhere else — a slot-level default sat
+   *  above these and meant the same date could be entered twice. */
   preferredDate?: string;
+  /**
+   * Do the samples come back to the seller once the lab is done? **Opt-in at booking** (2026-08-25)
+   * and per MPN, because it is an arrangement about *these* samples, not about the order: a
+   * destructive screen leaves nothing to return, and plenty of lots are consumed or scrapped. It
+   * decides whether the `RETURNED_TO_SELLER` stage is part of this lot's lifecycle at all — see
+   * `lotStageProgress`.
+   */
+  returnToSeller?: boolean;
 }
 
 export interface TestSlot {
@@ -328,7 +346,6 @@ export interface TestSlot {
   slotNo: string;              // our own reference, quoted in the mail
   lab: string;
   status: TestSlotStatus;
-  preferredDate?: string;
   lines: TestSlotLine[];
   note?: string;
   requestedAt: string;
@@ -494,6 +511,8 @@ export interface Lot {
   testSlotNo?: string;
   retestOfSlotNo?: string;
   /** WHL has sent the samples back to the seller — the stage before the freight hand-off. */
+  /** copied off the booking line: was a return to the seller asked for at all? See `TestSlotLine`. */
+  returnToSeller?: boolean;
   returnedToSellerAt?: string;
   returnedToSellerBy?: string;
   logisticsAssignedAt?: string;

@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Check, Download, Eye, Lock, ShieldAlert } from "lucide-react";
+import { Check, Download, Eye, Lock, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
-import type { OrderBundle, Lot, WhlReport } from "@/types";
+import type { Lot, WhlReport } from "@/types";
 import { WHL_CONTACT, statusTone } from "@/data/enums";
-import { Pill, Button, Field, Notice } from "@/components/ui/primitives";
+import { Pill, Button, Field } from "@/components/ui/primitives";
 import { useStore } from "@/store/store";
 import { currentReport } from "@/store/selectors";
 import { qtyfmt, cn } from "@/lib/utils";
@@ -18,14 +18,16 @@ import { qtyfmt, cn } from "@/lib/utils";
  * tab and the order-flow page), because §9.4's field list should exist once — three copies of
  * it would drift the moment WHL changes a report header.
  *
- * `readOnly` drops the one *acting* affordance here — reconciling a parse flag against the PO
- * on file, which edits the report and writes an audit row. **Viewing and downloading stay**:
- * the report is the deliverable those pages exist to show, and both are access-logged either
- * way, which is exactly what the NDA requires (invariant: no unlogged look at a report).
+ * `readOnly` no longer drops an action, because there is none left to drop: the reconcile-a-parse-
+ * flag affordance went with the parse-flag banners (2026-08-25, see below). All it changes now is
+ * the empty state's wording — where to go to chase the lab. **Viewing and downloading stay** on
+ * every surface: the report is the deliverable those pages exist to show, and both are
+ * access-logged either way, which is exactly what the NDA requires (invariant: no unlogged look at
+ * a report).
  */
 export function ReportRepository({
-  b, orderId, lot, readOnly,
-}: { b: OrderBundle; orderId: string; lot: Lot; readOnly?: boolean }) {
+  orderId, lot, readOnly,
+}: { orderId: string; lot: Lot; readOnly?: boolean }) {
   const logReportAccess = useStore((s) => s.logReportAccess);
   const reports = (lot.reports ?? []).slice().sort((a, c) => c.revision - a.revision);
   const [shown, setShown] = useState<string | null>(null);
@@ -67,7 +69,7 @@ export function ReportRepository({
           ))}
         </div>
       </div>
-      {active && <ReportSummary b={b} orderId={orderId} lot={lot} r={active} readOnly={readOnly} />}
+      {active && <ReportSummary orderId={orderId} lot={lot} r={active} />}
     </div>
   );
 }
@@ -76,12 +78,10 @@ const CONCLUSION_TONE = (c: WhlReport["conclusion"]): "ok" | "bad" => (c === "AC
 
 /** Everything the operator needs without opening the PDF. */
 function ReportSummary({
-  b, orderId, lot, r, readOnly,
-}: { b: OrderBundle; orderId: string; lot: Lot; r: WhlReport; readOnly?: boolean }) {
+  orderId, lot, r,
+}: { orderId: string; lot: Lot; r: WhlReport }) {
   const logReportAccess = useStore((s) => s.logReportAccess);
-  const reconcileReportPo = useStore((s) => s.reconcileReportPo);
   const [showAccess, setShowAccess] = useState(false);
-  const poOnFile = lot.clientPoNo ?? b.sourcingAllocations.find((a) => a.orderLineMpn === lot.orderLineMpn)?.clientPoNo;
 
   // The PDF is a mock — there's no file to hand over — so say what was logged instead of
   // silently doing nothing, which reads as a broken button.
@@ -115,18 +115,19 @@ function ReportSummary({
 
       {r.revisionNote && <p className="mb-3 rounded-lg bg-muted p-2.5 text-xs text-muted-foreground">{r.revisionNote}</p>}
 
-      {r.parseFlags.length > 0 && (
-        <div className="mb-3 space-y-1.5">
-          {r.parseFlags.map((f, i) => (
-            <Notice key={i} tone="warn" icon={<AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
-              action={!readOnly && f.toLowerCase().includes("client p/o") && poOnFile
-                ? <button className="font-medium underline" onClick={() => reconcileReportPo(orderId, lot.id, r.id)}>Set to {poOnFile}</button>
-                : undefined}>
-              {f}
-            </Notice>
-          ))}
-        </div>
-      )}
+      {/*
+       * `r.parseFlags` are no longer rendered as banners (2026-08-25) — the stack of amber notices
+       * above every report ("Client P/O came back as 'PO Unknown' — reconcile against the PO on
+       * file", "One or more processes were Not Conducted or inconclusive…") and the `Set to <po>`
+       * reconcile action with them.
+       *
+       * Nothing is hidden by this: every discrepancy they announced is already **on the field it is
+       * about**, a line below — a `PO Unknown` client P/O renders in `warn`, an MPN that disagrees
+       * with the lot renders in `bad`, a lot qty that disagrees carries `(lot on file N)`, and a
+       * not-conducted or inconclusive process is a row in the test tracker with its own status. The
+       * banners restated all of that in prose, above the data, on the one panel whose job is to hand
+       * over the document itself. The flags stay on the model for whoever wants them elsewhere.
+       */}
 
       <div className="grid grid-cols-1 gap-x-8 sm:grid-cols-2">
         <Field label="Report no · date">{r.reportNo} · {r.reportDate}</Field>

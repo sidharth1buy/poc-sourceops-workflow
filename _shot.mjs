@@ -1,0 +1,13 @@
+import { chromium } from '@playwright/test';
+const b = await chromium.launch();
+const out = process.argv[2];
+const p = await b.newPage({ viewport: { width: 1500, height: 820 } });
+p.on('pageerror', e => console.log('PAGEERROR', e.message));
+await p.goto('http://localhost:3111/fulfilment/testing', { waitUntil: 'networkidle' });
+await p.waitForTimeout(2500);
+await p.screenshot({ path: out + '/aq-board.png' });
+await p.goto('http://localhost:3111/fulfilment/testing/ord-148', { waitUntil: 'networkidle' });
+await p.waitForTimeout(2200);
+console.log('flat toggle:', await p.locator('button:has-text("Flat list")').count());
+await p.screenshot({ path: out + '/aq-ws.png' });
+await b.close();
