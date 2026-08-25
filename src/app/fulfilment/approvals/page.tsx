@@ -23,7 +23,7 @@ export default function ApprovalsPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <Pill tone={a.kind === "PO_REVIEW" ? "info" : "warn"}>{a.kind.replace(/_/g, " ")}</Pill>
-                    <Link href={`/fulfilment/orders/${a.orderId}`} className="font-mono text-xs text-primary hover:underline">{a.orderNo}</Link>
+                    <Link href={`/fulfilment/order-flow/${a.orderId}`} className="font-mono text-xs text-primary hover:underline">{a.orderNo}</Link>
                   </div>
                   <div className="text-xs text-muted-foreground">{a.party} · role {a.role}{a.notes ? ` · ${a.notes}` : ""}</div>
                 </div>
@@ -41,7 +41,7 @@ export default function ApprovalsPage() {
           <div className="space-y-2">
             {decided.map((a) => (
               <div key={a.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
-                <span><Link href={`/fulfilment/orders/${a.orderId}`} className="font-mono text-xs text-primary hover:underline">{a.orderNo}</Link> · {a.kind.replace(/_/g, " ")} · {a.party}</span>
+                <span><Link href={`/fulfilment/order-flow/${a.orderId}`} className="font-mono text-xs text-primary hover:underline">{a.orderNo}</Link> · {a.kind.replace(/_/g, " ")} · {a.party}</span>
                 <StatusPill status={a.status} />
               </div>
             ))}

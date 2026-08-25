@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, type ReactNode } from "react";
 import { Upload, Check, Lock, Ban, Send, Inbox, PlayCircle, Mail } from "lucide-react";
 import type { OrderBundle, EscrowOrderStatus, EscrowContact, EscrowSendPurpose } from "@/types";
@@ -9,13 +10,25 @@ import { EscrowCommunication } from "@/components/order/escrow-communication";
 import { Dialog } from "@/components/ui/dialog";
 import { Labeled, Input, Textarea, Select } from "@/components/ui/form";
 import { money, qtyfmt, cn } from "@/lib/utils";
-import { useStore, type EscrowEmailDraft } from "@/store/store";
+import { useStore, APPROVAL_GATED_PURPOSES, type EscrowEmailDraft } from "@/store/store";
 import { escrowInvoiceTotals, escrowFeeReconciliation, escrowStatusIndex, escrowMilestoneTriggerMet, orderPhaseTimings, currentReport } from "@/store/selectors";
 
 type Compose = (purpose: EscrowSendPurpose, milestoneIndex?: number) => void;
 
 function Empty({ text }: { text: string }) {
   return <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">{text}</div>;
+}
+
+// Release-funds and fund-Finance instructions move real money, so sending one doesn't go out
+// immediately — it parks as a PENDING Approval instead (see APPROVAL_GATED_PURPOSES in store.ts).
+// This replaces the usual "Send" button while one of those is still awaiting a decision.
+function AwaitingApproval() {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <Pill tone="warn">Awaiting approval</Pill>
+      <Link href="/fulfilment/approvals" className="text-xs text-primary hover:underline">Review on Approvals board →</Link>
+    </span>
+  );
 }
 
 // Strict linear progression, Draft → Released to Seller — no backward moves, no branching (spec §3).
@@ -202,7 +215,9 @@ function InvoicePanel({
 
       {e.status === "ESCROW_FEE_INVOICED" && !e.paymentInstructedAt && (
         <div className="mt-3 flex flex-wrap gap-2">
-          <Button onClick={() => onCompose("PAYMENT_INSTRUCTION_TO_FINANCE")}><Send className="h-4 w-4" /> Send: payment instruction to Finance</Button>
+          {b.approvals.some((a) => a.kind === "ESCROW_FUND_INSTRUCTION" && a.status === "PENDING")
+            ? <AwaitingApproval />
+            : <Button onClick={() => onCompose("PAYMENT_INSTRUCTION_TO_FINANCE")}><Send className="h-4 w-4" /> Send: payment instruction to Finance</Button>}
         </div>
       )}
 
@@ -229,7 +244,11 @@ function PaymentFlowPanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose
         <Field label="HKin confirmed">{e.status !== "ESCROW_FEE_INVOICED" ? "✓" : "—"}</Field>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        {!e.paymentInstructedAt && <Button onClick={() => onCompose("PAYMENT_INSTRUCTION_TO_FINANCE")}><Send className="h-4 w-4" /> Send: payment instruction to Finance</Button>}
+        {!e.paymentInstructedAt && (
+          b.approvals.some((a) => a.kind === "ESCROW_FUND_INSTRUCTION" && a.status === "PENDING")
+            ? <AwaitingApproval />
+            : <Button onClick={() => onCompose("PAYMENT_INSTRUCTION_TO_FINANCE")}><Send className="h-4 w-4" /> Send: payment instruction to Finance</Button>
+        )}
         {e.paymentInstructedAt && e.financeSwiftReference && !e.paymentSentToHkinAt && <Button onClick={() => onCompose("PAYMENT_CONFIRMATION_TO_HKIN")}><Send className="h-4 w-4" /> Send: payment confirmation to HKin</Button>}
       </div>
       {e.paymentInstructedAt && !e.financeSwiftReference && <p className="mt-2 text-xs text-muted-foreground">Awaiting Finance&apos;s confirmation (with the SWIFT reference) — check inbox above.</p>}
@@ -360,6 +379,8 @@ function ReleasePanel({ b, onCompose }: { b: OrderBundle; onCompose: Compose }) 
                 <Pill tone="ok">Released {rec.confirmedAt}</Pill>
               ) : rec?.instructedAt ? (
                 <Pill tone="warn">Instructed {rec.instructedAt} — check inbox above</Pill>
+              ) : b.approvals.some((a) => a.kind === "ESCROW_RELEASE_FUNDS" && a.status === "PENDING" && a.escrowSend?.milestoneIndex === i) ? (
+                <AwaitingApproval />
               ) : met ? (
                 <Button onClick={() => onCompose("RELEASE_FUNDS_INSTRUCTION", i)}><Send className="h-4 w-4" /> Send: release {m.percent}%</Button>
               ) : (
@@ -470,15 +491,23 @@ function ComposeEmailModal({
   const [cc, setCc] = useState(draft.cc ?? "");
   const [subject, setSubject] = useState(draft.subject);
   const [body, setBody] = useState(draft.body);
+  const needsApproval = purpose in APPROVAL_GATED_PURPOSES;
   return (
     <Dialog open onClose={onClose} title="Compose email — review before sending"
-      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button onClick={() => onSend(purpose, { to, cc: cc || undefined, subject, body })}><Send className="h-4 w-4" /> Send</Button></>}>
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={() => onSend(purpose, { to, cc: cc || undefined, subject, body })}>
+          <Send className="h-4 w-4" /> {needsApproval ? "Submit for approval" : "Send"}
+        </Button></>}>
       <div className="space-y-3">
         <Labeled label="To"><Input value={to} onChange={(e) => setTo(e.target.value)} /></Labeled>
         <Labeled label="Cc" hint="optional"><Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="—" /></Labeled>
         <Labeled label="Subject"><Input value={subject} onChange={(e) => setSubject(e.target.value)} /></Labeled>
         <Labeled label="Body"><Textarea value={body} onChange={(e) => setBody(e.target.value)} className="min-h-[180px]" /></Labeled>
-        <p className="text-xs text-faint">Nothing is sent until you click Send — edit anything above first.</p>
+        <p className="text-xs text-faint">
+          {needsApproval
+            ? "This moves real money — it won't send until approved on the Approvals board, not immediately on click."
+            : "Nothing is sent until you click Send — edit anything above first."}
+        </p>
       </div>
     </Dialog>
   );
@@ -743,11 +772,12 @@ function SendEscrowEmailModal({
       amount: amount.trim() ? Number(amount) : undefined, reportFileName,
     });
   };
+  const needsApproval = selected.kind === "compose" && selected.purpose in APPROVAL_GATED_PURPOSES;
 
   return (
     <Dialog open onClose={onClose} title="Send email"
       footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleSend} disabled={!canSend}><Send className="h-4 w-4" /> Send</Button></>}>
+        <Button onClick={handleSend} disabled={!canSend}><Send className="h-4 w-4" /> {needsApproval ? "Submit for approval" : "Send"}</Button></>}>
       <div className="space-y-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Labeled label="Party">
@@ -765,6 +795,9 @@ function SendEscrowEmailModal({
         </div>
         {!selected.available && (
           <Notice tone="warn">Normally: {selected.unavailableReason} You can still send this now if you need to.</Notice>
+        )}
+        {needsApproval && (
+          <Notice tone="warn">This moves real money — it won&apos;t send until approved on the Approvals board, not immediately on click.</Notice>
         )}
 
         {selected.kind === "compose" ? (
